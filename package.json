@@ -1,0 +1,51 @@
+{
+  "name": "@black-market/sdk",
+  "version": "0.1.0",
+  "description": "Canonical TypeScript SDK for the Black Market protocol on Robinhood Chain (Abyss DEX, Atomic launches, lending market).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.11.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "examples": "pnpm build && node examples/quickstart.mjs && node examples/abby-launch.mjs",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm build",
+    "test": "pnpm build && node --test test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "viem": "^2.31.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "typescript": "^5.8.3"
+  },
+  "keywords": [
+    "black-market",
+    "abyss",
+    "robinhood-chain",
+    "defi",
+    "viem"
+  ]
+}

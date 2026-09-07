@@ -1,0 +1,74 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (must match package.json, e.g. 0.1.0 or v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: node --test test/*.test.mjs
+
+      - name: Guard — version matches the release tag or dispatch input
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          EXPECTED="${RELEASE_TAG:-$INPUT_VERSION}"
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::no release tag or version input to verify against"
+            exit 1
+          fi
+          EXPECTED="${EXPECTED#v}"
+          ACTUAL="$(node -p "require('./package.json').version")"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::version mismatch: release/input is '$EXPECTED' but package.json is '$ACTUAL'"
+            exit 1
+          fi
+          echo "version guard OK: $ACTUAL"
+
+      - name: Verify pack contents
+        run: |
+          set -euo pipefail
+          npm pack --dry-run 2>&1 | tee pack-dry-run.txt
+          grep -q 'dist/index.js' pack-dry-run.txt
+          grep -q 'dist/index.d.ts' pack-dry-run.txt
+          grep -q 'README.md' pack-dry-run.txt
+          grep -q 'LICENSE' pack-dry-run.txt
+          grep -q 'package.json' pack-dry-run.txt
+
+      - name: Ensure npm CLI with trusted publishing support
+        run: npm install -g npm@latest
+
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
