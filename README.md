@@ -2,7 +2,7 @@
 
 # @black-market/sdk
 
-Canonical TypeScript SDK for the Black Market protocol on [Robinhood Chain](https://robinhoodchain.blockscout.com) — Abyss DEX infrastructure, Atomic token launches, and the lending market.
+Canonical TypeScript SDK for the Black Market protocol on [Robinhood Chain](https://robinhoodchain.blockscout.com) — Abyss DEX infrastructure, Unified Launcher deployer flows, optional launch API integration, and the lending market.
 
 Built on [viem](https://viem.sh). ESM-only, Node 20+.
 
@@ -34,25 +34,28 @@ const wallet = createProtocolWalletClient({
 });
 ```
 
-### Atomic launches
+### Current Unified Launcher launches
 
 ```ts
 import {
-  LAUNCH_TEMPLATES,
-  deriveAtomicLaunchPoolRecipe,
-  estimateAtomicLaunchInitialBuy,
-  buildAtomicLaunchCalldata,
-  DEFAULT_ATOMIC_LAUNCH_TARGET_MARKET_CAP_USD,
+  buildUnifiedLaunchCalldata,
+  getAddresses,
+  toUnifiedLaunchRequest,
+  toUniswapV4PoolConfig,
 } from "@black-market/sdk";
 
-// Derive the one-sided launch position from a target FDV.
-const recipe = deriveAtomicLaunchPoolRecipe({
-  /* … */
-});
-
-// Encode an Atomic launch request for the AtomicLaunchFactory.
-const calldata = buildAtomicLaunchCalldata(request, nativeBuyAmount);
+const addresses = getAddresses(4663);
+const v4Config = toUniswapV4PoolConfig(poolRecipe, launchSqrtPriceX96, tickSpacing, true);
+const request = toUnifiedLaunchRequest(atomicRequest, { kind: "uniswap-v4-v3", config: v4Config });
+const calldata = buildUnifiedLaunchCalldata(request);
+// Submit calldata to addresses.unifiedLauncher with zero native value for V4.
 ```
+
+`toUnifiedLaunchRequest` supports the current Abyss and optimized `uniswap-v4-v3` routes. The V4 route keeps its ten-field `V4PoolConfigV2` wire format; it does not accept a `protocolBps` field. Read the pool registry before submitting so a route is enabled, and obtain the selected fee's tick spacing from the current Abyss factory.
+
+`LaunchApiClient` optionally follows the launch application's signed metadata, image-upload, and transaction-publication session flow. It never signs on the caller's behalf; use `launchAttributionTypes` and `canonicalLaunchMetadataHash` with a wallet client before creating a session.
+
+`buildAtomicLaunchCalldata` remains available only for replaying retired Atomic Launch Factory fixtures. It must not be submitted to the current mainnet launcher.
 
 ### Networks
 
@@ -70,11 +73,13 @@ Deployment addresses can be overridden with environment variables, evaluated onc
 
 | Module         | Contents                                                              |
 | -------------- | --------------------------------------------------------------------- |
-| `addresses`    | Chain definitions, canonical deployment addresses, env overrides      |
+| `addresses`    | Chain definitions, current deployer/route addresses, env overrides    |
 | `abis`         | Lending-market ABIs (pool, data providers, lens, oracle, vesting, …)  |
 | `abyss`        | Abyss DEX ABIs and launch-module ABIs, pool profiles, fee tiers       |
 | `auction`      | Atomic launch supply constants and paired-asset (quote) catalog       |
-| `launch`       | Launch templates, Atomic launch recipe derivation, calldata building  |
+| `launch`       | Historical Atomic recipes and fixture calldata                        |
+| `deployer`     | Unified Launcher ABI, current launch request and V4 route encoders    |
+| `launch-api`   | Optional signed launch metadata, upload, and publication API client   |
 | `live`         | Reserve/user position normalization from lens & data-provider rows    |
 | `format`       | RAY/WAD math, health-factor and units formatting helpers              |
 | `client`       | viem public/wallet client factories                                   |

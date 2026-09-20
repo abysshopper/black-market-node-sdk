@@ -22,7 +22,11 @@ export type AbyssInfrastructureAddresses = {
 export type LaunchApplicationAddresses = {
   launchTokenFactory: Address;
   launchCoordinator: Address;
+  /** Retired V1 Atomic Launch Factory; historical fixtures only. */
   launchFactory: Address;
+  unifiedLauncher: Address;
+  launchPoolRegistry: Address;
+  uniswapV4V3Adapter: Address;
   launchTemplateRegistry: Address;
   launchModuleFactory: Address;
   launchFeeOwnerRegistry: Address;
@@ -136,6 +140,9 @@ function launchApplicationFromEnv(
     launchTokenFactory: address("LAUNCH_TOKEN_FACTORY", fallback.launchTokenFactory),
     launchCoordinator: address("LAUNCH_COORDINATOR", fallback.launchCoordinator),
     launchFactory: address("LAUNCH_FACTORY", fallback.launchFactory),
+    unifiedLauncher: address("UNIFIED_LAUNCHER", fallback.unifiedLauncher),
+    launchPoolRegistry: address("LAUNCH_POOL_REGISTRY", fallback.launchPoolRegistry),
+    uniswapV4V3Adapter: address("UNISWAP_V4_V3_ADAPTER", fallback.uniswapV4V3Adapter),
     launchTemplateRegistry: address("LAUNCH_TEMPLATE_REGISTRY", fallback.launchTemplateRegistry),
     launchModuleFactory: address("LAUNCH_MODULE_FACTORY", fallback.launchModuleFactory),
     launchFeeOwnerRegistry: address("LAUNCH_FEE_OWNER_REGISTRY", fallback.launchFeeOwnerRegistry),
@@ -164,6 +171,9 @@ const zeroLaunchApplication: LaunchApplicationAddresses = {
   launchTokenFactory: zero,
   launchCoordinator: zero,
   launchFactory: zero,
+  unifiedLauncher: zero,
+  launchPoolRegistry: zero,
+  uniswapV4V3Adapter: zero,
   launchTemplateRegistry: zero,
   launchModuleFactory: zero,
   launchFeeOwnerRegistry: zero,
@@ -185,14 +195,17 @@ export const robinhoodAbyssInfrastructure: AbyssInfrastructureAddresses = {
   abyssFeeRouter: "0x2c3B1b6fe0EDa8e10C0445567b47e66E825B34cd",
 };
 
-/** Captured replacement: contracts/deployments/launch/robinhood-mainnet-replacement-deployment-record.json. */
+/** Schema-/2 Unified Launcher plus the active append-only Uniswap V4 V3 extension. */
 export const robinhoodLaunchApplication: LaunchApplicationAddresses = {
-  launchTokenFactory: "0x7B6F6efb4536F579223423e31d9036D996bc90F0",
-  launchCoordinator: "0xE98A82202D794A7836316971e7ACf61F260f8399",
-  launchFactory: "0xAf3FdC499b3717EBE8aD51B66bA78Cb083552351",
-  launchTemplateRegistry: "0x5C22c6e02bAC8225eed64629447868bAA5774186",
-  launchModuleFactory: "0xb2D9988592eE245a36290A0992505ca0474434f2",
-  launchFeeOwnerRegistry: "0xdD3756269Db20F2a60055b0FE8c101FAd12525f9",
+  launchTokenFactory: "0x84225a7b7fd9981f8a3086acfbbb688348247f6f",
+  launchCoordinator: "0xcc3aa2dff0fd6e9505b12b731111ec1b7b49621d",
+  launchFactory: "0xa7a4755fb907593f05fd1e289aa780f0d57f3a12",
+  unifiedLauncher: "0xa7a4755fb907593f05fd1e289aa780f0d57f3a12",
+  launchPoolRegistry: "0x04f453aac720a5fb410fe81fc50b747f969b352c",
+  uniswapV4V3Adapter: "0x9607ddc99381f18985770b4f93685ed90220bc98",
+  launchTemplateRegistry: "0x01422012c452f2e363d56bd408c7ed1c44204701",
+  launchModuleFactory: "0xe6bb1f77b94fa2003db0f4c2e248649061922c64",
+  launchFeeOwnerRegistry: "0xa8018950ebb6a35708820c89243ddab8718ee0bc",
 };
 
 /** Workbench deployment snapshot — override via env when redeploying. */

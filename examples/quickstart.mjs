@@ -34,7 +34,7 @@ import {
 const addresses = getAddresses(4663);
 console.log("network:", robinhoodMainnet.name, `(chain ${robinhoodMainnet.id})`);
 console.log("abyssRouter:", addresses.abyssRouter);
-console.log("launchFactory:", addresses.launchFactory);
+console.log("unifiedLauncher:", addresses.unifiedLauncher);
 
 // 2. Pick a launch template and a paired (quote) asset from the catalog.
 const template = getLaunchTemplate("standard");

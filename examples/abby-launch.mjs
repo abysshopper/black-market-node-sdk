@@ -63,7 +63,6 @@ export const abbyRequest = Object.freeze({
 });
 
 export const abbyCalldata = buildAtomicLaunchCalldata(abbyRequest);
-assert.equal(getAddresses(4663).launchFactory, ABBY_DEPLOYMENT.launchFactory);
 assert.equal(abbyCalldata.slice(0, 10), "0xe5ac002e");
 assert.equal(abbyCalldata.length, 2_122);
 

@@ -6,3 +6,5 @@ export * from "./client.js";
 export * from "./format.js";
 export * from "./launch.js";
 export * from "./live.js";
+export * from "./deployer.js";
+export * from "./launch-api.js";
