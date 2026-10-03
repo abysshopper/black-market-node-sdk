@@ -88,9 +88,40 @@ export const lifecycleErc20Abi = [
   { type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ type: "address" }, { type: "uint256" }], outputs: [{ type: "bool" }] },
 ] as const;
 export const lifecycleFeeHubAbi = [
+  { type: "function", name: "MAX_EXECUTOR_FEE_BPS", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
+  { type: "function", name: "executorFeeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
+  { type: "function", name: "setExecutorFeeBps", stateMutability: "nonpayable", inputs: [{ name: "newFeeBps", type: "uint16" }], outputs: [] },
+  { type: "event", name: "ExecutorFeeUpdated", inputs: [{ name: "feeOwner", type: "address", indexed: true }, { name: "previousFeeBps", type: "uint16", indexed: false }, { name: "newFeeBps", type: "uint16", indexed: false }], anonymous: false },
   { type: "function", name: "finalized", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
   { type: "function", name: "assets", stateMutability: "view", inputs: [], outputs: [{ type: "address[]" }] },
   { type: "function", name: "sources", stateMutability: "view", inputs: [], outputs: [{ type: "address[]" }] },
   { type: "function", name: "policy", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "tuple", components: lifecycleFeePolicyComponents }] },
   { type: "function", name: "claimAndSplit", stateMutability: "nonpayable", inputs: [], outputs: [{ type: "tuple[]", components: [{ name: "asset", type: "address" }, { name: "amount", type: "uint256" }] }] },
+  { type: "function", name: "claimableOwnerFees", stateMutability: "view", inputs: [{ name: "owner", type: "address" }, { name: "asset", type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "reservedOwnerFees", stateMutability: "view", inputs: [{ name: "asset", type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "claimOwnerFees", stateMutability: "nonpayable", inputs: [{ name: "asset", type: "address" }, { name: "recipient", type: "address" }], outputs: [{ name: "amount", type: "uint256" }] },
+  { type: "event", name: "OwnerFeesCredited", inputs: [{ name: "owner", type: "address", indexed: true }, { name: "asset", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }], anonymous: false },
+  { type: "event", name: "OwnerFeesClaimed", inputs: [{ name: "owner", type: "address", indexed: true }, { name: "asset", type: "address", indexed: true }, { name: "recipient", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }], anonymous: false },
+] as const;
+
+/** Multiasset staking and dividend claims; return values and RewardPaid are beneficiary net. */
+export const lifecycleRewardsAbi = [
+  { type: "function", name: "rewardAssets", stateMutability: "view", inputs: [], outputs: [{ type: "address[]" }] },
+  { type: "function", name: "earned", stateMutability: "view", inputs: [{ name: "beneficiary", type: "address" }, { name: "asset", type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "pendingRewards", stateMutability: "view", inputs: [{ name: "beneficiary", type: "address" }], outputs: [{ type: "uint256[]" }] },
+  { type: "function", name: "lifetimeRewardsPaid", stateMutability: "view", inputs: [{ name: "asset", type: "address" }, { name: "beneficiary", type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "claim", stateMutability: "nonpayable", inputs: [], outputs: [{ type: "uint256[]" }] },
+  { type: "function", name: "claimFor", stateMutability: "nonpayable", inputs: [{ name: "beneficiary", type: "address" }], outputs: [{ type: "uint256[]" }] },
+  { type: "function", name: "claimRange", stateMutability: "nonpayable", inputs: [{ name: "beneficiary", type: "address" }, { name: "start", type: "uint256" }, { name: "count", type: "uint256" }], outputs: [{ type: "uint256[]" }] },
+  { type: "event", name: "RewardPaid", inputs: [{ name: "beneficiary", type: "address", indexed: true }, { name: "asset", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }], anonymous: false },
+  { type: "event", name: "RewardClaimBountyPaid", inputs: [{ name: "executor", type: "address", indexed: true }, { name: "beneficiary", type: "address", indexed: true }, { name: "asset", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }], anonymous: false },
+] as const;
+
+/** Dividend-only policy; initially zero, controlled by the token's current registered fee owner. */
+export const lifecycleDividendAbi = [
+  ...lifecycleRewardsAbi,
+  { type: "function", name: "MAX_DIVIDEND_BOUNTY_BPS", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
+  { type: "function", name: "dividendBountyBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
+  { type: "function", name: "setDividendBountyBps", stateMutability: "nonpayable", inputs: [{ name: "newBountyBps", type: "uint16" }], outputs: [] },
+  { type: "event", name: "DividendBountyUpdated", inputs: [{ name: "feeOwner", type: "address", indexed: true }, { name: "previousBountyBps", type: "uint16", indexed: false }, { name: "newBountyBps", type: "uint16", indexed: false }], anonymous: false },
 ] as const;

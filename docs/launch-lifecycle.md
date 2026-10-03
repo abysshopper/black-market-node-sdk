@@ -27,7 +27,7 @@ The architecture is defined in the sibling application repository's [launch ADR]
 - Sorted fee assets: per-asset owner/rewards/burn basis points, each summing to 10,000. Only the predicted launch token can have a burn share.
 - Ordered markets: immutable adapter/profile IDs, quote asset, explicit token budget, config version and exact opaque venue bytes.
 - Ordered buys: market index, quote input, minimum token output, recipient and square-root price limit. Repeated market indices retain their original ordering.
-- Deadline and executor fee basis points.
+- Deadline and initial executor fee basis points, bounded to 0–1,000 (0–10%).
 
 The ABI component exports and `launchLifecycleAbi` describe the exact Solidity tuple; this is not the old `LaunchRequestV3`. All uint256/uint160/uint128 values use bigint in memory and decimal strings in portable JSON. The guarded parser rejects lossy JSON numbers and out-of-width values. Mode and preparation batching are execution metadata and do not appear in the economic tuple.
 
@@ -47,6 +47,33 @@ const durableEconomicPlanJson = serializeLaunchPlan(plan);
 `hashLaunchPlan` is `keccak256(abi.encode(keccak256(bytes("BLACK_MARKET_LAUNCH_PLAN_V1")), plan))`. `hashLaunchIdentity` is `keccak256(abi.encode(chainId, orchestrator, creator, nonce))`. Prediction depends on this identity plus token configuration, not the economic plan hash: the predicted address can therefore be included literally in sorted fee policies without a circular dependency. A creator nonce binds one economic plan; changing economics after begin is rejected.
 
 ABI bounds are 1–16 markets, 1–8 fee assets, at most 8 funding outputs, at most 64 ordered buys, and at most 32 total launch positions. These bounds are not a gas guarantee. Reward-free ERC20 retains the full positive uint256 supply domain; staking/dividend ERC20 supply is at most `10^77`, and ERC404 supply must fit uint96. The exports `LIFECYCLE_MAX_ERC20_SUPPLY`, `LIFECYCLE_MAX_REWARD_ERC20_SUPPLY` and `LIFECYCLE_MAX_ERC404_SUPPLY` expose those exact domains; the reward cap prevents share/supply precision loss in the bounded reward accounting model. The tuple and hashes are unchanged by these semantic limits.
+
+New V2 fee hubs allow the current registered fee owner to call `setExecutorFeeBps(uint16)`
+using `lifecycleFeeHubAbi`; `executorFeeBps()` reads the current rate and
+`MAX_EXECUTOR_FEE_BPS()` returns 1,000. `ExecutorFeeUpdated` records old/new rates.
+Owner/rewards/burn fractions stay fixed. The current rate applies to all freshly collected
+fees, including earlier accrual, and authority follows accepted fee ownership. Previously
+reserved owner credits are unaffected. Each all-source `claimAndSplit()` snapshots one
+rate; callbacks cannot update it. Preview is not a minimum-payment guarantee, and no
+delay or extra harvest argument is introduced. Existing immutable hubs are not upgraded.
+
+New V2 harvests always reserve owner allocations. Use
+`lifecycleFeeHubAbi` with `claimableOwnerFees(owner, asset)` to read credits and send
+`claimOwnerFees(asset, recipient)` as the credited owner to withdraw them. Withdrawal
+does not harvest or charge a bounty; accepted ownership changes do not transfer old credits.
+
+Use `lifecycleDividendAbi` on a new lifecycle ERC20/ERC404 dividend token to read
+`dividendBountyBps()` and send `setDividendBountyBps(uint16)` as the current registered
+fee owner. The independent setting starts at zero and is capped at 1,000 bps.
+`DividendBountyUpdated` records changes. Third-party `claimFor(beneficiary)` and
+`claimRange(beneficiary, start, count)` pay the caller `floor(gross * bps / 10_000)`
+per asset and the beneficiary the remainder. Self-claims receive the full amount;
+zero does not disable third-party payout. One current-rate snapshot applies to all
+assets and already accrued dividends, without a minimum-payment guarantee.
+`earned` and `pendingRewards` are gross; claim returns, `RewardPaid` and
+`lifetimeRewardsPaid` are net beneficiary receipts. `RewardClaimBountyPaid` records
+the separate caller payment. `lifecycleRewardsAbi` also supports staking vault claims,
+which have no payout bounty. These opt-in ABIs do not relabel legacy reward modules.
 
 ### Venue configuration
 
