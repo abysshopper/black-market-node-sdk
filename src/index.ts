@@ -8,3 +8,4 @@ export * from "./launch.js";
 export * from "./live.js";
 export * from "./deployer.js";
 export * from "./launch-api.js";
+export * from "./lifecycle/index.js";

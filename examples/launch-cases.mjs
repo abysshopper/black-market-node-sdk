@@ -1,13 +1,15 @@
-import { AbyssPoolProfile, TokenKind } from "../dist/index.js";
+import { AbyssPoolProfile, getLaunchTemplate } from "../dist/index.js";
 
 const none = Object.freeze({ ownerBps: 0, rewardsBps: 0, burnBps: 0 });
 const split = (ownerBps, rewardsBps, burnBps) => Object.freeze({ ownerBps, rewardsBps, burnBps });
 
 /**
  * All current 1%-fee launch template/profile combinations. Each case is runnable
- * through either active route. Lighthouse is QuoteOracle; dual templates are
- * Beacon-only by their registered template policy, so their V4 companion pool
- * is Beacon rather than Lighthouse.
+ * through either active route and carries the template's canonical token kind from
+ * LaunchTemplateDefaultsV2: standard/quote-staking/dual-staking/fee-burn launch
+ * burnable tokens; quote-dividends/dual-dividends launch holder-dividend tokens.
+ * Lighthouse is QuoteOracle; dual templates are Beacon-only by their registered
+ * template policy, so their V4 companion pool is Beacon rather than Lighthouse.
  */
 const BASE_LAUNCH_CASES = [
   { id: "standard-lighthouse", template: "standard", profile: AbyssPoolProfile.QuoteOracle, launched: none, paired: split(10_000, 0, 0) },
@@ -22,13 +24,12 @@ const BASE_LAUNCH_CASES = [
   { id: "dual-dividends-owner", template: "dual-dividends", profile: AbyssPoolProfile.StandardOracle, launched: split(1_500, 8_500, 0), paired: split(5_000, 5_000, 0) },
   { id: "fee-burn-lighthouse", template: "fee-burn", profile: AbyssPoolProfile.QuoteOracle, launched: split(0, 0, 10_000), paired: none },
 ];
-const HOLDER_DIVIDEND_CAPABILITY_TEMPLATES = new Set(["standard", "quote-staking", "dual-staking", "fee-burn"]);
-export const LAUNCH_CASES = Object.freeze(BASE_LAUNCH_CASES.flatMap((launchCase) => {
-  const tokenKinds = HOLDER_DIVIDEND_CAPABILITY_TEMPLATES.has(launchCase.template)
-    ? [TokenKind.Burnable, TokenKind.HolderDividend]
-    : [TokenKind.HolderDividend];
-  return tokenKinds.map((tokenKind) => ({ ...launchCase, id: `${launchCase.id}-${tokenKind === TokenKind.Burnable ? "burnable" : "dividend"}`, tokenKind }));
-}));
+export const LAUNCH_CASES = Object.freeze(
+  BASE_LAUNCH_CASES.map((launchCase) => ({
+    ...launchCase,
+    tokenKind: getLaunchTemplate(launchCase.template).tokenKinds[0],
+  })),
+);
 export function getLaunchCase(id) {
   const launchCase = LAUNCH_CASES.find((candidate) => candidate.id === id);
   if (!launchCase) throw new Error(`Unknown launch case: ${id}`);

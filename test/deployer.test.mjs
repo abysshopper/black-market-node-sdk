@@ -35,6 +35,19 @@ test("active Uniswap V4 V3 route preserves its ten-field V2 wire layout", () => 
   assert.equal(sdk.unifiedLaunchValue("abyss", 10n, 7n), 17n);
 });
 
+test("toUnifiedLaunchRequest enforces each template's canonical token kind", () => {
+  const staking = { ...baseRequest, templateId: sdk.DUAL_STAKING_TEMPLATE_ID, token: { ...baseRequest.token, kind: sdk.TokenKind.HolderDividend } };
+  assert.throws(() => sdk.toUnifiedLaunchRequest(staking, { kind: "abyss", config: staking.pool }), /Template dual-staking requires a burnable token/);
+  const dividends = { ...baseRequest, templateId: sdk.QUOTE_DIVIDENDS_TEMPLATE_ID, token: { ...baseRequest.token, kind: sdk.TokenKind.Burnable } };
+  assert.throws(() => sdk.toUnifiedLaunchRequest(dividends, { kind: "abyss", config: dividends.pool }), /Template quote-dividends requires a holder-dividend token/);
+  const canonical = { ...baseRequest, templateId: sdk.QUOTE_DIVIDENDS_TEMPLATE_ID, token: { ...baseRequest.token, kind: sdk.TokenKind.HolderDividend } };
+  const request = sdk.toUnifiedLaunchRequest(canonical, { kind: "abyss", config: canonical.pool });
+  assert.equal(request.token.tokenType, sdk.launchTokenTypeHolderDividendV2);
+  assert.equal(request.token.tokenConfig, "0x" + "00".repeat(31) + "00");
+  const dual = { ...canonical, templateId: sdk.DUAL_DIVIDENDS_TEMPLATE_ID };
+  assert.equal(sdk.toUnifiedLaunchRequest(dual, { kind: "abyss", config: dual.pool }).token.tokenConfig, "0x" + "00".repeat(31) + "01");
+});
+
 test("mainnet address catalog targets the current unified deployer and optimized V4 route", () => {
   assert.equal(sdk.addresses[4663].unifiedLauncher, "0xa7a4755fb907593f05fd1e289aa780f0d57f3a12");
   assert.equal(sdk.addresses[4663].uniswapV4V3Adapter, "0x9607ddc99381f18985770b4f93685ed90220bc98");

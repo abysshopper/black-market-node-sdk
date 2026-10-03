@@ -55,7 +55,25 @@ const calldata = buildUnifiedLaunchCalldata(request);
 
 `LaunchApiClient` optionally follows the launch application's signed metadata, image-upload, and transaction-publication session flow. It never signs on the caller's behalf; use `launchAttributionTypes` and `canonicalLaunchMetadataHash` with a wallet client before creating a session.
 
+`LaunchApiClient` works with browser-native `fetch` and timers as well as Node 20+. Its existing exponential retry waits use `globalThis.setTimeout`, so importing the client does not require Node timer modules in a browser bundle.
+
 `buildAtomicLaunchCalldata` remains available only for replaying retired Atomic Launch Factory fixtures. It must not be submitted to the current mainnet launcher.
+
+### Versioned multi-market lifecycle (opt-in)
+
+The new lifecycle stack is separate from the current Unified Launcher and fee-only V1. It requires explicit chain/core/creator identity, immutable approved market profiles, and creator-selected `"atomic"` or `"staged"` execution. Existing deployed addresses and defaults are unchanged.
+
+```ts
+import { planLaunch, buildNextTransaction, readLaunchProgress } from "@black-market/sdk/lifecycle";
+
+const planned = await planLaunch({ client, account, plan, mode: "atomic", limits });
+// A refusal never silently switches to staged. Obtain separate user consent to replan.
+const progress = await readLaunchProgress({ client, planned, receipts });
+const next = await buildNextTransaction({ client, planned, receipts, limits });
+// Submit next only when present, binding its exact value, gas and gasPrice.
+```
+
+The browser-safe subpath owns exact schema/venue encoding, sequential stateful simulation, current chain/RPC/account/calldata admission and confirmation-bound receipt/reorg recovery. Unknown constraints or an unavailable stateful backend prevent submission. Staged preparation creates only empty pools; mint/lock/all ordered buys/public opening remain one indivisible activation. Both canonical venues support atomic and staged execution with the same capability mask; preactivation safety comes from the launch token's transfer restrictions plus activation-time canonical opening-state verification, not a pool gate. Read the [lifecycle SDK guide](docs/launch-lifecycle.md) for actual limit-source requirements, a separate disposable fork, funding/cancellation semantics and real local smoke commands.
 
 ### Networks
 
@@ -80,6 +98,7 @@ Deployment addresses can be overridden with environment variables, evaluated onc
 | `launch`       | Historical Atomic recipes and fixture calldata                        |
 | `deployer`     | Unified Launcher ABI, current launch request and V4 route encoders    |
 | `launch-api`   | Optional signed launch metadata, upload, and publication API client   |
+| `lifecycle`    | Opt-in lifecycle schema/ABIs, explicit planner, stateful proof and recovery (`@black-market/sdk/lifecycle`) |
 | `live`         | Reserve/user position normalization from lens & data-provider rows    |
 | `format`       | RAY/WAD math, health-factor and units formatting helpers              |
 | `client`       | viem public/wallet client factories                                   |

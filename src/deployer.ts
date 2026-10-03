@@ -18,6 +18,7 @@ import {
 import {
   type AtomicLaunchRequest,
   DUAL_DIVIDENDS_TEMPLATE_ID,
+  getLaunchTemplateByHash,
 } from "./launch.js";
 
 export const ABYSS_POOL_TYPE = keccak256(stringToHex("black-market.pool.abyss.v1"));
@@ -118,8 +119,22 @@ export function encodeAbyssPoolConfig(config: AtomicLaunchRequest["pool"]): Hex 
 export function encodeUniswapV4PoolConfig(config: UniswapV4PoolConfig): Hex {
   return encodeAbiParameters([{ type: "tuple", components: uniswapV4PoolConfigComponents }], [config]);
 }
+/**
+ * Maps a validated atomic-launch request plus its explicitly attributed route onto
+ * the Unified Launcher V3 envelope. Token-type and template-config assignments mirror
+ * LaunchTemplateDefaultsV2.registerAll: the dividend templates (quote-dividends,
+ * dual-dividends) deploy through the holder-dividend token type with
+ * `abi.encode(bool dualRewards)` as the token config; every other template uses the
+ * burnable type with empty config. A token kind that contradicts the template's
+ * canonical mapping is rejected rather than silently coerced. Manually constructed
+ * UnifiedLaunchRequest values remain possible for advanced registry-driven use.
+ */
 export function toUnifiedLaunchRequest(request: AtomicLaunchRequest, pool: UnifiedLaunchPool): UnifiedLaunchRequest {
   if (!isAddress(request.creator) || isAddressEqual(request.creator, zeroAddress)) throw new Error("creator must be a nonzero address");
+  const template = getLaunchTemplateByHash(request.templateId);
+  if (!template.tokenKinds.includes(request.token.kind)) {
+    throw new Error(`Template ${template.id} requires a ${template.tokenKinds[0] === TokenKind.Burnable ? "burnable" : "holder-dividend"} token`);
+  }
   const { token, pool: _ignored, ...rest } = request;
   const dividends = token.kind === TokenKind.HolderDividend;
   return {

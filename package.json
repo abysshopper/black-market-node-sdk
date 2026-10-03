@@ -10,11 +10,16 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./lifecycle": {
+      "types": "./dist/lifecycle/index.d.ts",
+      "import": "./dist/lifecycle/index.js"
     }
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "docs"
   ],
   "sideEffects": false,
   "engines": {

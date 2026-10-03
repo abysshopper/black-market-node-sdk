@@ -1,4 +1,3 @@
-import { setTimeout as delay } from "node:timers/promises";
 import { keccak256, stringToHex, type Address, type Hash, type Hex } from "viem";
 
 export const DEFAULT_LAUNCH_API_URL = "https://api.abyss.trading";
@@ -92,7 +91,7 @@ export class LaunchApiClient {
         if (error instanceof LaunchPublishPending || error instanceof LaunchApiError && ![429, 502, 503, 504].includes(error.status)) throw error;
         lastError = error;
       }
-      await delay(750 * 2 ** attempt);
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 750 * 2 ** attempt));
     }
     throw lastError instanceof LaunchApiError ? lastError : new LaunchApiError(0, "RPC_UNAVAILABLE", lastError instanceof Error ? lastError.message : "The launch API is unreachable.");
   }

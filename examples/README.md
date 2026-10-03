@@ -24,7 +24,7 @@ pnpm examples
 ```
 
 ## Current launch runner
-List the 18 valid 1% fee presets (each supports `abyss` and `uniswap-v4-v3`):
+List the 11 valid 1% fee presets (each supports `abyss` and `uniswap-v4-v3`):
 
 ```sh
 node examples/launch.mjs
@@ -67,4 +67,4 @@ node examples/launch.mjs --resume-publish \
 
 The recovery command never signs, wraps, approves, uploads, or submits another on-chain launch.
 
-Lighthouse is the QuoteOracle profile. The dual templates are protocol-limited to Beacon, so their 1% companion pools cannot be Lighthouse. Current token deployer capabilities also permit either burnable or holder-dividend tokens for Standard, Quote Staking, Dual Staking, and Fee Burn; the dividend templates remain holder-dividend only.
+Lighthouse is the QuoteOracle profile. The dual templates are protocol-limited to Beacon, so their 1% companion pools cannot be Lighthouse. Each template launches its canonical token kind from `LaunchTemplateDefaultsV2`: Standard, Quote Staking, Dual Staking, and Fee Burn deploy burnable tokens; Quote Dividends and Dual Dividends deploy holder-dividend tokens. The SDK's `toUnifiedLaunchRequest` rejects a token kind that contradicts the template; advanced registry-driven launches can still hand-build a `UnifiedLaunchRequest`.
