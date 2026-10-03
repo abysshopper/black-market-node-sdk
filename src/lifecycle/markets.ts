@@ -4,9 +4,9 @@ export type V4LifecyclePositionConfig = {
   tickLower: number; tickUpper: number; liquidity: bigint; salt: Hex; maxTokenAmount: bigint;
 };
 export type V4LifecycleMarketConfig = {
-  version: number; lpFeePips: number; tickSpacing: number; sqrtPriceX96: bigint; hookFeePips: number;
+  version: 2; lpFeePips: number; tickSpacing: number; sqrtPriceX96: bigint; hookFeePips: number;
   feeMode: number; protocolFeeDenominator: number; treasury: Address; externalLiquidityDisabled: boolean;
-  positions: readonly V4LifecyclePositionConfig[];
+  oracleConfigId: Hex; positions: readonly V4LifecyclePositionConfig[];
 };
 export const v4LifecyclePositionComponents = [
   { name: "tickLower", type: "int24" }, { name: "tickUpper", type: "int24" },
@@ -17,14 +17,17 @@ export const v4LifecycleMarketComponents = [
   { name: "sqrtPriceX96", type: "uint160" }, { name: "hookFeePips", type: "uint24" }, { name: "feeMode", type: "uint8" },
   { name: "protocolFeeDenominator", type: "uint8" }, { name: "treasury", type: "address" },
   { name: "externalLiquidityDisabled", type: "bool" },
+  { name: "oracleConfigId", type: "bytes32" },
   { name: "positions", type: "tuple[]", components: v4LifecyclePositionComponents },
 ] as const;
 export function encodeV4LifecycleMarketConfig(config: V4LifecycleMarketConfig): Hex {
-  if (config.version !== 1) throw new Error("V4 lifecycle market config version must be 1");
+  if (config.version !== 2) throw new Error("V4 lifecycle market config version must be 2");
   return encodeAbiParameters([{ type: "tuple", components: v4LifecycleMarketComponents }], [config]);
 }
 export function decodeV4LifecycleMarketConfig(encoded: Hex): V4LifecycleMarketConfig {
-  return decodeAbiParameters([{ type: "tuple", components: v4LifecycleMarketComponents }], encoded)[0];
+  const config = decodeAbiParameters([{ type: "tuple", components: v4LifecycleMarketComponents }], encoded)[0];
+  if (config.version !== 2) throw new Error("V4 lifecycle market config version must be 2");
+  return config as V4LifecycleMarketConfig;
 }
 
 export type AbyssLifecyclePositionConfig = {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { encodeAbiParameters, parseAbiParameters } from "viem";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
 const {
@@ -12,9 +13,10 @@ const fixture = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v
 // Expected wire bytes are independently generated from the literal Solidity ABI,
 // not from either public codec under test.
 const v4 = {
-  version: 1, lpFeePips: 3000, tickSpacing: 60, sqrtPriceX96: 2n ** 96n,
+  version: 2, lpFeePips: 3000, tickSpacing: 60, sqrtPriceX96: 2n ** 96n,
   hookFeePips: 10000, feeMode: 0, protocolFeeDenominator: 6,
   treasury: "0x00000000000000000000000000000000000000a0", externalLiquidityDisabled: true,
+  oracleConfigId: "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d",
   positions: [{ tickLower: 60, tickUpper: 120, liquidity: 10n ** 18n,
     salt: `0x${"0".repeat(63)}1`, maxTokenAmount: 10n ** 24n }],
 };
@@ -27,6 +29,19 @@ test("V4 public config codec preserves every economic field in the independent c
   assert.equal(encodeV4LifecycleMarketConfig(v4), fixture.plan.markets[0].config);
   const decoded = decodeV4LifecycleMarketConfig(fixture.plan.markets[0].config);
   assert.deepEqual({ ...decoded, treasury: decoded.treasury.toLowerCase() }, v4);
+});
+
+test("V4 public config codecs reject retired or unsupported inner wire versions", () => {
+  for (const version of [0, 1, 3]) {
+    assert.throws(() => encodeV4LifecycleMarketConfig({ ...v4, version }));
+    const encoded = encodeAbiParameters(
+      parseAbiParameters("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,(int24,int24,uint128,bytes32,uint256)[])"),
+      [[version, v4.lpFeePips, v4.tickSpacing, v4.sqrtPriceX96, v4.hookFeePips, v4.feeMode,
+        v4.protocolFeeDenominator, v4.treasury, v4.externalLiquidityDisabled, v4.oracleConfigId,
+        v4.positions.map((position) => [position.tickLower, position.tickUpper, position.liquidity, position.salt, position.maxTokenAmount])]],
+    );
+    assert.throws(() => decodeV4LifecycleMarketConfig(encoded));
+  }
 });
 
 test("Abyss public config codec preserves profile, oracle and large position budgets in the independent vector", () => {

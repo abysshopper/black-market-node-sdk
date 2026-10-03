@@ -5,7 +5,8 @@ import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, readLifecycleCo
 import { LifecyclePlanningError, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleMarketProgress, type LifecycleProfile, type LifecycleReceiptReference, type LifecycleReceiptStatus, type LifecycleRpcClient, type ReadLaunchProgressOptions } from "./types.js";
 
 export const ABYSS_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint8,uint24,bytes32,uint160,(int24,int24,uint128,uint256)[])"));
-export const V4_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,(int24,int24,uint128,bytes32,uint256)[])"));
+export const V4_LIFECYCLE_PROFILE_ID = keccak256(stringToHex("black-market.v4-lifecycle-market.v2"));
+export const V4_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,(int24,int24,uint128,bytes32,uint256)[])"));
 
 export async function predictLifecycleToken(options: { client: LifecycleRpcClient; plan: LaunchPlanV1 }): Promise<Address> {
   const block = await readLifecycleBlock(options.client);

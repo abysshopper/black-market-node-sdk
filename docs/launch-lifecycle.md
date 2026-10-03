@@ -52,11 +52,48 @@ ABI bounds are 1–16 markets, 1–8 fee assets, at most 8 funding outputs, at m
 
 Use `encodeV4LifecycleMarketConfig` / `decodeV4LifecycleMarketConfig` and `encodeAbyssLifecycleMarketConfig` / `decodeAbyssLifecycleMarketConfig`. Their types and ABI components match the ordinary-call lifecycle adapters, not legacy complete-launch adapters.
 
-- V4 config version is 1. It commits LP/hook fee fields, tick spacing, opening square-root price, treasury, external-liquidity policy and ordered positions. Each position commits ticks, liquidity, salt and maximum launch-token amount. The frozen fee-only V4 root has no oracle: `readMarket().oracleReadyAt` is always `0` for V4, while canonical Abyss pools disclose their pool-genesis timestamp at preparation.
+- Lifecycle V4 has exactly one current profile: `keccak256("black-market.v4-lifecycle-market.v2")`, outer market `configVersion: 2` and inner config `version: 2`. `V4MarketConfigV2` commits LP/hook fees, spacing, opening square-root price, fee mode/treasury denominator, treasury, external-liquidity policy, canonical `oracleConfigId` immediately before ordered positions. Positions remain `V4PositionConfigV1` (ticks, liquidity, salt, maximum launch-token amount). The retired profile and old config versions are rejected; no legacy codec compatibility is provided.
 - Abyss config commits profile 0–3, fee, oracle configuration ID, opening square-root price and ordered positions with ticks, liquidity and token maxima.
 - Select only an approved immutable profile whose schema, capabilities and dependencies match the deployed implementation. Runtime code hashes, core authority and pending eligibility are checked again before the next transaction.
 - Position ranges must require **zero quote deposit** at the committed opening price in the actual token orientation. Quote funding is for ordered buys, never two-sided initial LP seeding.
 - Canonical pool identity includes chain, venue, manager/factory, pool/pool ID and profile. A V4 market is the full PoolKey, not only its currency pair. Duplicate canonical markets are rejected by actual stateful execution.
+
+Exact V4 config ABI:
+
+```text
+(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,(int24,int24,uint128,bytes32,uint256)[])
+```
+
+Supply the factory's admitted oracle identity, not an invented zero ID:
+
+```ts
+const config = encodeV4LifecycleMarketConfig({
+  ...reviewedV4Config,
+  version: 2,
+  oracleConfigId: admittedCanonicalOracleConfigId,
+});
+// Commit this as a market with configVersion: 2 and the approved V2 profile ID.
+```
+
+The lifecycle root is new `SharedLaunchFeeHookV2`, deployed by
+`SharedLaunchFeeHookDeployerV2`, with new `fees/v2/V4FeeCollectorV2` and unchanged
+`V4FeeLiquidityLockerV1`. Independent fee-only V1 roots/deployers/collectors and old
+hooks remain unchanged. The root binds manager, adapter registrar and the canonical
+Abyss factory as oracle authority; registration snapshots `oracleConfigs(id)` once,
+requiring movement bound **1..887272** and cap **2..4096**.
+
+The root exposes `observeTruncated(fullPoolId, secondsAgos)`,
+`increaseObservationCardinalityNext(fullPoolId, requested)` and
+`oracleInitializedAt(fullPoolId)`. It reuses the real unchanged `TruncatedOracle`,
+with per-full-PoolId packed state/observations, pre-swap and pre-active-liquidity
+sampling once per block (even on zero/wrong-currency fee returns) and quote-normalized
+clamping. Permissionless growth is capped, monotonic and lazy: populated/prepared
+cardinality starts at **1**, never automatic 4096 history. `readMarket().oracleReadyAt`
+reports actual genesis, **not maturity**: atomic history starts in that transaction,
+staged history only in preparation, and pre-genesis requests fail. Neither venue adds
+a pool-side launch gate; token restrictions and canonical opening-state continuity
+remain enforced. Exact delta/fee/treasury/ERC6909 liability and custody semantics are preserved.
+
 
 ## Explicit atomic versus staged consent
 
@@ -238,3 +275,36 @@ node --test test/lifecycle-chain.test.mjs
 ```
 
 Both require loopback source `LAUNCH_LIFECYCLE_RPC_URL`, distinct `LAUNCH_LIFECYCLE_FORK_RPC_URL`, manifest/fixture paths and `LAUNCH_LIFECYCLE_ALLOW_LOCAL_EXECUTION=1`. The live suite exercises canonical sequential execution, unknown/stale/dynamic admission, explicit mode consent, real token supply boundaries, receipt replacements/reorgs, confirmation-safe reload, current-state resimulation, indivisible activation including a mined gas-exhaustion failure with Ready/opening-state rollback and exact creator cancellation refunds, registry/deadline recovery, and actual native wrapping. These are local proof commands, never production broadcast instructions.
+
+Current V2 restoration proof is recorded in the sibling repository's
+[review evidence](../../black-market/docs/launch-lifecycle-v1-review.md#lifecycle-v4-oracle-restoration-evidence)
+and [contract results JSON](../../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/contract-proof-results.json):
+147 unique named tests with final passing statuses **across runs** (146 initial passes
+plus one targeted test-ordering correction), not one all-green 147-test run.
+The complete current graph is
+[`launch-lifecycle-v4-oracle-proof-7`](../../black-market/contracts/deployments/local/launch-lifecycle-v4-oracle-proof-7/manifest.json).
+Its [exact runner command](../../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-runtime-attempt7.command.json)
+exited **0**, including both SDKs, actual Chromium, non-test swaps and rollback-negative
+deployment capture. The [runtime summary](../../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-runtime-summary-launch-lifecycle-v4-oracle-proof-7.json)
+records Node **13 plans / 19 outcomes: 5 Active (1 atomic, 4 staged), 14 refusals**,
+actual-chain **19/19** and both venues' genesis/pre-genesis reads. Oversized indivisible
+activations remain truthful refusals under the unchanged **16M** account/RPC envelope,
+not successful staged launches. Node build passed; offline **15 passed / 1 skipped**
+was followed by the separately passing **1/1 compiled-artifact ABI case**.
+[Non-test runtime JSON](../../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-non-test-oracle-launch-lifecycle-v4-oracle-proof-7.json)
+records ordinary CREATE-deployed router swaps in blocks **92/93**, spot
+**3930 → 4091 → 4252**, truncated **0 → 17 → 34**, cursor **0 → 1 → 2**,
+permissionless capacity **1 → 4** and truthful interpolation/pre-genesis rejection.
+[Focused actual browser proof](../../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-ui-runtime-launch-lifecycle-v4-oracle-proof-7.command.json)
+passed **2/2, exit 0, zero console/page errors** (atomic Active; staged ERC404
+Ready/reload → Active with all buys/NFTs). Actual browser calldata and explicit fresh
+identity comparisons are retained in the runtime summary; this is not claimed to
+reuse SDK-consumed identities. Normal runtime/initcode limits remained **24,576 / 49,152
+bytes**, chain transaction gas **16,777,216**, block gas **30,000,000**.
+Older V1 graphs/browser passes and intermediate -5/-6 attempts remain historical,
+not the final V2 graph; -6's two browser passes did not make its failed runner complete.
+The [operations recipe](../../black-market/docs/launch-lifecycle-v1-operations.md#settled-oracle-restoration-proof--7)
+distinguishes exact historical argv containing removed throwaway callbacks from
+supported reproduction commands. [Final summary](../../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/final-summary.json):
+**no proof blockers**, no production broadcast/default rebinding.
+

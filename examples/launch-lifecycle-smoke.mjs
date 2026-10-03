@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { decodeEventLog, toHex } from "viem";
+import { decodeEventLog, decodeFunctionResult, encodeFunctionData, parseAbi, toFunctionSelector, toHex } from "viem";
 import {
   buildNextTransaction, createControlledLifecycleFork, encodeLaunchPlan, hashLaunchIdentity, hashLaunchPlan, launchLifecycleAbi,
-  LifecyclePhase, LifecycleVenue, parseLaunchPlan, planLaunch, predictLifecycleToken,
+  decodeAbyssLifecycleMarketConfig, decodeV4LifecycleMarketConfig, LifecyclePhase, parseLaunchPlan, planLaunch, predictLifecycleToken,
   readLaunchProgress, simulateLaunchPlan,
 } from "../dist/lifecycle/index.js";
 
@@ -19,9 +19,20 @@ const client = { async request({ method, params = [] }) {
   const response = await fetch(rpcUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++requestId, method, params }) });
   if (!response.ok) throw new Error(`Local RPC HTTP ${response.status}`);
   const body = await response.json();
-  if (body.error) throw new Error(`${method}: ${body.error.message}`);
+  if (body.error) throw Object.assign(new Error(`${method}: ${body.error.message}`), { data: body.error.data });
   return body.result;
 } };
+const v4OracleAbi = parseAbi(["function observeTruncated(bytes32 poolId,uint32[] secondsAgos) view returns (int56[] tickCumulatives,uint160[] secondsPerLiquidityCumulativeX128s)"]);
+const abyssOracleAbi = parseAbi(["function observeTruncated(uint32[] secondsAgos) view returns (int56[] tickCumulatives,uint160[] secondsPerLiquidityCumulativeX128s)"]);
+const beforeGenesisError = toFunctionSelector("ObservationTooOld()");
+async function observeMarketOracle(identity, secondsAgo, blockNumber) {
+  const v4 = identity.venue === 0;
+  const abi = v4 ? v4OracleAbi : abyssOracleAbi;
+  const args = v4 ? [identity.poolId, [secondsAgo]] : [[secondsAgo]];
+  const data = encodeFunctionData({ abi, functionName: "observeTruncated", args });
+  const result = await client.request({ method: "eth_call", params: [{ to: v4 ? manifest.addresses.v4Hook : identity.pool, data }, blockNumber] });
+  return decodeFunctionResult({ abi, functionName: "observeTruncated", data: result });
+}
 const chainId = BigInt(await client.request({ method: "eth_chainId" }));
 assert.equal(chainId, BigInt(manifest.chainId));
 const configured = manifest.executionLimits ?? {};
@@ -63,12 +74,17 @@ for (const fixture of smokeRows) {
   assert.equal(await client.request({ method: "eth_getTransactionCount", params: [plan.creator, "latest"] }), nonceBefore, "Snapshot simulation must restore real account nonce");
   let selectedMode = fixture.mode;
   if (!planned.simulation.admitted) {
-    results.push({ name: fixture.name, requestedMode: fixture.mode, admitted: false, confidence: planned.simulation.confidence, reason: planned.simulation.reason });
+    results.push({ name: fixture.name, requestedMode: fixture.mode, planHash: planned.planHash, admitted: false, confidence: planned.simulation.confidence, reason: planned.simulation.reason });
+    assert.notEqual(fixture.expectedAdmitted, true, `${fixture.name}: ${planned.simulation.reason}`);
     assert.equal(planned.mode, fixture.mode, "SDK must never silently stage an atomic request");
     if (fixture.mode !== "atomic" || process.env.LAUNCH_LIFECYCLE_EXPLICIT_STAGED_FALLBACK !== "1") continue;
     selectedMode = "staged";
     planned = await planLaunch({ client, account: plan.creator, plan, mode: selectedMode, limits, fork });
     assert.equal(planned.planHash, hashLaunchPlan(plan), "Explicit staged consent cannot change economics");
+    if (!planned.simulation.admitted) {
+      results.push({ name: fixture.name, requestedMode: fixture.mode, selectedMode, planHash: planned.planHash, admitted: false, confidence: planned.simulation.confidence, reason: planned.simulation.reason, failedTransactionId: planned.simulation.failedTransactionId, steps: planned.simulation.steps.map(({ transactionId, success, gasUsed, gasLimit, error }) => ({ transactionId, success, gasUsed: gasUsed?.toString(), gasLimit: gasLimit?.toString(), error })) });
+      continue;
+    }
   }
   assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
   const replay = await simulateLaunchPlan({ client, planned, limits, fork });
@@ -106,14 +122,27 @@ for (const fixture of smokeRows) {
     assert.ok(buyEvents[index].tokenOut >= plan.buys[index].minTokenOut);
     assert.ok(buyEvents[index].quoteSpent <= plan.buys[index].quoteAmountIn);
   }
+  const oracleReadBlock = await client.request({ method: "eth_getBlockByHash", params: [activationReceipt.blockHash, false] });
+  const oracleHistory = [];
   for (const market of progress.markets) {
     assert.equal(market.live.publicTrading, true);
-    // Fee-only V4 profiles have no oracle (oracleReadyAt 0); canonical Abyss pools
-    // disclose their pool-genesis timestamp only.
-    assert.equal(market.live.oracleReadyAt > 0n, market.prepared.identity.venue === LifecycleVenue.Abyss, "oracle readiness matches the venue's real oracle surface");
+    // The fixture selects oracle-enabled pools on both venues. This is genesis, not maturity.
+    assert.ok(market.live.oracleReadyAt > 0n && market.live.oracleReadyAt <= BigInt(oracleReadBlock.timestamp), "real oracle genesis is disclosed on every market");
+    const identity = market.prepared.identity;
+    const elapsed = BigInt(oracleReadBlock.timestamp) - market.live.oracleReadyAt;
+    const config = identity.venue === 0 ? decodeV4LifecycleMarketConfig(plan.markets[market.index].config) : decodeAbyssLifecycleMarketConfig(plan.markets[market.index].config);
+    // Solidity fixture geometry anchors its first token-only range at the exact opening tick.
+    const tokenIs0 = progress.token.toLowerCase() === identity.currency0.toLowerCase();
+    const openingTick = BigInt(tokenIs0 ? config.positions[0].tickLower : config.positions[0].tickUpper);
+    const normalizedTick = tokenIs0 ? openingTick : -openingTick;
+    const [ticks, secondsPerLiquidity] = await observeMarketOracle(identity, 0, activationReceipt.blockNumber);
+    assert.equal(ticks[0], normalizedTick * elapsed, "real quote-normalized opening history accrues until atomic/staged activation");
+    assert.equal(secondsPerLiquidity[0], elapsed << 128n, "pre-activation history uses genuinely empty active liquidity");
+    await assert.rejects(() => observeMarketOracle(identity, Number(elapsed + 1n), activationReceipt.blockNumber), (error) => error.data === beforeGenesisError, "oracle refuses fabricated history before actual pool genesis");
+    oracleHistory.push({ marketIndex: market.index, venue: identity.venue, initializedAt: market.live.oracleReadyAt.toString(), blockHash: activationReceipt.blockHash, tickCumulative: ticks[0].toString(), secondsPerLiquidityCumulativeX128: secondsPerLiquidity[0].toString(), beforeGenesisRejected: true });
   }
   assert.equal(await buildNextTransaction({ client, planned, receipts, limits, fork }), undefined);
-  results.push({ name: fixture.name, requestedMode: fixture.mode, selectedMode, admitted: true, token: progress.token, planHash: progress.planHash, phase: "Active", positions: progress.canonical.positionCount, markets: progress.canonical.marketCount, orderedBuys: buyEvents.length, backend: replay.backend, actualSteps });
+  results.push({ name: fixture.name, requestedMode: fixture.mode, selectedMode, admitted: true, token: progress.token, planHash: progress.planHash, phase: "Active", positions: progress.canonical.positionCount, markets: progress.canonical.marketCount, orderedBuys: buyEvents.length, backend: replay.backend, actualSteps, oracleHistory });
 }
 assert.ok(results.some((row) => row.admitted && row.selectedMode === "atomic"), "At least one complete exact atomic ERC20/ERC404 plan must execute");
 assert.ok(results.some((row) => row.admitted && row.selectedMode === "staged"), "At least one explicit staged ERC20/ERC404 plan must execute");

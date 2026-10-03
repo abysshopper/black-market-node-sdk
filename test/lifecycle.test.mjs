@@ -36,7 +36,7 @@ test("every economic category changes the plan commitment without changing its i
     { ...plan, funding: plan.funding.map((item, index) => index === 0 ? { ...item, inputAmount: item.inputAmount + 1n } : item) },
     { ...plan, feeAssets: plan.feeAssets.map((item, index) => index === 0 ? { ...item, ownerBps: 7000, burnBps: 3000 } : item) },
     { ...plan, markets: plan.markets.map((item, index) => index === 0 ? { ...item, tokenBudget: item.tokenBudget + 1n } : item) },
-    { ...plan, markets: plan.markets.map((item, index) => index === 0 ? { ...item, configVersion: 2 } : item) },
+    { ...plan, markets: plan.markets.map((item, index) => index === 0 ? { ...item, configVersion: item.configVersion + 1 } : item) },
     { ...plan, buys: [...plan.buys].reverse() },
     { ...plan, buys: plan.buys.map((item, index) => index === 0 ? { ...item, minTokenOut: item.minTokenOut + 1n } : item) },
     { ...plan, deadline: plan.deadline + 1n },

@@ -74,8 +74,8 @@ function padAddress(address) {
 function padBool(value) {
   return "0x" + (value ? "1" : "0").padStart(64, "0");
 }
-function adapterAnswer() {
-  return encodeAbiParameters([{ type: "tuple", components: [...adapterRegistrationV1Components] }], [{ implementation: ADAPTER, codeHash: keccak256(CODE), capabilities: 123n, configVersion: 1, enabled: true }]);
+function adapterAnswer(configVersion) {
+  return encodeAbiParameters([{ type: "tuple", components: [...adapterRegistrationV1Components] }], [{ implementation: ADAPTER, codeHash: keccak256(CODE), capabilities: 123n, configVersion, enabled: true }]);
 }
 
 /** Deterministic canonical-state consumer. Scenario hooks override exactly one
@@ -128,7 +128,10 @@ function scenarioClient({ progress = emptyProgress(), headProgress = null, recei
             return "0x" + (plan.markets.length * 32).toString(16).padStart(64, "0") + ids;
           }
           if (selectorOf(lifecycleRegistryAbi, "profile") === selector) return profileAnswer();
-          if (selectorOf(lifecycleRegistryAbi, "adapter") === selector) return adapterAnswer();
+          if (selectorOf(lifecycleRegistryAbi, "adapter") === selector) {
+            const market = plan.markets.find((item) => data.toLowerCase().endsWith(item.adapterId.slice(2).toLowerCase())) ?? plan.markets[0];
+            return adapterAnswer(market.configVersion);
+          }
           if (selectorOf(lifecycleAdapterAbi, "core") === selector) return padAddress(plan.orchestrator);
           if (selectorOf(lifecycleAdapterAbi, "resolve") === selector) {
             // resolve(launchId, token, market): the committed market tuple is
