@@ -20,7 +20,7 @@ const plan = {
     { asset: address(0x30), ownerBps: 6000, rewardsBps: 4000, burnBps: 0 },
   ],
   markets: [
-    { adapterId: bytes32(1), profileId: keccak256(stringToHex("black-market.v4-lifecycle-market.v2")), quoteAsset: address(0x20), tokenBudget: 4n * 10n ** 26n, configVersion: 2,
+    { adapterId: bytes32(1), profileId: keccak256(stringToHex("black-market.v4-lifecycle-market.v3")), quoteAsset: address(0x20), tokenBudget: 4n * 10n ** 26n, configVersion: 2,
       config: encodeAbiParameters(parseAbiParameters("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,(int24,int24,uint128,bytes32,uint256)[])"), [[2, 3000, 60, 2n ** 96n, 10000, 0, 6, address(0xa0), true, keccak256(encodeAbiParameters(parseAbiParameters("uint24,uint16"), [17, 4096])), [[60, 120, 10n ** 18n, bytes32(1), 10n ** 24n]]]]) },
     { adapterId: bytes32(2), profileId: bytes32(12), quoteAsset: address(0x30), tokenBudget: 5n * 10n ** 26n, configVersion: 1,
       config: encodeAbiParameters(parseAbiParameters("(uint8,uint24,bytes32,uint160,(int24,int24,uint128,uint256)[])"), [[3, 3000, bytes32(0x55), 2n ** 96n, [[60, 120, 10n ** 18n, 10n ** 24n]]]]) },

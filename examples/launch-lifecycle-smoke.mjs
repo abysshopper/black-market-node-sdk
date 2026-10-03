@@ -60,6 +60,96 @@ async function sendLocal(transaction) {
 }
 
 const smokeRows = [...exported.fixtures, ...(exported.admitted ? [exported.admitted] : [])];
+const intentionalRefusal = new Set(["gas-cap-refusal"]);
+const refusalOutcome = (simulation, transactions) => {
+  const ceiling = simulation.limits.executionGasCeiling;
+  if (simulation.confidence !== "stateful" || ceiling <= 0n) return `failure:${simulation.reason ?? "unmeasured refusal"}`;
+  const index = simulation.steps.findIndex((step) => step.transactionId === simulation.failedTransactionId);
+  const step = simulation.steps[index];
+  const transaction = transactions.find((item) => item.id === step?.transactionId);
+  if (transaction && ["activate", "atomic"].includes(transaction.kind)
+    && simulation.steps.slice(0, index).every((item) => item.success)) {
+    if (!step.success && step.gasUsed !== undefined && step.gasLimit === ceiling
+      && (step.gasUsed >= ceiling - ceiling / 64n || step.outOfGas === true)) return "gas-cap-refusal";
+    const required = step.gasRequired ?? step.gasUsed;
+    if (step.success && required !== undefined
+      && (required * BigInt(10000 + simulation.limits.headroomBps) + 9999n) / 10000n > ceiling
+      && simulation.reason?.startsWith("Execution gas plus conservative headroom exceeds current transaction limits")) return "gas-cap-refusal";
+  }
+  return `failure:${simulation.reason || "unknown refusal"}`;
+};
+
+async function refusalEvidence(planned) {
+  let simulation = planned.simulation;
+  if (refusalOutcome(simulation, planned.transactions) === "gas-cap-refusal") return simulation;
+  // Opaque RPC/estimator reverts are NOT gas proof. Execute the exact sequence at
+  // the unchanged operator ceiling on the already-owned separate fork to obtain
+  // actual receipt consumption. This is verification only, never source execution.
+  const ceiling = simulation.limits.executionGasCeiling;
+  const tag = toHex(simulation.blockNumber);
+  const source = await client.request({ method: "eth_getBlockByNumber", params: [tag, false] });
+  assert.equal(source.hash.toLowerCase(), simulation.blockHash.toLowerCase(), "Refusal proof source must remain canonical");
+  const reset = async () => {
+    await fork.client.request({ method: "anvil_reset", params: [{ forking: { jsonRpcUrl: rpcUrl, blockNumber: Number(simulation.blockNumber) } }] });
+    const head = await fork.client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
+    assert.equal(head.hash.toLowerCase(), simulation.blockHash.toLowerCase(), "Refusal proof must restore the exact pinned fork head");
+    assert.equal(BigInt(await fork.client.request({ method: "eth_chainId" })), planned.chainId);
+    assert.equal(await fork.client.request({ method: "eth_getTransactionCount", params: [planned.account, "latest"] }),
+      await client.request({ method: "eth_getTransactionCount", params: [planned.account, tag] }), "Refusal proof fork nonce");
+  };
+  assert.ok(simulation.blockNumber <= BigInt(Number.MAX_SAFE_INTEGER) && ceiling > 0n);
+  await reset();
+  const steps = [];
+  try {
+    const gasPrice = await client.request({ method: "eth_gasPrice" });
+    for (const transaction of planned.transactions) {
+      const hash = await fork.client.request({ method: "eth_sendTransaction", params: [{
+        from: transaction.from, to: transaction.to, data: transaction.data,
+        value: toHex(transaction.value), gas: toHex(ceiling), gasPrice,
+      }] });
+      let receipt;
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        receipt = await fork.client.request({ method: "eth_getTransactionReceipt", params: [hash] });
+        if (receipt !== null) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.ok(receipt, "Refusal proof requires an actual automined receipt");
+      const success = BigInt(receipt.status) === 1n;
+      const failureTrace = [];
+      if (!success) {
+        let frame = await fork.client.request({ method: "debug_traceTransaction", params: [hash, { tracer: "callTracer" }] });
+        // Only the terminal failing call chain can authenticate exhaustion.
+        // An earlier caught/recovered OOG must not excuse a later business revert.
+        while (frame?.error) {
+          failureTrace.push(frame.error);
+          frame = frame.calls?.at(-1);
+        }
+      }
+      steps.push({ transactionId: transaction.id, transactionHash: hash, success, gasUsed: BigInt(receipt.gasUsed),
+        gasLimit: ceiling, outOfGas: failureTrace.some((error) => /\bout of gas\b|\bOutOfGas\b/i.test(error)), failureTrace });
+      if (!success) break;
+    }
+    const failed = steps.find((step) => !step.success);
+    simulation = { ...simulation, backend: "controlled-fork", steps, failedTransactionId: failed?.transactionId,
+      reason: failed ? "Exact ceiling receipt failure" : "Exact ceiling sequence succeeded; original refusal is not proven gas exhaustion" };
+    return simulation;
+  } finally {
+    await reset();
+    assert.equal((await client.request({ method: "eth_getBlockByNumber", params: [tag, false] })).hash.toLowerCase(),
+      source.hash.toLowerCase(), "Refusal proof must not outlive its canonical source block");
+  }
+}
+const expectedRows = new Map();
+for (const fixture of exported.fixtures) {
+  const expectations = [];
+  if (typeof fixture.expectedAdmitted === "boolean") expectations.push({ mode: fixture.mode, expected: fixture.expectedAdmitted ? "active" : fixture.expectedOutcome });
+  if (fixture.mode === "atomic" && process.env.LAUNCH_LIFECYCLE_EXPLICIT_STAGED_FALLBACK === "1" && fixture.expectedStagedAdmitted !== undefined) {
+    expectations.push({ mode: "staged", expected: fixture.expectedStagedAdmitted === true ? "active" : fixture.expectedStagedOutcome });
+  }
+  if (expectations.length === 0) throw new Error(`Fixture ${fixture.name} lacks an explicit exporter expectation`);
+  expectedRows.set(fixture.name, expectations);
+}
 for (const fixture of smokeRows) {
   const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
   assert.equal(encodeLaunchPlan(plan).toLowerCase(), fixture.encodedPlan.toLowerCase(), "Solidity ABI plan bytes");
@@ -74,15 +164,22 @@ for (const fixture of smokeRows) {
   assert.equal(await client.request({ method: "eth_getTransactionCount", params: [plan.creator, "latest"] }), nonceBefore, "Snapshot simulation must restore real account nonce");
   let selectedMode = fixture.mode;
   if (!planned.simulation.admitted) {
-    results.push({ name: fixture.name, requestedMode: fixture.mode, planHash: planned.planHash, admitted: false, confidence: planned.simulation.confidence, reason: planned.simulation.reason });
-    assert.notEqual(fixture.expectedAdmitted, true, `${fixture.name}: ${planned.simulation.reason}`);
+    const evidence = await refusalEvidence(planned);
+    results.push({ name: fixture.name, requestedMode: fixture.mode, selectedMode, planHash: planned.planHash, admitted: false, confidence: planned.simulation.confidence, reason: planned.simulation.reason, outcome: refusalOutcome(evidence, planned.transactions), gasEvidence: { backend: evidence.backend, blockNumber: evidence.blockNumber.toString(), blockHash: evidence.blockHash, failedTransactionId: evidence.failedTransactionId, steps: evidence.steps.map(({ transactionId, transactionHash, success, gasUsed, gasLimit, gasRequired, outOfGas, failureTrace }) => ({ transactionId, transactionHash, success, gasUsed: gasUsed?.toString(), gasLimit: gasLimit?.toString(), gasRequired: gasRequired?.toString(), outOfGas, failureTrace })) } });
+    if (fixture.expectedAdmitted === true) throw new Error(`${fixture.name}: expected admission was refused: ${planned.simulation.reason}`);
+    const expected = fixture.mode === "atomic" ? fixture.expectedOutcome : fixture.expectedStagedOutcome;
+    assert.equal(results.at(-1).outcome, expected, `${fixture.name}: refusal must be the expected intentional outcome; ${JSON.stringify(results.at(-1).gasEvidence)}`);
+    assert.ok(intentionalRefusal.has(results.at(-1).outcome), `${fixture.name}: refusal is not an intentional known gas-cap refusal: ${planned.simulation.reason}`);
     assert.equal(planned.mode, fixture.mode, "SDK must never silently stage an atomic request");
     if (fixture.mode !== "atomic" || process.env.LAUNCH_LIFECYCLE_EXPLICIT_STAGED_FALLBACK !== "1") continue;
     selectedMode = "staged";
     planned = await planLaunch({ client, account: plan.creator, plan, mode: selectedMode, limits, fork });
     assert.equal(planned.planHash, hashLaunchPlan(plan), "Explicit staged consent cannot change economics");
     if (!planned.simulation.admitted) {
-      results.push({ name: fixture.name, requestedMode: fixture.mode, selectedMode, planHash: planned.planHash, admitted: false, confidence: planned.simulation.confidence, reason: planned.simulation.reason, failedTransactionId: planned.simulation.failedTransactionId, steps: planned.simulation.steps.map(({ transactionId, success, gasUsed, gasLimit, error }) => ({ transactionId, success, gasUsed: gasUsed?.toString(), gasLimit: gasLimit?.toString(), error })) });
+      const evidence = await refusalEvidence(planned);
+      results.push({ name: fixture.name, requestedMode: fixture.mode, selectedMode, planHash: planned.planHash, admitted: false, confidence: planned.simulation.confidence, reason: planned.simulation.reason, outcome: refusalOutcome(evidence, planned.transactions), gasEvidence: { backend: evidence.backend, blockNumber: evidence.blockNumber.toString(), blockHash: evidence.blockHash, failedTransactionId: evidence.failedTransactionId, steps: evidence.steps.map(({ transactionId, transactionHash, success, gasUsed, gasLimit, gasRequired, outOfGas, failureTrace }) => ({ transactionId, transactionHash, success, gasUsed: gasUsed?.toString(), gasLimit: gasLimit?.toString(), gasRequired: gasRequired?.toString(), outOfGas, failureTrace })) } });
+      assert.equal(fixture.expectedStagedOutcome, results.at(-1).outcome, `${fixture.name}: explicit staged refusal must be the expected intentional outcome; ${JSON.stringify(results.at(-1).gasEvidence)}`);
+      assert.ok(intentionalRefusal.has(results.at(-1).outcome), `${fixture.name}: staged refusal is not an intentional known gas-cap refusal`);
       continue;
     }
   }
@@ -142,8 +239,15 @@ for (const fixture of smokeRows) {
     oracleHistory.push({ marketIndex: market.index, venue: identity.venue, initializedAt: market.live.oracleReadyAt.toString(), blockHash: activationReceipt.blockHash, tickCumulative: ticks[0].toString(), secondsPerLiquidityCumulativeX128: secondsPerLiquidity[0].toString(), beforeGenesisRejected: true });
   }
   assert.equal(await buildNextTransaction({ client, planned, receipts, limits, fork }), undefined);
-  results.push({ name: fixture.name, requestedMode: fixture.mode, selectedMode, admitted: true, token: progress.token, planHash: progress.planHash, phase: "Active", positions: progress.canonical.positionCount, markets: progress.canonical.marketCount, orderedBuys: buyEvents.length, backend: replay.backend, actualSteps, oracleHistory });
+  results.push({ name: fixture.name, requestedMode: fixture.mode, selectedMode, admitted: true, outcome: "active", tokenKind: Number(plan.token.kind), token: progress.token, planHash: progress.planHash, phase: "Active", positions: progress.canonical.positionCount, markets: progress.canonical.marketCount, orderedBuys: buyEvents.length, backend: replay.backend, actualSteps, oracleHistory });
 }
-assert.ok(results.some((row) => row.admitted && row.selectedMode === "atomic"), "At least one complete exact atomic ERC20/ERC404 plan must execute");
-assert.ok(results.some((row) => row.admitted && row.selectedMode === "staged"), "At least one explicit staged ERC20/ERC404 plan must execute");
+for (const [name, expectations] of expectedRows) {
+  for (const { mode, expected } of expectations) {
+    if (expected === "active") assert.ok(results.some((row) => row.name === name && row.selectedMode === mode && row.admitted), `${name}: expected ${mode} admission was rejected`);
+    else assert.ok(results.some((row) => row.name === name && !row.admitted && row.selectedMode === mode && row.outcome === expected), `${name}: expected ${mode} ${expected} outcome is missing`);
+  }
+}
+for (const kind of [0, 1]) {
+  assert.ok(results.some((row) => row.admitted && row.selectedMode === "staged" && row.tokenKind === kind), `an admitted staged ERC${kind === 0 ? "20" : "404"} row is required`);
+}
 console.log(JSON.stringify({ sdk: "@black-market/sdk/lifecycle", chainId: chainId.toString(), results }, null, 2));

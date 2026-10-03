@@ -52,7 +52,7 @@ ABI bounds are 1–16 markets, 1–8 fee assets, at most 8 funding outputs, at m
 
 Use `encodeV4LifecycleMarketConfig` / `decodeV4LifecycleMarketConfig` and `encodeAbyssLifecycleMarketConfig` / `decodeAbyssLifecycleMarketConfig`. Their types and ABI components match the ordinary-call lifecycle adapters, not legacy complete-launch adapters.
 
-- Lifecycle V4 has exactly one current profile: `keccak256("black-market.v4-lifecycle-market.v2")`, outer market `configVersion: 2` and inner config `version: 2`. `V4MarketConfigV2` commits LP/hook fees, spacing, opening square-root price, fee mode/treasury denominator, treasury, external-liquidity policy, canonical `oracleConfigId` immediately before ordered positions. Positions remain `V4PositionConfigV1` (ticks, liquidity, salt, maximum launch-token amount). The retired profile and old config versions are rejected; no legacy codec compatibility is provided.
+- Lifecycle V4 has exactly one current profile: `keccak256("black-market.v4-lifecycle-market.v3")`, outer market `configVersion: 2` and inner config `version: 2`. `V4MarketConfigV2` commits LP/hook fees, spacing, opening square-root price, fee mode/treasury denominator, treasury, external-liquidity policy, canonical `oracleConfigId` immediately before ordered positions. Positions remain `V4PositionConfigV1` (ticks, liquidity, salt, maximum launch-token amount). The retired profile and old config versions are rejected; no legacy codec compatibility is provided.
 - Abyss config commits profile 0–3, fee, oracle configuration ID, opening square-root price and ordered positions with ticks, liquidity and token maxima.
 - Select only an approved immutable profile whose schema, capabilities and dependencies match the deployed implementation. Runtime code hashes, core authority and pending eligibility are checked again before the next transaction.
 - Position ranges must require **zero quote deposit** at the committed opening price in the actual token orientation. Quote funding is for ordered buys, never two-sided initial LP seeding.
@@ -76,8 +76,8 @@ const config = encodeV4LifecycleMarketConfig({
 ```
 
 The lifecycle root is new `SharedLaunchFeeHookV2`, deployed by
-`SharedLaunchFeeHookDeployerV2`, with new `fees/v2/V4FeeCollectorV2` and unchanged
-`V4FeeLiquidityLockerV1`. Independent fee-only V1 roots/deployers/collectors and old
+`SharedLaunchFeeHookDeployerV2`, with new `fees/v2/V4FeeCollectorV2` and new
+`launch/fees/v2/V4FeeLiquidityLockerV2` custody. Independent fee-only V1 roots/deployers/collectors and old
 hooks remain unchanged. The root binds manager, adapter registrar and the canonical
 Abyss factory as oracle authority; registration snapshots `oracleConfigs(id)` once,
 requiring movement bound **1..887272** and cap **2..4096**.
@@ -91,8 +91,11 @@ clamping. Permissionless growth is capped, monotonic and lazy: populated/prepare
 cardinality starts at **1**, never automatic 4096 history. `readMarket().oracleReadyAt`
 reports actual genesis, **not maturity**: atomic history starts in that transaction,
 staged history only in preparation, and pre-genesis requests fail. Neither venue adds
-a pool-side launch gate; token restrictions and canonical opening-state continuity
-remain enforced. Exact delta/fee/treasury/ERC6909 liability and custody semantics are preserved.
+a swap gate. V4 additions are custody-only until the registrar completes `completePoolOpening`;
+afterwards the committed `externalLiquidityDisabled` policy applies unchanged, so `false`
+still permits external liquidity. `openingCompletedAt` is distinct from oracle genesis.
+Token restrictions, canonical opening-state continuity and exact delta/fee/treasury/ERC6909
+liability/permanent-custody semantics remain enforced.
 
 
 ## Explicit atomic versus staged consent
@@ -266,6 +269,16 @@ python scripts/run_launch_lifecycle_integration.py \
 ```
 
 `--explicit-staged-fallback` is explicit operator consent for individually refused atomic fixture rows, not a default SDK fallback. The smoke keeps refused atomic evidence and requires admitted actual atomic and staged execution. The runner provides distinct source/fork endpoints and current operator constraints rather than rebinding deployment defaults.
+
+Every exported row has an explicit expected positive/negative outcome. Expected-positive
+rows must actually reach `Active`; staged ERC20/ERC404 coverage uses decoded token kinds.
+Expected-negative rows require numerical headroom/cap evidence for the actual indivisible
+step, a failed exact-ceiling receipt, or an authenticated terminal failing trace reaching
+`OutOfGas` at that ceiling. Opaque RPC/estimator reverts, advice suffixes and unrelated
+funding/ABI/oracle/identity failures abort rather than passing as gas refusals. If necessary,
+the smoke obtains receipt/trace evidence by replaying the same sequence on its separate
+owned fork and resetting the pinned head; source state and gas caps remain unchanged.
+Per-row `gasEvidence` records the measurements instead of hiding refusals in aggregates.
 
 For an already-owned disposable graph, the executable entrypoints are:
 
