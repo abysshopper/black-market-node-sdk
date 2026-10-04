@@ -43,23 +43,9 @@ export async function readLifecycleContract<T>(client: LifecycleRpcClient, to: A
   return decoded;
 }
 
-/** Empty selector reverts/returns are the legacy registry boundary, not a topology certificate. */
-export async function readLifecycleProfileTopology(client: LifecycleRpcClient, registry: Address, profileId: Hex, block: LifecycleBlock): Promise<ProfileTopologyV1 | undefined> {
-  const data = encodeFunctionData({ abi: lifecycleRegistryAbi, functionName: "profileTopology", args: [profileId] });
-  let result: Hex;
-  try {
-    result = rpcHex(await lifecycleRpc(client, "eth_call", [{ to: registry, data }, toHex(block.number)]), "profile topology");
-  } catch (failure) {
-    let current: unknown = failure;
-    while (current !== null && typeof current === "object") {
-      const error = current as { data?: unknown; message?: unknown; cause?: unknown };
-      if (error.data === "0x" || (error.data === undefined && typeof error.message === "string" && /execution reverted/i.test(error.message))) return undefined;
-      current = error.cause;
-    }
-    throw failure;
-  }
-  if (result === "0x") return undefined;
-  const topology = decodeFunctionResult({ abi: lifecycleRegistryAbi, functionName: "profileTopology", data: result });
+/** A reviewed registry must supply topology; missing selectors never certify a profile. */
+export async function readLifecycleProfileTopology(client: LifecycleRpcClient, registry: Address, profileId: Hex, block: LifecycleBlock): Promise<ProfileTopologyV1> {
+  const topology = await readLifecycleContract<{ hookTopology: number; configVersion: number; hookDeployer: Address; hookCreationCodeHash: Hex }>(client, registry, lifecycleRegistryAbi, "profileTopology", [profileId], block);
   if (topology.hookTopology !== 0 && topology.hookTopology !== 1 && topology.hookTopology !== 2) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Registry returned an unsupported hook topology");
   return { ...topology, hookTopology: topology.hookTopology };
 }

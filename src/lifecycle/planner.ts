@@ -1,8 +1,8 @@
 import { encodeAbiParameters, encodeFunctionData, keccak256, toHex, zeroAddress, type Address, type Hex } from "viem";
 import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleRegistryAbi } from "./abi.js";
 import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecycleMode, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LifecycleVenue, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, LIFECYCLE_MULTI_POSITION_CAPABILITY, LIFECYCLE_REQUIRED_CAPABILITIES, marketIdentityV1Components, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1, type MarketIdentityV1 } from "./schema.js";
-import { ABYSS_LIFECYCLE_CONFIG_SCHEMA, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment, validateLifecycleMarketIdentity, V4_LIFECYCLE_CONFIG_SCHEMA, V4_LIFECYCLE_PROFILE_ID } from "./progress.js";
-import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, hasLifecycleV4HookPermissions, minePoolBoundHookSalt, predictPoolBoundHookAddress, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_PROFILE_ID, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
+import { ABYSS_LIFECYCLE_CONFIG_SCHEMA, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment, validateLifecycleMarketIdentity } from "./progress.js";
+import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, hasLifecycleV4HookPermissions, minePoolBoundHookSalt, predictPoolBoundHookAddress, validateReviewedV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
 import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity } from "./rpc.js";
 import { simulateLaunchTransactions } from "./simulation.js";
 import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PoolBoundLifecyclePreparationProgress, type SimulateLaunchPlanOptions } from "./types.js";
@@ -36,14 +36,11 @@ function validatePlanShape(plan: LaunchPlanV1): void {
   for (const market of plan.markets) {
     if (market.tokenBudget <= 0n || market.config === "0x" || (market.config.length - 2) / 2 > 16384) throw new LifecyclePlanningError("INVALID_MARKET", "Each market needs a positive token budget and bounded versioned config");
     let config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig | undefined;
-    if (market.profileId.toLowerCase() === V4_LIFECYCLE_PROFILE_ID.toLowerCase()) {
-      if (market.configVersion !== 2) throw new LifecyclePlanningError("INVALID_MARKET", "Shared V4 markets retain exact config version 2");
-      config = decodeV4LifecycleMarketConfig(market.config);
-    } else if (market.profileId.toLowerCase() === V4_POOL_BOUND_LIFECYCLE_PROFILE_ID.toLowerCase()) {
-      if (market.configVersion !== 3) throw new LifecyclePlanningError("INVALID_MARKET", "Pool-bound V4 markets require exact config version 3");
-      config = decodePoolBoundV4LifecycleMarketConfig(market.config);
-    }
+    if (market.configVersion === 2 || market.configVersion === 3) throw new LifecyclePlanningError("UNSUPPORTED_CONFIG_VERSION", "Old V4 config versions 2 and 3 are not supported; encode reviewed terms explicitly using version 4 or 5");
+    if (market.configVersion === 4) config = decodeV4LifecycleMarketConfig(market.config);
+    else if (market.configVersion === 5) config = decodePoolBoundV4LifecycleMarketConfig(market.config);
     if (config !== undefined) {
+      if (config.profileId.toLowerCase() !== market.profileId.toLowerCase()) throw new LifecyclePlanningError("REVIEWED_TERMS_MISMATCH", "Inner config profile differs from the committed market profile");
       const quote = market.quoteAsset.toLowerCase();
       if (v4Quotes.has(quote)) throw new LifecyclePlanningError("DUPLICATE_V4_QUOTE", "Only one V4 market per quote asset is allowed across shared and pool-bound offerings; put multiple positions in that market");
       v4Quotes.add(quote);
@@ -139,7 +136,9 @@ async function validatePendingInputs(client: LifecycleRpcClient, planned: Planne
       if (market.quoteAsset.toLowerCase() === planned.predictedToken.toLowerCase() || !plan.feeAssets.some((policy) => policy.asset.toLowerCase() === market.quoteAsset.toLowerCase())) throw new LifecyclePlanningError("INVALID_MARKET", "Each distinct quote requires its committed fee policy");
       const schema = profile.registration.configSchema.toLowerCase();
       const config = schema === V4_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? decodeV4LifecycleMarketConfig(market.config) : schema === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? decodePoolBoundV4LifecycleMarketConfig(market.config) : schema === ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? decodeAbyssLifecycleMarketConfig(market.config) : undefined;
-      if (config === undefined || config.positions.length === 0 || config.positions.length > 32 || positionCount + config.positions.length > 32) throw new LifecyclePlanningError("INVALID_POSITION_COUNT", "A launch commits at most 32 positive positions across every market/venue");
+      if (config === undefined) throw new LifecyclePlanningError("UNSUPPORTED_SCHEMA", `Unsupported lifecycle config schema ${profile.registration.configSchema}`);
+      if ("developerFeeBps" in config) validateReviewedV4LifecycleMarket({ market, config, profile, token: planned.predictedToken });
+      if (config.positions.length === 0 || config.positions.length > 32 || positionCount + config.positions.length > 32) throw new LifecyclePlanningError("INVALID_POSITION_COUNT", "A launch commits at most 32 positive positions across every market/venue");
       positionCount += config.positions.length;
       const rewards = progress.canonical.rewards === zeroAddress && plan.token.rewardMode === LifecycleRewardMode.Dividends ? planned.predictedToken : progress.canonical.rewards;
       if ("treasury" in config && rewards !== zeroAddress && config.treasury.toLowerCase() === rewards.toLowerCase() && config.hookFeePips !== 0 && config.protocolFeeDenominator !== 0) throw new LifecyclePlanningError("INVALID_FEE_POLICY", "Hook protocol treasury cannot be the launch rewards contract");
@@ -247,9 +246,10 @@ export async function preparePoolBoundLifecyclePlan(options: {
   for (let marketIndex = 0; marketIndex < plan.markets.length; marketIndex += 1) {
     if (signal?.aborted) throw Object.assign(new Error("Pool-bound lifecycle preparation cancelled"), { name: "AbortError" });
     const market = plan.markets[marketIndex];
-    if (market === undefined || market.profileId.toLowerCase() !== V4_POOL_BOUND_LIFECYCLE_PROFILE_ID.toLowerCase()) continue;
+    if (market === undefined) throw new LifecyclePlanningError("INVALID_PLAN", "Market missing from ordered plan");
     const profile = profiles.find((item) => item.id.toLowerCase() === market.profileId.toLowerCase());
-    if (profile === undefined || !profile.admitted || profile.topology.hookTopology !== 2) throw new LifecyclePlanningError("UNCERTIFIED_TOPOLOGY", profile?.reason ?? "Pool-bound market is not an admitted certified lifecycle profile");
+    if (profile === undefined || !profile.admitted) throw new LifecyclePlanningError("INELIGIBLE_PROFILE", profile?.reason ?? "Market is not an admitted lifecycle profile");
+    if (profile.topology.hookTopology !== 2) continue;
     const metadata = await readPoolBoundHookDeployment({ client, plan, marketIndex }, initialBlock);
     const mined = await minePoolBoundHookSalt({
       deployer: metadata.deployer, initCodeHash: metadata.initCodeHash, startSalt: BigInt(metadata.salt), signal,
@@ -264,7 +264,7 @@ export async function preparePoolBoundLifecyclePlan(options: {
   if (finalFactory.tokenFactory.toLowerCase() !== initialFactory.tokenFactory.toLowerCase() || finalFactory.tokenFactoryCodeHash.toLowerCase() !== initialFactory.tokenFactoryCodeHash.toLowerCase()) throw new LifecyclePlanningError("TOKEN_FACTORY_BINDING", "Token factory address or runtime code changed while mining the market-bound deployment");
   const finalToken = await readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], finalBlock);
   if (finalToken.toLowerCase() !== initialToken.toLowerCase()) throw new LifecyclePlanningError("TOKEN_IDENTITY", "Token prediction changed while mining the market-bound deployment");
-  const finalProfiles = await readLifecycleProfiles({ client, orchestrator: plan.orchestrator, profileIds: deployments.length === 0 ? [] : [V4_POOL_BOUND_LIFECYCLE_PROFILE_ID] }, finalBlock);
+  const finalProfiles = await readLifecycleProfiles({ client, orchestrator: plan.orchestrator, profileIds: [...new Set(deployments.map((deployment) => plan.markets[deployment.marketIndex]?.profileId).filter((id): id is Hex => id !== undefined))] }, finalBlock);
   for (const deployment of deployments) {
     if (signal?.aborted) throw Object.assign(new Error("Pool-bound lifecycle preparation cancelled"), { name: "AbortError" });
     const market = plan.markets[deployment.marketIndex];
@@ -306,7 +306,7 @@ export async function planLaunch(options: PlanLaunchOptions): Promise<PlannedLau
   if (!progress.confirmationSafe || receiptsPending) {
     const hookDeployments: LifecyclePoolBoundHookDeployment[] = [];
     for (let marketIndex = 0; marketIndex < plan.markets.length; marketIndex += 1) {
-      if (plan.markets[marketIndex]?.profileId.toLowerCase() === V4_POOL_BOUND_LIFECYCLE_PROFILE_ID.toLowerCase()) hookDeployments.push({ marketIndex, ...await readPoolBoundHookDeployment({ client, plan, marketIndex }, block) });
+      if (plan.markets[marketIndex]?.configVersion === 5) hookDeployments.push({ marketIndex, ...await readPoolBoundHookDeployment({ client, plan, marketIndex }, block) });
     }
     // Receipt/nonce gates never silently drop the finalized deployment baseline on reload.
     const waiting = { ...placeholder, confidence: "stateful" as const, reason: !progress.confirmationSafe ? "Canonical confirmed progress/account nonce has not caught up with head or pending transactions; wait for the selected confirmation depth" : "Wait for canonical receipt confirmations or resolve replacement before requesting another transaction" };

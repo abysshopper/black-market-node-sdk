@@ -2,7 +2,7 @@
 
 # @black-market/sdk
 
-Canonical TypeScript SDK for the Black Market protocol on [Robinhood Chain](https://robinhoodchain.blockscout.com) — Abyss DEX infrastructure, Unified Launcher deployer flows, optional launch API integration, and the lending market.
+Canonical TypeScript SDK for Black Market on [Robinhood Chain](https://robinhoodchain.blockscout.com): reviewed multi-market launch planning and recovery, stable-author fee APIs, optional signed metadata integration, Abyss DEX infrastructure and lending.
 
 Built on [viem](https://viem.sh). ESM-only, Node 20+.
 
@@ -34,86 +34,60 @@ const wallet = createProtocolWalletClient({
 });
 ```
 
-### Current Unified Launcher launches
+### Reviewed multi-market launches
+
+The root package and browser-safe `@black-market/sdk/lifecycle` entrypoint expose the same current launch API. Select profiles from the explicit reviewed registry; template IDs are not SDK allowlists. Shared V4 uses config **4**, pool-bound V4 uses config **5**, and Abyss retains its canonical schema. Both V4 configurations explicitly commit `profileId`, `termsDigest`, stable `developerBeneficiary` and creator-selected `developerFeeBps`; bound config also commits `hookSalt` immediately before `profileId`. There is no default developer rate, conversion from old configs or old launcher compatibility path.
 
 ```ts
 import {
-  buildUnifiedLaunchCalldata,
-  getAddresses,
-  toUnifiedLaunchRequest,
-  toUniswapV4PoolConfig,
-} from "@black-market/sdk";
-
-const addresses = getAddresses(4663);
-const v4Config = toUniswapV4PoolConfig(poolRecipe, launchSqrtPriceX96, tickSpacing, true);
-const request = toUnifiedLaunchRequest(atomicRequest, { kind: "uniswap-v4-v3", config: v4Config });
-const calldata = buildUnifiedLaunchCalldata(request);
-// Submit calldata to addresses.unifiedLauncher with zero native value for V4.
-```
-
-`toUnifiedLaunchRequest` supports the current Abyss and optimized `uniswap-v4-v3` routes. The V4 route keeps its ten-field `V4PoolConfigV2` wire format; it does not accept a `protocolBps` field. Read the pool registry before submitting so a route is enabled, and obtain the selected fee's tick spacing from the current Abyss factory.
-
-`LaunchApiClient` optionally follows the launch application's signed metadata, image-upload, and transaction-publication session flow. It never signs on the caller's behalf; use `launchAttributionTypes` and `canonicalLaunchMetadataHash` with a wallet client before creating a session.
-
-`LaunchApiClient` works with browser-native `fetch` and timers as well as Node 20+. Its existing exponential retry waits use `globalThis.setTimeout`, so importing the client does not require Node timer modules in a browser bundle.
-
-`buildAtomicLaunchCalldata` remains available only for replaying retired Atomic Launch Factory fixtures. It must not be submitted to the current mainnet launcher.
-
-### Versioned multi-market lifecycle (opt-in)
-
-The lifecycle stack is separate from the current Unified Launcher and fee-only V1. It requires explicit chain/core/creator identity, immutable approved market profiles, and creator-selected `"atomic"` or `"staged"` execution. Shared V4 remains supported with profile `keccak256("black-market.v4-lifecycle-market.v3")` and config 2; additive pool-bound V4 uses profile `keccak256("black-market.v4-pool-bound-lifecycle-market.v1")` and config 3 with `hookSalt` immediately before positions. Existing deployed addresses and defaults are unchanged.
-
-```ts
-import {
-  planLaunch, buildNextTransaction, readLaunchProgress,
-  preparePoolBoundLifecyclePlan, buildPoolBoundHookDeploymentTransaction,
-  V4_POOL_BOUND_LIFECYCLE_PROFILE_ID,
+  readLifecycleProfiles, preparePoolBoundLifecyclePlan, planLaunch,
+  readLaunchProgress, buildNextTransaction,
 } from "@black-market/sdk/lifecycle";
 
-// plan contains reviewed bound config-3 markets (or unchanged shared config-2 markets).
-const finalized = await preparePoolBoundLifecyclePlan({
-  client, plan,
-  onProgress: ({ marketIndex, attempts }) => console.log(marketIndex, attempts.toString()),
-});
-// Optional calldata only; omit this and preparation deploys the exact typed hook.
-const boundMarketIndex = finalized.plan.markets.findIndex(
-  (market) => market.profileId === V4_POOL_BOUND_LIFECYCLE_PROFILE_ID,
-);
-if (boundMarketIndex >= 0) {
-  // Before that hook has been deployed; application separately admits any write.
-  const predeploy = await buildPoolBoundHookDeploymentTransaction({
-    client, plan: finalized.plan, marketIndex: boundMarketIndex,
-  });
-  console.log(predeploy);
-}
+const profiles = await readLifecycleProfiles({ client, orchestrator: plan.orchestrator });
+// Select admitted schema/topology and copy that profile's exact envelope/terms into the plan.
+const finalized = await preparePoolBoundLifecyclePlan({ client, plan });
 const planned = await planLaunch({
-  client, account, plan: finalized.plan, mode: "atomic", limits,
+  client, account: finalized.plan.creator, plan: finalized.plan,
+  mode: "staged", limits, fork, // execution mode is explicit; no automatic fallback
 });
-// A refusal never silently switches to staged. Obtain separate user consent to replan.
 const progress = await readLaunchProgress({ client, planned, receipts });
-const next = await buildNextTransaction({ client, planned, receipts, limits });
-// Submit next only when present, binding its exact value, gas and gasPrice.
+const next = await buildNextTransaction({ client, planned, receipts, limits, fork });
+// No SDK operation above signs or writes to the source chain.
+// A separately authenticated wallet may submit only the exact admitted next envelope.
 ```
 
-The browser-safe subpath owns exact schema/venue encoding, sequential stateful simulation, current chain/RPC/account/calldata admission and confirmation-bound receipt/reorg recovery. Unknown constraints or an unavailable stateful backend prevent submission. Staged preparation creates only empty pools; mint/lock/all ordered buys/public opening remain one indivisible activation. Both canonical venues support atomic and staged execution with the same capability mask; preactivation safety comes from the launch token's transfer restrictions plus activation-time canonical opening-state verification, not a pool gate. Read the [lifecycle SDK guide](docs/launch-lifecycle.md) for actual limit-source requirements, a separate disposable fork, funding/cancellation semantics and real local smoke commands.
+Registry authority, runtime/dependency hashes, reviewed bounds, frozen author consent, canonical oracle configuration, exact code chunks/initcode/constructor and deployer-recorded runtime provenance are verified. Hook address bits alone are not proof. One V4 market per quote is enforced across templates and topologies; an Abyss market may use the same quote.
 
-The [selection/finalization examples](docs/launch-lifecycle.md#select-freeze-and-finalize-a-bound-market) use real public codecs, cancellable offchain salt mining and exact factory/initcode/constructor provenance. Freeze domain, token identity and economics before mining; submit the returned plan through the normal planner, which binds the reviewed token factory and each bound deployment again before writes. One V4 market per quote is enforced across offerings/fees/salts; all positions for that quote share one root, different bound quotes have different roots, and Abyss may share the same quote. Creator cancellation of a pending launch uses the stored commitment, not fresh market/profile admission.
+Staged execution splits **only empty infrastructure preparation**. Minting, permanent locking, every ordered buy and public opening remain one indivisible activation. The planner uses sequential `eth_simulateV1` or an explicitly supplied separate disposable loopback fork. Unknown chain/RPC/account/calldata limits or unavailable stateful execution prevent transaction admission. Recovery rereads confirmation-bound canonical state and receipt/replacement/reorg evidence, not a cached step index; pending cancellation does not require readmission of retired profiles.
 
-The current graph offers shared V4, pool-bound V4 and Abyss (three adapters/six profiles). Its manifest `executionLimits.provenance` records an explicit controlled-local 32M Anvil policy with separate 1,000-bps headroom, not full Nitro or proven live RPC/account ceilings. Pinned Robinhood ArbGasInfo getters both reported 32M; live RPC/account ceilings remain unknown. Prior 16M archives and old SDK/browser counts in the guide are historical local stress/restoration runs, not final pool-bound Python/UI proof or production constraints. No gas savings are inferred from offchain mining (shared already used it).
+Read the [lifecycle guide](docs/launch-lifecycle.md) for exact codecs, profile discovery, execution-limit provenance, salt finalization, simulation, wallet-domain checks, recovery and V3 fee accounting.
 
-**Pool-bound is a topology choice, not a measured gas optimization.** In the historical controlled-local **synthetic multi-buy stress** measurement, successful **V4-only** bound launches cost approximately **5.12–5.23 million gas more per V4 root** than their shared counterparts. The original mixed two-quote pairs instead added approximately **10.82 million gas across two V4 roots** (about **5.41 million per root**); the V4-only range is not universal. Bound cost more in every successful matched stress pair. V4-only q1/q2/q3 plans contain 3/4/5 opening buys, mixed plans 4/6/8; none is an exactly-one-opening-swap product gas comparison. The hook's **24,564-byte runtime / 4,912,800-gas code deposit** is already included in preparation/atomic receipts; do not add it twice. See the durable [historical paired gas results and qualifications](../black-market/docs/launch-lifecycle-v1-operations.md#measured-sharedbound-gas-on-the-captured-graph) for setup, launch, maximum-transaction and marginal costs; refused atomic rows have no fabricated complete-launch totals. These are controlled EVM measurements, not Nitro/live RPC/account admission or actual Python/browser verification.
+### Stable authors and V3 fees
 
-The completed [non-UI one-opening-swap proof](../black-market/docs/launch-lifecycle-v1-operations.md#completed-one-opening-swap-topology-proof)
-now covers all eight named cores on shared/config2 and pool-bound/config3, with their
-full inventory/tail and one actual V4 pool. **All32 catalogue rows reached Active in
-each actual SDK**; the Node entrypoint exercised 61 requested fixtures / 71 observations
-(61 Active including ten explicitly consented same-plan staged alternates, ten terminal
-OOG stress refusals), and its real chain suite passed **28 TAP entries including its parent**.
-All16 matched gas pairs completed; bound cost **5,154,553–5,185,959 more gas per pool**
-in this one-swap workload. Per-fixture snapshot/funding restoration prevents cumulative
-creator depletion without top-ups. Gas/Node and the fresh Python/reorg recovery are
-distinct retained runs, not a claimed single uninterrupted both-SDK success.
-No UI or live broadcast was performed; live provider/account admission remains unproven.
+```ts
+import {
+  readLifecycleAuthor, readAuthorHubs, readDeveloperFees,
+  buildSetAuthorPayoutTransaction, buildClaimDeveloperFeesTransaction,
+  buildClaimDeveloperFeesPageTransaction, decodeDeveloperClaimReceipt,
+} from "@black-market/sdk";
+
+const author = await readLifecycleAuthor({ client, registry, authorId });
+const hubs = await readAuthorHubs({ client, registry, authorId, offset: 0n, limit: 100n });
+const fees = await readDeveloperFees({ client, registry, authorId, hub });
+const unsigned = await buildClaimDeveloperFeesPageTransaction({
+  client, registry, authorId, offset: 0n, limit: 10n, assets: [],
+  account, chainId,
+});
+// Execution is caller-owned. After canonical confirmation:
+const result = decodeDeveloperClaimReceipt({ receipt, transaction: unsigned });
+// result.cursorComplete is independent from result.paymentsSucceeded.
+// Preserve result.retryableResults; advancing the discovery cursor does not pay failed rows.
+```
+
+`authorId` is the immutable economic beneficiary, while `authorPayout(authorId)` is the live payout/controller. The admin or current controller may build an unsigned routing update; direct/page claims have no caller-selected recipient. Hub authentication is anchored to `registry.core -> core.feeFactory -> factory.isHub`, never attacker hub self-reports. V3 ordinary harvest uses the exported `lifecycleFeeHubAbi` and **no-argument `claimAndSplit()`**, including current source-specific developer allocations and reserved owner/developer credits.
+
+`LaunchApiClient` remains the optional signed metadata/image-upload/transaction-publication client. It does not sign, broadcast or choose launch economics. Its browser-native `fetch` and `globalThis.setTimeout` implementation remains browser-safe.
 
 ### Networks
 
@@ -125,32 +99,30 @@ No UI or live broadcast was performed; live provider/account admission remains u
 
 `getAddresses()` defaults to the workbench chain (`46631`); pass `4663` for the canonical mainnet deployment or `31337` for a local Anvil fork.
 
-Deployment addresses can be overridden with environment variables, evaluated once at module load. Where an override applies, the bare name wins, then `VITE_`, then `NEXT_PUBLIC_` (e.g. `ABYSS_ROUTER` > `VITE_ABYSS_ROUTER` > `NEXT_PUBLIC_ABYSS_ROUTER`). Overrides apply to the launch-application addresses on every chain, to the Abyss infrastructure addresses on `31337` and `46631` (mainnet `4663` always uses the canonical deployment), and to the lending-market addresses on `31337` (bare + `VITE_` + `NEXT_PUBLIC_`) and `46631` (`VITE_`/`NEXT_PUBLIC_` only). The workbench RPC URL reads `VITE_RPC_URL`, then `NEXT_PUBLIC_RPC_URL`, then `RPC_URL`.
+Deployment addresses can be overridden with environment variables, evaluated once at module load. Bare names win, then `VITE_`, then `NEXT_PUBLIC_`. Reviewed launch addresses (`LAUNCH_ORCHESTRATOR`, `LAUNCH_IMPLEMENTATION_REGISTRY`, `LAUNCH_FEE_OWNER_REGISTRY`) are explicit on every chain and default to zero; old launcher addresses are not fallback targets. Abyss infrastructure overrides apply on `31337`/`46631` (mainnet `4663` retains its canonical DEX deployment). Lending overrides apply on `31337` (all three prefixes) and `46631` (`VITE_`/`NEXT_PUBLIC_` only). The workbench RPC URL reads `VITE_RPC_URL`, then `NEXT_PUBLIC_RPC_URL`, then `RPC_URL`.
 
 ## Package layout
 
 | Module         | Contents                                                              |
 | -------------- | --------------------------------------------------------------------- |
-| `addresses`    | Chain definitions, current deployer/route addresses, env overrides    |
+| `addresses`    | Chain definitions, explicit reviewed launch addresses and env overrides |
 | `abis`         | Lending-market ABIs (pool, data providers, lens, oracle, vesting, …)  |
-| `abyss`        | Abyss DEX ABIs and launch-module ABIs, pool profiles, fee tiers       |
-| `auction`      | Atomic launch supply constants and paired-asset (quote) catalog       |
-| `launch`       | Historical Atomic recipes and fixture calldata                        |
-| `deployer`     | Unified Launcher ABI, current launch request and V4 route encoders    |
+| `abyss`        | Unchanged Abyss DEX ABIs, pool profiles, fee tiers and wrapped-native funding |
+| `auction`      | Display supply and paired-asset metadata catalog (not an admission list) |
+| `launch`       | Pure pool geometry and initial-buy estimates (not execution proof) |
 | `launch-api`   | Optional signed launch metadata, upload, and publication API client   |
-| `lifecycle`    | Opt-in lifecycle schema/ABIs, explicit planner, stateful proof and recovery (`@black-market/sdk/lifecycle`) |
+| `lifecycle`    | Reviewed schemas/ABIs, registry admission, planner/simulation/recovery and author APIs |
 | `live`         | Reserve/user position normalization from lens & data-provider rows    |
 | `format`       | RAY/WAD math, health-factor and units formatting helpers              |
 | `client`       | viem public/wallet client factories                                   |
 
 ## Examples
 
-Runnable scripts live in [`examples/`](examples/). `quickstart.mjs` builds a fresh launch request offline, and `abby-launch.mjs` reconstructs the successful [Abby mainnet launch](https://robinhoodchain.blockscout.com/tx/0xd0dcae27e9ec2f7fb6e2304d7b1d739fd2f45f91d1eb5e762cdfcf01819fb837) byte-for-byte without signing or broadcasting.
+Runnable scripts live in [`examples/`](examples/). `quickstart.mjs` demonstrates current config-4 commitment bytes and pure math offline. `launch.mjs` reviews an explicit saved plan without signatures or source-chain writes. The actual lifecycle smoke requires separately authorized owned loopback fixtures.
 
 ```sh
 pnpm build
 node examples/quickstart.mjs
-node examples/abby-launch.mjs
 ```
 
 ## Development

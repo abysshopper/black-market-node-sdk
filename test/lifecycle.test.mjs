@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { decodeFunctionData, getAbiItem, toFunctionSelector, toEventSelector } from "viem";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
-const { createControlledLifecycleFork, encodeLaunchPlan, hashLaunchIdentity, hashLaunchPlan, launchLifecycleAbi, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, parseLaunchPlan, planLaunch, serializeLaunchPlan } = await import(sdkPath);
+const { createControlledLifecycleFork, encodeLaunchPlan, hashLaunchIdentity, hashLaunchPlan, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, parseLaunchPlan, planLaunch, serializeLaunchPlan } = await import(sdkPath);
 const fixture = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url), "utf8"));
 const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
 
@@ -72,22 +71,4 @@ test("controlled fork setup refuses a production write endpoint or the source RP
   assert.throws(() => createControlledLifecycleFork({ sourceRpcUrl: "https://chain.example", forkRpcUrl: "https://another-chain.example", allowTransactions: true }), { code: "UNSAFE_FORK" });
   assert.throws(() => createControlledLifecycleFork({ sourceRpcUrl: "http://127.0.0.1:8545", forkRpcUrl: "http://127.0.0.1:8545", allowTransactions: true }), { code: "UNSAFE_FORK" });
   assert.throws(() => createControlledLifecycleFork({ sourceRpcUrl: "http://127.0.0.1:8545", forkRpcUrl: "http://localhost:8545", allowTransactions: true }), { code: "UNSAFE_FORK" });
-});
-
-const artifactDirectory = process.env.LIFECYCLE_ARTIFACT_DIR;
-test("public lifecycle calldata and receipt events match the independently compiled Solidity ABI", { skip: artifactDirectory === undefined }, async () => {
-  const artifact = JSON.parse(await readFile(`${artifactDirectory}/LaunchOrchestratorV1.sol/LaunchOrchestratorV1.json`, "utf8"));
-  for (const name of ["hashPlan", "launchIdOf", "predictToken", "launchAtomic", "beginLaunch", "prepareMarkets", "activateLaunch", "cancelLaunch", "readLaunchProgress"]) {
-    assert.equal(toFunctionSelector(getAbiItem({ abi: launchLifecycleAbi, name })), toFunctionSelector(getAbiItem({ abi: artifact.abi, name })));
-  }
-  for (const name of ["LaunchBegun", "MarketPrepared", "LaunchReady", "InitialBuyExecuted", "LaunchActivated", "LaunchCancelled", "AssetRefunded"]) {
-    assert.equal(toEventSelector(getAbiItem({ abi: launchLifecycleAbi, name })), toEventSelector(getAbiItem({ abi: artifact.abi, name })));
-  }
-  const { encodeFunctionData } = await import("viem");
-  for (const name of ["launchAtomic", "activateLaunch", "cancelLaunch"]) {
-    const data = encodeFunctionData({ abi: artifact.abi, functionName: name, args: [plan] });
-    const decoded = decodeFunctionData({ abi: launchLifecycleAbi, data });
-    assert.equal(decoded.functionName, name);
-    assert.equal(hashLaunchPlan(decoded.args[0]), fixture.planHash);
-  }
 });

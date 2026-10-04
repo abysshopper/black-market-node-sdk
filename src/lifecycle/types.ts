@@ -1,7 +1,7 @@
 import type { Address, Hash, Hex } from "viem";
 import type {
   AdapterRegistrationV1, AssetFundingV1, LaunchExecutionMode, LaunchPlanV1, LaunchProgressV1,
-  MarketLiveStateV1, PreparedMarketV1, ProfileRegistrationV1, ProfileTopologyV1,
+  MarketLiveStateV1, PreparedMarketV1, ProfileRegistrationV1, ProfileTopologyV1, LaunchEnvelopeV2, LifecycleDeveloperTerms,
 } from "./schema.js";
 
 /** viem public clients or a raw JSON-RPC client; neither selects a transport. */
@@ -68,6 +68,7 @@ export type LifecycleFundingPrerequisite = {
 export type LifecycleProfile = {
   id: Hex; registration: ProfileRegistrationV1; adapter: AdapterRegistrationV1; topology: ProfileTopologyV1;
   venueKind: "uniswap-v4" | "abyss" | "unknown";
+  envelope?: LaunchEnvelopeV2; developerTerms?: LifecycleDeveloperTerms; protocolMaximumDeveloperFeeBps?: number;
   admitted: boolean; reason?: string;
 };
 export type LifecycleMarketProgress = {

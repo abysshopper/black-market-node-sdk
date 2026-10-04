@@ -20,8 +20,8 @@ const plan = {
     { asset: address(0x30), ownerBps: 6000, rewardsBps: 4000, burnBps: 0 },
   ],
   markets: [
-    { adapterId: bytes32(1), profileId: keccak256(stringToHex("black-market.v4-lifecycle-market.v3")), quoteAsset: address(0x20), tokenBudget: 4n * 10n ** 26n, configVersion: 2,
-      config: encodeAbiParameters(parseAbiParameters("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,(int24,int24,uint128,bytes32,uint256)[])"), [[2, 3000, 60, 2n ** 96n, 10000, 0, 6, address(0xa0), true, keccak256(encodeAbiParameters(parseAbiParameters("uint24,uint16"), [17, 4096])), [[60, 120, 10n ** 18n, bytes32(1), 10n ** 24n]]]]) },
+    { adapterId: bytes32(1), profileId: bytes32(11), quoteAsset: address(0x20), tokenBudget: 4n * 10n ** 26n, configVersion: 4,
+      config: encodeAbiParameters(parseAbiParameters("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"), [[4, 3000, 60, 2n ** 96n, 10000, 0, 6, address(0xa0), true, keccak256(encodeAbiParameters(parseAbiParameters("uint24,uint16"), [17, 4096])), bytes32(11), bytes32(21), address(0xd0), 250, [[60, 120, 10n ** 18n, bytes32(1), 10n ** 24n]]]]) },
     { adapterId: bytes32(2), profileId: bytes32(12), quoteAsset: address(0x30), tokenBudget: 5n * 10n ** 26n, configVersion: 1,
       config: encodeAbiParameters(parseAbiParameters("(uint8,uint24,bytes32,uint160,(int24,int24,uint128,uint256)[])"), [[3, 3000, bytes32(0x55), 2n ** 96n, [[60, 120, 10n ** 18n, 10n ** 24n]]]]) },
   ],
@@ -34,7 +34,7 @@ const plan = {
 };
 const domain = keccak256(stringToHex("BLACK_MARKET_LAUNCH_PLAN_V1"));
 const fixture = {
-  schema: "black-market.launch-lifecycle-commitment-vector.v1", description: "Portable economic wire vector, not a deployed launch. Both modes commit identical economics.",
+  schema: "black-market.launch-lifecycle-commitment-vector.v1", description: "Portable reviewed config-4/Abyss economic wire vector, not a deployed launch. Both modes commit identical economics.",
   plan, encodedPlan: encodeAbiParameters(parseAbiParameters(wire), [plan]),
   planHash: keccak256(encodeAbiParameters(parseAbiParameters(`bytes32 domain,${wire}`), [domain, plan])),
   launchId: keccak256(encodeAbiParameters(parseAbiParameters("uint256,address,address,uint256"), [plan.chainId, plan.orchestrator, plan.creator, plan.nonce])),

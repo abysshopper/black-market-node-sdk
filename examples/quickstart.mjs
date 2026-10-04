@@ -1,116 +1,52 @@
-// Offline quickstart for @black-market/sdk — no RPC, no wallet, no network.
-// Exercises the real public API the way a consumer would: addresses, launch
-// recipe derivation, calldata building, and RAY/WAD formatting helpers.
-//
-// Run after building the package (examples import the built dist output):
-//
-//   pnpm build && node examples/quickstart.mjs
-//
-// or simply:
-//
-//   pnpm examples
-
+// Offline current-wire example: no RPC, signature, deployment, publication or broadcast.
+import { toHex } from "viem";
 import {
-  AUCTION_QUOTE_OPTIONS,
-  AUCTION_SUPPLY,
-  ATOMIC_LAUNCH_DEADLINE_SECONDS,
-  ATOMIC_LAUNCH_ORACLE_CONFIG_ID,
-  buildAtomicLaunchCalldata,
-  DEFAULT_ATOMIC_LAUNCH_TARGET_MARKET_CAP_USD,
-  deriveAtomicLaunchBuySqrtPriceLimitX96,
-  deriveAtomicLaunchPoolRecipe,
-  estimateAtomicLaunchInitialBuy,
-  formatHealthFactor,
-  formatUnitsDisplay,
-  getAddresses,
-  getLaunchTemplate,
-  LAUNCH_TEMPLATES,
-  parseAmountToUnits,
-  rayAprToApyPercent,
-  robinhoodMainnet,
+  AUCTION_QUOTE_OPTIONS, AUCTION_SUPPLY, DEFAULT_LAUNCH_TARGET_MARKET_CAP_USD,
+  deriveLaunchPoolRecipe, deriveLaunchBuySqrtPriceLimitX96, estimateLaunchInitialBuy,
+  encodeV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, formatHealthFactor,
+  formatUnitsDisplay, getAddresses, hashLaunchPlan, LifecycleTokenKind, LifecycleRewardMode,
+  parseAmountToUnits, rayAprToApyPercent,
 } from "../dist/index.js";
 
-// 1. Canonical Robinhood Chain mainnet deployment addresses.
-const addresses = getAddresses(4663);
-console.log("network:", robinhoodMainnet.name, `(chain ${robinhoodMainnet.id})`);
-console.log("abyssRouter:", addresses.abyssRouter);
-console.log("unifiedLauncher:", addresses.unifiedLauncher);
-
-// 2. Pick a launch template and a paired (quote) asset from the catalog.
-const template = getLaunchTemplate("standard");
-console.log(`\ntemplate: ${template.label} (${LAUNCH_TEMPLATES.length} templates registered)`);
-const usdg = AUCTION_QUOTE_OPTIONS.find((option) => option.id === "USDG");
-console.log("paired asset:", usdg.name, `(${usdg.decimals} decimals, usdPeg=${usdg.usdPeg})`);
-
-// 3. Derive the one-sided Atomic launch position from a target FDV.
-//    USDG is a $1-pegged 6-decimal quote; the default target is $5,000 FDV.
-const recipe = deriveAtomicLaunchPoolRecipe({
-  pairedTokenDecimals: usdg.decimals,
-  pairedTokenUsdPriceX18: 10n ** 18n, // $1.00
-  targetMarketCapUsdX18: BigInt(DEFAULT_ATOMIC_LAUNCH_TARGET_MARKET_CAP_USD) * 10n ** 18n,
-  launchedTokenIsQuote: template.launchedTokenIsQuote,
-  fee: 3_000, // 0.30% Abyss fee tier
+const infrastructure = getAddresses(4663);
+console.log("canonical Abyss router:", infrastructure.abyssRouter);
+const quote = AUCTION_QUOTE_OPTIONS.find((asset) => asset.id === "USDG");
+if (!quote) throw new Error("USDG catalog metadata is missing");
+const recipe = deriveLaunchPoolRecipe({
+  pairedTokenDecimals: quote.decimals, pairedTokenUsdPriceX18: 10n ** 18n,
+  targetMarketCapUsdX18: BigInt(DEFAULT_LAUNCH_TARGET_MARKET_CAP_USD) * 10n ** 18n,
+  launchedTokenIsQuote: false, fee: 3000, supply: AUCTION_SUPPLY, tokenBudget: AUCTION_SUPPLY,
 });
-console.log("\nrecipe: launchTick", recipe.launchTick);
-console.log("  launchSqrtPriceX96:", recipe.launchSqrtPriceX96);
-console.log("  liquidity:", recipe.liquidity);
-console.log("  launchedTokenAmountMaximum:", formatUnitsDisplay(recipe.launchedTokenAmountMaximum, 18));
-
-// 4. Estimate the first buy and derive its exclusive price limit.
-const pairedTokenAmountIn = parseAmountToUnits("250", usdg.decimals); // 250 USDG
-const estimate = estimateAtomicLaunchInitialBuy({
-  launchSqrtPriceX96: recipe.launchSqrtPriceX96,
-  liquidity: recipe.liquidity,
-  pairedTokenAmountIn,
-  launchedTokenIsQuote: template.launchedTokenIsQuote,
-  fee: 3_000,
+const buyLimit = deriveLaunchBuySqrtPriceLimitX96({ launchSqrtPriceX96: recipe.launchSqrtPriceX96, launchedTokenIsQuote: false });
+const estimate = estimateLaunchInitialBuy({
+  launchSqrtPriceX96: recipe.launchSqrtPriceX96, liquidity: recipe.liquidity,
+  pairedTokenAmountIn: parseAmountToUnits("1", quote.decimals), launchedTokenIsQuote: false,
+  fee: 3000, sqrtPriceLimitX96: buyLimit,
 });
-console.log("\ninitial buy: 250 USDG ->", formatUnitsDisplay(estimate.launchedTokenAmountOut, 18), "tokens");
+console.log("pure geometric estimate (not execution proof):", formatUnitsDisplay(estimate.launchedTokenAmountOut, 18));
 
-const sqrtPriceLimitX96 = deriveAtomicLaunchBuySqrtPriceLimitX96({
-  launchSqrtPriceX96: recipe.launchSqrtPriceX96,
-  launchedTokenIsQuote: template.launchedTokenIsQuote,
+// Illustrative non-deployed identities demonstrate only the wire contract. Real profiles,
+// bounds and terms must come from readLifecycleProfiles on the explicit reviewed core.
+const creator = "0x1000000000000000000000000000000000000001";
+const profileId = toHex(11n, { size: 32 });
+const config = encodeV4LifecycleMarketConfig({
+  version: 4, lpFeePips: 3000, tickSpacing: 60, sqrtPriceX96: recipe.launchSqrtPriceX96,
+  hookFeePips: 10000, feeMode: 0, protocolFeeDenominator: 6, treasury: creator,
+  externalLiquidityDisabled: true, oracleConfigId: toHex(17n, { size: 32 }), profileId,
+  termsDigest: toHex(21n, { size: 32 }), developerBeneficiary: "0x2000000000000000000000000000000000000001",
+  developerFeeBps: 250, // explicit creator selection, never a SDK default
+  positions: [{ tickLower: recipe.tickLower, tickUpper: recipe.tickUpper, liquidity: recipe.liquidity,
+    salt: toHex(0n, { size: 32 }), maxTokenAmount: recipe.launchedTokenAmountMaximum }],
 });
-
-// 5. Encode the deployAndLaunch calldata for the AtomicLaunchFactory.
-const calldata = buildAtomicLaunchCalldata(
-  {
-    creator: "0x1000000000000000000000000000000000000001", // replace with your address
-    templateId: template.templateId,
-    templateVersion: template.version,
-    token: {
-      kind: template.tokenKinds[0],
-      name: "Example Token",
-      symbol: "EXMPL",
-      decimals: 18,
-      supply: AUCTION_SUPPLY,
-    },
-    pool: {
-      pairedToken: usdg.address,
-      launchedTokenIsQuote: template.launchedTokenIsQuote,
-      profile: template.poolProfiles[0],
-      fee: 3_000,
-      oracleConfigId: ATOMIC_LAUNCH_ORACLE_CONFIG_ID,
-      launchTick: recipe.launchTick,
-      liquidity: recipe.liquidity,
-      launchedTokenAmountMaximum: recipe.launchedTokenAmountMaximum,
-      pairedTokenAmountMaximum: recipe.pairedTokenAmountMaximum,
-    },
-    initialBuy: {
-      pairedTokenAmountIn,
-      launchedTokenAmountOutMinimum: 0n,
-      sqrtPriceLimitX96,
-    },
-    // Standard template + StandardOracle profile: both fee assets are active and
-    // must each total 10,000 bps; the template allows owner-only destinations.
-    launchedTokenFees: { ownerBps: 10_000, rewardsBps: 0, burnBps: 0 },
-    pairedTokenFees: { ownerBps: 10_000, rewardsBps: 0, burnBps: 0 },
-    deadline: BigInt(Math.floor(Date.now() / 1000) + ATOMIC_LAUNCH_DEADLINE_SECONDS),
-  },
-  0n,
-);
-console.log("\ncalldata:", calldata.slice(0, 42), `… (${(calldata.length - 2) / 2} bytes)`);
-
-// 6. Formatting helpers for lending-market reads.
-console.log("\n5% borrow APR in ray:", rayAprToApyPercent(5n * 10n ** 25n), "%");
+const plan = {
+  chainId: 4663n, orchestrator: "0x3000000000000000000000000000000000000001", creator, nonce: 1n,
+  token: { kind: LifecycleTokenKind.ERC20, rewardMode: LifecycleRewardMode.None, name: "Wire Example", symbol: "WIRE",
+    supply: AUCTION_SUPPLY, nftUnit: 0n, metadataURI: "", salt: toHex(1n, { size: 32 }), inventoryRecipient: creator, burnOnCancel: true },
+  funding: [], feeAssets: [{ asset: quote.address, ownerBps: 10000, rewardsBps: 0, burnBps: 0 }],
+  markets: [{ adapterId: toHex(1n, { size: 32 }), profileId, quoteAsset: quote.address,
+    tokenBudget: AUCTION_SUPPLY, configVersion: 4, config }], buys: [], deadline: 2000000000n, executorFeeBps: 100,
+};
+console.log("decoded explicit developer rate:", decodeV4LifecycleMarketConfig(config).developerFeeBps);
+console.log("offline economic commitment:", hashLaunchPlan(plan));
+console.log("5% borrow APR in ray:", rayAprToApyPercent(5n * 10n ** 25n));
 console.log("health factor 1.42:", formatHealthFactor(142n * 10n ** 16n));

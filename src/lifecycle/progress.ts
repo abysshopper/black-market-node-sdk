@@ -1,13 +1,11 @@
 import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData, keccak256, stringToHex, toHex, zeroAddress, zeroHash, type Address, type Hash, type Hex } from "viem";
-import { abyssLifecycleAdapterAbi, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleRegistryAbi, lifecycleV4CollectorFactoryAbi, lifecycleV4HookAbi, lifecycleV4LockerAbi, poolBoundLaunchFeeHookDeployerV1Abi, poolBoundLaunchFeeHookV1Abi, poolBoundV4LifecycleAdapterAbi, sharedV4LifecycleAdapterAbi } from "./abi.js";
-import { decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, hashPoolBoundV4MarketCommitment, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_PROFILE_ID, type PoolBoundHookParametersV1 } from "./markets.js";
-import { hashLaunchIdentity, hashLaunchPlan, launchProgressV1Components, LifecycleMode, LifecyclePhase, LifecycleVenue, LIFECYCLE_REQUIRED_CAPABILITIES, type AdapterRegistrationV1, type LaunchPlanV1, type LaunchProgressV1, type MarketIdentityV1, type MarketLiveStateV1, type PreparedMarketV1, type ProfileRegistrationV1, type ProfileTopologyV1 } from "./schema.js";
+import { abyssLifecycleAdapterAbi, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, reviewedV4FeeCollectorFactoryV1Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, reviewedPoolBoundHookDeployerV1Abi, reviewedSharedHookDeployerV1Abi, poolBoundLaunchFeeHookV1Abi, reviewedPoolBoundV4MarketAdapterV1Abi, reviewedSharedV4MarketAdapterV1Abi } from "./abi.js";
+import { decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, hashPoolBoundV4MarketCommitment, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, validateReviewedV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type PoolBoundHookParametersV1 } from "./markets.js";
+import { hashLaunchIdentity, hashLaunchPlan, hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, launchProgressV1Components, LifecycleMode, LifecyclePhase, LifecycleVenue, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MULTI_POSITION_CAPABILITY, type AdapterRegistrationV1, type LaunchPlanV1, type LaunchProgressV1, type MarketIdentityV1, type MarketLiveStateV1, type PreparedMarketV1, type ProfileRegistrationV1, type ProfileTopologyV1, type LaunchEnvelopeV2, type LifecycleDeveloperTerms } from "./schema.js";
 import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, readLifecycleContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
 import { LifecyclePlanningError, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleMarketProgress, type LifecycleProfile, type LifecycleReceiptReference, type LifecycleReceiptStatus, type LifecycleRpcClient, type PoolBoundHookDeployment, type ReadLaunchProgressOptions } from "./types.js";
 
 export const ABYSS_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint8,uint24,bytes32,uint160,(int24,int24,uint128,uint256)[])"));
-export const V4_LIFECYCLE_PROFILE_ID = keccak256(stringToHex("black-market.v4-lifecycle-market.v3"));
-export const V4_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,(int24,int24,uint128,bytes32,uint256)[])"));
 
 export async function predictLifecycleToken(options: { client: LifecycleRpcClient; plan: LaunchPlanV1 }): Promise<Address> {
   const block = await readLifecycleBlock(options.client);
@@ -24,76 +22,98 @@ async function readDependencyCode(client: LifecycleRpcClient, address: Address, 
   return code;
 }
 
-async function certifyLifecycleProfile(client: LifecycleRpcClient, orchestrator: Address, id: Hex, registration: ProfileRegistrationV1, adapter: AdapterRegistrationV1, recorded: ProfileTopologyV1 | undefined, block: LifecycleBlock, chainId: bigint): Promise<{ topology: ProfileTopologyV1; boundGraph?: BoundProfileGraph }> {
-  const shared = id.toLowerCase() === V4_LIFECYCLE_PROFILE_ID.toLowerCase() && registration.configSchema.toLowerCase() === V4_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() && adapter.configVersion === 2;
-  const bound = id.toLowerCase() === V4_POOL_BOUND_LIFECYCLE_PROFILE_ID.toLowerCase() && registration.configSchema.toLowerCase() === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() && adapter.configVersion === 3;
-  const abyss = registration.configSchema.toLowerCase() === ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() && adapter.configVersion === 1;
-  if (!shared && !bound && !abyss) throw new LifecyclePlanningError("UNSUPPORTED_PROFILE", "Profile ID, schema and implementation config version are not an exact supported lifecycle offering");
-  if (bound && recorded === undefined) throw new LifecyclePlanningError("UNCERTIFIED_TOPOLOGY", "Pool-bound profiles require registry-certified topology; legacy registry fallback is only for exact known shared/Abyss profiles");
-  const topology: ProfileTopologyV1 = recorded ?? { hookTopology: shared ? 1 : 0, configVersion: adapter.configVersion, hookDeployer: zeroAddress, hookCreationCodeHash: zeroHash };
-  if (topology.hookTopology !== (shared ? 1 : bound ? 2 : 0) || topology.configVersion !== adapter.configVersion || (!bound && (topology.hookDeployer !== zeroAddress || topology.hookCreationCodeHash !== zeroHash))) throw new LifecyclePlanningError("UNCERTIFIED_TOPOLOGY", "Certified topology does not match the exact profile/schema/version");
+async function certifyLifecycleProfile(client: LifecycleRpcClient, orchestrator: Address, registry: Address, id: Hex, registration: ProfileRegistrationV1, adapter: AdapterRegistrationV1, topology: ProfileTopologyV1, envelope: LaunchEnvelopeV2 | undefined, block: LifecycleBlock, chainId: bigint): Promise<{ topology: ProfileTopologyV1; boundGraph?: BoundProfileGraph }> {
+  const shared = registration.configSchema.toLowerCase() === V4_LIFECYCLE_CONFIG_SCHEMA.toLowerCase();
+  const bound = registration.configSchema.toLowerCase() === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA.toLowerCase();
+  const abyss = registration.configSchema.toLowerCase() === ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase();
+  if (!shared && !bound && !abyss) throw new LifecyclePlanningError("UNSUPPORTED_SCHEMA", `Unsupported lifecycle config schema ${registration.configSchema}`);
+  const version = shared ? 4 : bound ? 5 : 1;
+  if (adapter.configVersion !== version || topology.configVersion !== version || topology.hookTopology !== (shared ? 1 : bound ? 2 : 0)) throw new LifecyclePlanningError("UNCERTIFIED_TOPOLOGY", "Registry topology/version differs from the supported config schema");
   const implementationCode = await readDependencyCode(client, adapter.implementation, block);
   if (keccak256(implementationCode).toLowerCase() !== adapter.codeHash.toLowerCase()) throw new LifecyclePlanningError("PROFILE_CODE_HASH", "Adapter code hash differs from immutable registry approval");
   const authority = await readLifecycleContract<Address>(client, adapter.implementation, lifecycleAdapterAbi, "core", [], block);
   const digest = await readLifecycleContract<Hex>(client, adapter.implementation, lifecycleAdapterAbi, "dependencyDigest", [], block);
   if (authority.toLowerCase() !== orchestrator.toLowerCase() || digest.toLowerCase() !== registration.dependencyDigest.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Adapter authority or dependency digest differs from immutable registry approval");
   if (abyss) {
+    if (topology.hookDeployer !== zeroAddress || topology.hookCreationCodeHash !== zeroHash) throw new LifecyclePlanningError("UNCERTIFIED_TOPOLOGY", "Abyss does not admit a V4 hook deployment graph");
     const factory = await readLifecycleContract<Address>(client, adapter.implementation, abyssLifecycleAdapterAbi, "factory", [], block);
     const schema = await readLifecycleContract<Hex>(client, adapter.implementation, abyssLifecycleAdapterAbi, "CONFIG_SCHEMA", [], block);
-    const version = await readLifecycleContract<number>(client, adapter.implementation, abyssLifecycleAdapterAbi, "CONFIG_VERSION", [], block);
+    const actualVersion = await readLifecycleContract<number>(client, adapter.implementation, abyssLifecycleAdapterAbi, "CONFIG_VERSION", [], block);
     const domain = keccak256(stringToHex("BLACK_MARKET_ABYSS_CANONICAL_PROFILE_V1"));
     const known = [0, 1, 2, 3].some((variant) => keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "uint8" }], [domain, chainId, factory, variant])).toLowerCase() === id.toLowerCase());
-    if (!known || schema.toLowerCase() !== ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() || version !== 1 || registration.factory.toLowerCase() !== factory.toLowerCase() || registration.venue.toLowerCase() !== factory.toLowerCase() || registration.hook !== zeroAddress) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Abyss profile is not the exact canonical factory/variant/schema binding");
+    if (!known || schema.toLowerCase() !== ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() || actualVersion !== 1 || registration.factory.toLowerCase() !== factory.toLowerCase() || registration.venue.toLowerCase() !== factory.toLowerCase() || registration.hook !== zeroAddress) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Abyss profile is not the exact canonical factory/variant/schema binding");
     await readDependencyCode(client, factory, block);
     return { topology };
   }
-  const abi = bound ? poolBoundV4LifecycleAdapterAbi : sharedV4LifecycleAdapterAbi;
-  const profileId = await readLifecycleContract<Hex>(client, adapter.implementation, abi, "PROFILE_ID", [], block);
-  const schema = await readLifecycleContract<Hex>(client, adapter.implementation, abi, "CONFIG_SCHEMA", [], block);
-  const manager = await readLifecycleContract<Address>(client, adapter.implementation, abi, "poolManager", [], block);
-  const locker = await readLifecycleContract<Address>(client, adapter.implementation, abi, "locker", [], block);
-  const collectorFactory = await readLifecycleContract<Address>(client, adapter.implementation, abi, "collectorFactory", [], block);
-  if (profileId.toLowerCase() !== id.toLowerCase() || schema.toLowerCase() !== registration.configSchema.toLowerCase() || registration.factory !== zeroAddress || registration.venue.toLowerCase() !== manager.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "V4 profile does not certify the adapter's exact venue and schema");
-  const managerCode = await readDependencyCode(client, manager, block);
-  const lockerCode = await readDependencyCode(client, locker, block);
-  const collectorFactoryCode = await readDependencyCode(client, collectorFactory, block);
-  const launcher = await readLifecycleContract<Address>(client, locker, lifecycleV4LockerAbi, "launcher", [], block);
-  const lockerManager = await readLifecycleContract<Address>(client, locker, lifecycleV4LockerAbi, "poolManager", [], block);
-  if (launcher.toLowerCase() !== adapter.implementation.toLowerCase() || lockerManager.toLowerCase() !== manager.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Locker does not bind this exact registrar and PoolManager");
-  if (shared) {
-    const root = await readLifecycleContract<Address>(client, adapter.implementation, sharedV4LifecycleAdapterAbi, "hookRoot", [], block);
-    const rootCode = await readDependencyCode(client, root, block);
-    const registrar = await readLifecycleContract<Address>(client, root, lifecycleV4HookAbi, "registrar", [], block);
-    const rootManager = await readLifecycleContract<Address>(client, root, lifecycleV4HookAbi, "poolManager", [], block);
-    const oracleFactory = await readLifecycleContract<Address>(client, root, lifecycleV4HookAbi, "oracleFactory", [], block);
-    const oracleCode = await readDependencyCode(client, oracleFactory, block);
-    const expectedDigest = keccak256(encodeAbiParameters([
-      { type: "uint256" }, { type: "address" }, { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
-      { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
-    ], [chainId, orchestrator, manager, keccak256(managerCode), root, keccak256(rootCode), oracleFactory, keccak256(oracleCode), locker, keccak256(lockerCode), collectorFactory, keccak256(collectorFactoryCode)]));
-    if (!hasLifecycleV4HookPermissions(root) || registration.hook.toLowerCase() !== root.toLowerCase() || registrar.toLowerCase() !== adapter.implementation.toLowerCase() || rootManager.toLowerCase() !== manager.toLowerCase() || expectedDigest.toLowerCase() !== digest.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Shared V4 root and live immutable graph differ from profile certification");
-    return { topology };
+  if (envelope === undefined || envelope.topology !== topology.hookTopology || envelope.configVersion !== version || envelope.economicVersion !== 3 ||
+    envelope.flags !== 0n || envelope.callbackFlags !== 0x1afc || envelope.callbackMask !== 0x3fff ||
+    envelope.artifactDigest === zeroHash || envelope.reviewManifestDigest === zeroHash || envelope.termsDigest === zeroHash ||
+    hashLifecycleProfile(envelope).toLowerCase() !== id.toLowerCase() ||
+    hashLaunchBounds(envelope.bounds).toLowerCase() !== envelope.configBoundsDigest.toLowerCase() ||
+    envelope.capabilities !== registration.capabilities || envelope.capabilities !== adapter.capabilities ||
+    (envelope.capabilities & ~(LIFECYCLE_REQUIRED_CAPABILITIES | LIFECYCLE_ERC404_CAPABILITY | LIFECYCLE_MULTI_POSITION_CAPABILITY)) !== 0n) {
+    throw new LifecyclePlanningError("REVIEWED_ENVELOPE", "Frozen reviewed profile identity, bounds, capabilities or economic version differs from registry admission");
   }
-  const version = await readLifecycleContract<number>(client, adapter.implementation, poolBoundV4LifecycleAdapterAbi, "CONFIG_VERSION", [], block);
-  const oracleFactory = await readLifecycleContract<Address>(client, adapter.implementation, poolBoundV4LifecycleAdapterAbi, "oracleFactory", [], block);
-  const deployer = await readLifecycleContract<Address>(client, adapter.implementation, poolBoundV4LifecycleAdapterAbi, "hookDeployer", [], block);
-  const oracleCode = await readDependencyCode(client, oracleFactory, block);
-  const deployerCode = await readDependencyCode(client, deployer, block);
-  const coreCode = await readDependencyCode(client, orchestrator, block);
-  const creationCodeHash = await readLifecycleContract<Hex>(client, deployer, poolBoundLaunchFeeHookDeployerV1Abi, "creationCodeHash", [], block);
-  const chunk0 = await readLifecycleContract<Address>(client, deployer, poolBoundLaunchFeeHookDeployerV1Abi, "codeChunk0", [], block);
-  const chunk1 = await readLifecycleContract<Address>(client, deployer, poolBoundLaunchFeeHookDeployerV1Abi, "codeChunk1", [], block);
+  const b = envelope.bounds;
+  if (b.maximumHookFeePips >= 1000000 || b.maximumLpFeePips >= 1000000 || b.minimumTickSpacing < 1 ||
+    b.maximumTickSpacing > 32767 || b.minimumTickSpacing > b.maximumTickSpacing || b.maximumPositions < 1 || b.maximumPositions > 32 ||
+    b.maximumOracleCardinality < 2 || b.maximumOracleCardinality > 4096 || b.feeModeFlags === 0 || (b.feeModeFlags & ~3) !== 0 ||
+    envelope.protocolTreasury === zeroAddress || (envelope.protocolFeeDenominator !== 0 && (envelope.protocolFeeDenominator < 4 || envelope.protocolFeeDenominator > 10))) throw new LifecyclePlanningError("REVIEWED_BOUNDS", "Registry envelope has unsupported executable bounds");
+  const abi = bound ? reviewedPoolBoundV4MarketAdapterV1Abi : reviewedSharedV4MarketAdapterV1Abi;
+  for (const [getter, expected] of [["PROFILE_ID", id], ["CONFIG_SCHEMA", registration.configSchema], ["implementationRegistry", registry]] as const) {
+    const actual = await readLifecycleContract<Hex>(client, adapter.implementation, abi, getter, [], block);
+    if (actual.toLowerCase() !== expected.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Reviewed adapter metadata differs from registry certification");
+  }
+  if (await readLifecycleContract<number>(client, adapter.implementation, abi, "CONFIG_VERSION", [], block) !== version) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Reviewed adapter config version differs from certification");
+  const g = envelope.graph;
+  if (registration.factory !== zeroAddress || registration.venue.toLowerCase() !== g.manager.toLowerCase() || registration.hook.toLowerCase() !== g.hookRoot.toLowerCase() ||
+    topology.hookDeployer.toLowerCase() !== g.hookDeployer.toLowerCase() || topology.hookCreationCodeHash.toLowerCase() !== g.hookCreationCodeHash.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Reviewed venue/topology differs from the frozen envelope graph");
+  for (const [getter, expected] of [["poolManager", g.manager], ["hookRoot", g.hookRoot], ["oracleFactory", g.oracleFactory], ["locker", g.locker], ["collectorFactory", g.collectorFactory], ["hookDeployer", g.hookDeployer]] as const) {
+    const actual = await readLifecycleContract<Address>(client, adapter.implementation, abi, getter, [], block);
+    if (actual.toLowerCase() !== expected.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Live adapter dependency differs from the frozen reviewed graph");
+  }
+  for (const [address, expectedHash] of [[orchestrator, g.coreCodeHash], [g.manager, g.managerCodeHash], [g.oracleFactory, g.oracleFactoryCodeHash],
+    [g.locker, g.lockerCodeHash], [g.collectorFactory, g.collectorFactoryCodeHash], [g.collectorDeployer, g.collectorDeployerCodeHash],
+    [g.hookDeployer, g.hookDeployerCodeHash]] as const) {
+    if (keccak256(await readDependencyCode(client, address, block)).toLowerCase() !== expectedHash.toLowerCase()) throw new LifecyclePlanningError("PROFILE_CODE_HASH", "Live runtime differs from the frozen reviewed graph hash");
+  }
+  const collectorDeployer = await readLifecycleContract<Address>(client, g.collectorFactory, reviewedV4FeeCollectorFactoryV1Abi, "collectorDeployer", [], block);
+  const launcher = await readLifecycleContract<Address>(client, g.locker, lifecycleV4LockerAbi, "launcher", [], block);
+  const lockerManager = await readLifecycleContract<Address>(client, g.locker, lifecycleV4LockerAbi, "poolManager", [], block);
+  if (collectorDeployer.toLowerCase() !== g.collectorDeployer.toLowerCase() || launcher.toLowerCase() !== adapter.implementation.toLowerCase() ||
+    lockerManager.toLowerCase() !== g.manager.toLowerCase() || g.locker.toLowerCase() === g.manager.toLowerCase() || g.locker.toLowerCase() === g.hookRoot.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Reviewed collector or locker authority differs from the frozen graph");
+  const deployerAbi = shared ? reviewedSharedHookDeployerV1Abi : reviewedPoolBoundHookDeployerV1Abi;
+  const creationCodeHash = await readLifecycleContract<Hex>(client, g.hookDeployer, deployerAbi, "creationCodeHash", [], block);
+  const chunk0 = await readLifecycleContract<Address>(client, g.hookDeployer, deployerAbi, "codeChunk0", [], block);
+  const chunk1 = await readLifecycleContract<Address>(client, g.hookDeployer, deployerAbi, "codeChunk1", [], block);
   const chunk0Code = await readDependencyCode(client, chunk0, block);
   const chunk1Code = chunk1 === zeroAddress ? "0x" : await readDependencyCode(client, chunk1, block);
-  if (chunk0 === chunk1 || !chunk0Code.startsWith("0x00") || chunk0Code.length <= 4 || (chunk0Code.length - 2) / 2 > 24576 || (chunk1 !== zeroAddress && (!chunk1Code.startsWith("0x00") || chunk1Code.length <= 4 || (chunk1Code.length - 2) / 2 > 24576 || (chunk0Code.length - 2) / 2 !== 24576))) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Bound deployer creation-code chunks are not the immutable typed STOP-prefixed graph");
+  if (chunk0.toLowerCase() !== g.codeChunk0.toLowerCase() || chunk1.toLowerCase() !== g.codeChunk1.toLowerCase() || chunk0.toLowerCase() === chunk1.toLowerCase() ||
+    !chunk0Code.startsWith("0x00") || chunk0Code.length <= 4 || (chunk0Code.length - 2) / 2 > 24576 ||
+    (chunk1 !== zeroAddress && (!chunk1Code.startsWith("0x00") || chunk1Code.length <= 4 || (chunk1Code.length - 2) / 2 > 24576 || (chunk0Code.length - 2) / 2 !== 24576)) ||
+    keccak256(chunk0Code).toLowerCase() !== g.codeChunk0Hash.toLowerCase() || (chunk1 === zeroAddress ? zeroHash : keccak256(chunk1Code)).toLowerCase() !== g.codeChunk1Hash.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Reviewed deployer chunks differ from exact immutable STOP-prefixed bytecode evidence");
   const creationCode = concatHex([`0x${chunk0Code.slice(4)}`, chunk1 === zeroAddress ? "0x" : `0x${chunk1Code.slice(4)}`]);
-  const expectedDigest = keccak256(encodeAbiParameters([
-    { type: "uint256" }, { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
-    { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
-    { type: "address" }, { type: "bytes32" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
-  ], [chainId, orchestrator, keccak256(coreCode), manager, keccak256(managerCode), oracleFactory, keccak256(oracleCode), locker, keccak256(lockerCode), collectorFactory, keccak256(collectorFactoryCode), deployer, keccak256(deployerCode), creationCodeHash, chunk0, keccak256(chunk0Code), chunk1, chunk1 === zeroAddress ? zeroHash : keccak256(chunk1Code)]));
-  if (version !== 3 || registration.hook !== zeroAddress || topology.hookDeployer.toLowerCase() !== deployer.toLowerCase() || creationCodeHash === zeroHash || topology.hookCreationCodeHash.toLowerCase() !== creationCodeHash.toLowerCase() || keccak256(creationCode).toLowerCase() !== creationCodeHash.toLowerCase() || expectedDigest.toLowerCase() !== digest.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Bound V4 deployer, creation bytecode and immutable dependency graph differ from certified topology");
-  return { topology, boundGraph: { manager, oracleFactory, locker, collectorFactory, deployer, creationCode } };
+  if ((creationCode.length - 2) / 2 + (shared ? 96 : 576) > 49152 || creationCodeHash === zeroHash ||
+    creationCodeHash.toLowerCase() !== g.hookCreationCodeHash.toLowerCase() || keccak256(creationCode).toLowerCase() !== creationCodeHash.toLowerCase() ||
+    hashLaunchDependencies({ chainId, core: orchestrator, registry, registrar: adapter.implementation, graph: g }).toLowerCase() !== digest.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Reviewed creation artifact, constructor bound or graph digest differs from admission");
+  if (shared) {
+    const rootCode = await readDependencyCode(client, g.hookRoot, block);
+    const recordedHash = await readLifecycleContract<Hex>(client, g.hookDeployer, deployerAbi, "deployedCodeHash", [g.hookRoot], block);
+    const initCodeHash = keccak256(concatHex([creationCode, encodeAbiParameters([{ type: "address" }, { type: "address" }, { type: "address" }], [g.manager, adapter.implementation, g.oracleFactory])]));
+    const prediction = predictPoolBoundHookAddress({ deployer: g.hookDeployer, initCodeHash, salt: g.sharedHookSalt });
+    const remotePrediction = await readLifecycleContract<Address>(client, g.hookDeployer, reviewedSharedHookDeployerV1Abi, "predict", [g.manager, adapter.implementation, g.oracleFactory, g.sharedHookSalt], block);
+    if (recordedHash === zeroHash || recordedHash.toLowerCase() !== g.hookRuntimeCodeHash.toLowerCase() || keccak256(rootCode).toLowerCase() !== recordedHash.toLowerCase() ||
+      !hasLifecycleV4HookPermissions(g.hookRoot) || prediction.toLowerCase() !== g.hookRoot.toLowerCase() || remotePrediction.toLowerCase() !== prediction.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Shared root lacks exact typed-deployer runtime and constructor/salt provenance");
+    for (const [getter, expected] of [["registrar", adapter.implementation], ["poolManager", g.manager], ["oracleFactory", g.oracleFactory]] as const) {
+      if ((await readLifecycleContract<Address>(client, g.hookRoot, lifecycleV4HookAbi, getter, [], block)).toLowerCase() !== expected.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Shared hook immutable graph differs from admission");
+    }
+    if (await readLifecycleContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "REQUIRED_HOOK_FLAGS", [], block) !== 0x1afcn ||
+      await readLifecycleContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "ALL_HOOK_MASK", [], block) !== 0x3fffn) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Shared hook callbacks differ from admission");
+  } else if (g.hookRoot !== zeroAddress || g.hookRuntimeCodeHash !== zeroHash || g.sharedHookSalt !== zeroHash) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Bound topology cannot reuse a shared root");
+  if ([zeroAddress, orchestrator, registry, adapter.implementation, g.manager, g.hookRoot, g.locker, g.collectorFactory, g.collectorDeployer, g.hookDeployer].some((address) => address.toLowerCase() === envelope.beneficiary.toLowerCase())) throw new LifecyclePlanningError("REVIEWED_TERMS", "Stable author identity is an excluded reviewed graph destination");
+  const [move, cardinality] = await readLifecycleContract<readonly [number, number]>(client, g.oracleFactory, lifecycleOracleFactoryAbi, "oracleConfigs", [b.oracleConfigId], block);
+  if (move === 0 || move > 887272 || cardinality < 2 || cardinality > b.maximumOracleCardinality) throw new LifecyclePlanningError("REVIEWED_BOUNDS", "Reviewed oracle configuration exceeds the admitted bounds");
+  return { topology, boundGraph: bound ? { manager: g.manager, oracleFactory: g.oracleFactory, locker: g.locker, collectorFactory: g.collectorFactory, deployer: g.hookDeployer, creationCode } : undefined };
 }
 
 export async function readLifecycleProfiles(options: { client: LifecycleRpcClient; orchestrator: Address; profileIds?: readonly Hex[]; offset?: bigint; limit?: bigint }, pinnedBlock?: LifecycleBlock): Promise<LifecycleProfile[]> {
@@ -101,26 +121,36 @@ export async function readLifecycleProfiles(options: { client: LifecycleRpcClien
   const chainId = rpcQuantity(await lifecycleRpc(options.client, "eth_chainId"), "chain ID");
   const registry = await readLifecycleContract<Address>(options.client, options.orchestrator, launchLifecycleAbi, "registry", [], block);
   if ((await readLifecycleContract<Address>(options.client, registry, lifecycleRegistryAbi, "core", [], block)).toLowerCase() !== options.orchestrator.toLowerCase()) throw new LifecyclePlanningError("REGISTRY_BINDING", "Registry is not bound to the selected lifecycle orchestrator");
-  const ids = options.profileIds ?? await readLifecycleContract<readonly Hex[]>(options.client, registry, lifecycleRegistryAbi, "profileIds", [options.offset ?? 0n, options.limit ?? 100n], block);
+  const offset = options.offset ?? 0n; const limit = options.limit ?? 100n;
+  if (offset < 0n || limit < 0n || limit > 100n) throw new LifecyclePlanningError("INVALID_PROFILE_PAGE", "Registry profile pages require unsigned offset and limit at most 100");
+  const ids = options.profileIds ?? await readLifecycleContract<readonly Hex[]>(options.client, registry, lifecycleRegistryAbi, "profileIds", [offset, limit], block);
+  const protocolMaximumDeveloperFeeBps = await readLifecycleContract<number>(options.client, registry, lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps", [], block);
   const profiles: LifecycleProfile[] = [];
   for (const id of ids) {
     const registration = await readLifecycleContract<ProfileRegistrationV1>(options.client, registry, lifecycleRegistryAbi, "profile", [id], block);
     const adapter = await readLifecycleContract<AdapterRegistrationV1>(options.client, registry, lifecycleRegistryAbi, "adapter", [registration.adapterId], block);
-    let topology: ProfileTopologyV1 = { hookTopology: 0, configVersion: adapter.configVersion, hookDeployer: zeroAddress, hookCreationCodeHash: zeroHash };
-    let admitted = registration.enabled && adapter.enabled && (registration.capabilities & LIFECYCLE_REQUIRED_CAPABILITIES) === LIFECYCLE_REQUIRED_CAPABILITIES && (adapter.capabilities & LIFECYCLE_REQUIRED_CAPABILITIES) === LIFECYCLE_REQUIRED_CAPABILITIES && (registration.capabilities & adapter.capabilities) === registration.capabilities;
-    let reason: string | undefined = admitted ? undefined : "Profile or implementation is retired, unregistered, or lacks lifecycle capabilities";
-    try {
-      const recorded = await readLifecycleProfileTopology(options.client, registry, id, block);
-      if (recorded !== undefined) topology = recorded;
-      topology = (await certifyLifecycleProfile(options.client, options.orchestrator, id, registration, adapter, recorded, block, chainId)).topology;
-      if (admitted) {
-        const eligible = await readLifecycleContract<Address>(options.client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, adapter.configVersion, LIFECYCLE_REQUIRED_CAPABILITIES], block);
-        if (eligible.toLowerCase() !== adapter.implementation.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Registry eligibility resolves a different implementation");
-      }
-    } catch (failure) { admitted = false; reason = failure instanceof Error ? failure.message : String(failure); }
     const schema = registration.configSchema.toLowerCase();
     const venueKind = schema === V4_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() || schema === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? "uniswap-v4" : schema === ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? "abyss" : "unknown";
-    profiles.push({ id, registration, adapter, topology, admitted, reason, venueKind });
+    let topology: ProfileTopologyV1 = { hookTopology: 0, configVersion: adapter.configVersion, hookDeployer: zeroAddress, hookCreationCodeHash: zeroHash };
+    let envelope: LaunchEnvelopeV2 | undefined; let developerTerms: LifecycleDeveloperTerms | undefined;
+    let admitted = false; let reason: string | undefined;
+    try {
+      if (venueKind === "unknown") throw new LifecyclePlanningError("UNSUPPORTED_SCHEMA", `Unsupported lifecycle config schema ${registration.configSchema}`);
+      topology = await readLifecycleProfileTopology(options.client, registry, id, block);
+      if (venueKind === "uniswap-v4") {
+        envelope = await readLifecycleContract<LaunchEnvelopeV2>(options.client, registry, lifecycleRegistryAbi, "profileEnvelope", [id], block);
+        const [implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled] = await readLifecycleContract<readonly [Address, Address, number, Hex, boolean]>(options.client, registry, lifecycleRegistryAbi, "developerTerms", [id], block);
+        developerTerms = { adapter: implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled };
+        if (implementation.toLowerCase() !== adapter.implementation.toLowerCase() || beneficiary.toLowerCase() !== envelope.beneficiary.toLowerCase() ||
+          termsDigest.toLowerCase() !== envelope.termsDigest.toLowerCase() || maximumDeveloperFeeBps !== envelope.maximumDeveloperFeeBps ||
+          maximumDeveloperFeeBps > protocolMaximumDeveloperFeeBps) throw new LifecyclePlanningError("REVIEWED_TERMS", "Registry developer terms differ from the frozen reviewed envelope");
+      }
+      await certifyLifecycleProfile(options.client, options.orchestrator, registry, id, registration, adapter, topology, envelope, block, chainId);
+      const eligible = await readLifecycleContract<Address>(options.client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, topology.configVersion, LIFECYCLE_REQUIRED_CAPABILITIES], block);
+      if (eligible.toLowerCase() !== adapter.implementation.toLowerCase() || (developerTerms !== undefined && !developerTerms.enabled)) throw new LifecyclePlanningError("INELIGIBLE_PROFILE", "Registry refuses this profile for pending source admission");
+      admitted = true;
+    } catch (failure) { reason = failure instanceof Error ? failure.message : String(failure); }
+    profiles.push({ id, registration, adapter, topology, envelope, developerTerms, protocolMaximumDeveloperFeeBps: venueKind === "uniswap-v4" ? protocolMaximumDeveloperFeeBps : undefined, admitted, reason, venueKind });
   }
   if (pinnedBlock === undefined) await assertLifecycleBlock(options.client, block);
   return profiles;
@@ -129,7 +159,7 @@ export async function readLifecycleProfiles(options: { client: LifecycleRpcClien
 async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRpcClient; plan: LaunchPlanV1; marketIndex: number }, block: LifecycleBlock): Promise<{ deployment: PoolBoundHookDeployment; parameters: PoolBoundHookParametersV1 }> {
   const { client, plan, marketIndex } = options;
   const market = plan.markets[marketIndex];
-  if (market === undefined || market.configVersion !== 3 || market.profileId.toLowerCase() !== V4_POOL_BOUND_LIFECYCLE_PROFILE_ID.toLowerCase()) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Market index must select the exact pool-bound V4 profile/version");
+  if (market === undefined || market.configVersion !== 5) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Market index must select reviewed pool-bound config version 5");
   const chainId = rpcQuantity(await lifecycleRpc(client, "eth_chainId"), "chain ID");
   if (chainId !== plan.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain differs from the committed plan");
   const registry = await readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "registry", [], block);
@@ -138,10 +168,18 @@ async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRp
   const adapter = await readLifecycleContract<AdapterRegistrationV1>(client, registry, lifecycleRegistryAbi, "adapter", [registration.adapterId], block);
   if (registration.adapterId.toLowerCase() !== market.adapterId.toLowerCase()) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Market adapter differs from the profile's immutable registration");
   const recorded = await readLifecycleProfileTopology(client, registry, market.profileId, block);
-  const { boundGraph } = await certifyLifecycleProfile(client, plan.orchestrator, market.profileId, registration, adapter, recorded, block, chainId);
+  const envelope = await readLifecycleContract<LaunchEnvelopeV2>(client, registry, lifecycleRegistryAbi, "profileEnvelope", [market.profileId], block);
+  const [implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled] = await readLifecycleContract<readonly [Address, Address, number, Hex, boolean]>(client, registry, lifecycleRegistryAbi, "developerTerms", [market.profileId], block);
+  const protocolMaximumDeveloperFeeBps = await readLifecycleContract<number>(client, registry, lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps", [], block);
+  const { boundGraph } = await certifyLifecycleProfile(client, plan.orchestrator, registry, market.profileId, registration, adapter, recorded, envelope, block, chainId);
   if (boundGraph === undefined) throw new LifecyclePlanningError("UNCERTIFIED_TOPOLOGY", "Market does not have a certified pool-bound deployer graph");
   const token = await readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], block);
   const config = decodePoolBoundV4LifecycleMarketConfig(market.config);
+  validateReviewedV4LifecycleMarket({ market, config, token, profile: {
+    id: market.profileId, registration, adapter, topology: recorded, envelope,
+    developerTerms: { adapter: implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled },
+    protocolMaximumDeveloperFeeBps, venueKind: "uniswap-v4", admitted: enabled,
+  } });
   const expected: PoolBoundHookParametersV1 = {
     poolManager: boundGraph.manager, registrar: adapter.implementation, oracleFactory: boundGraph.oracleFactory, core: plan.orchestrator,
     liquidityLocker: boundGraph.locker, token, quoteCurrency: market.quoteAsset, lpFeePips: config.lpFeePips, tickSpacing: config.tickSpacing,
@@ -150,17 +188,17 @@ async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRp
     marketCommitment: hashPoolBoundV4MarketCommitment({ chainId, core: plan.orchestrator, registrar: adapter.implementation, token, market }),
     expectedPositionCount: config.positions.length,
   };
-  const [parameters, parameterSalt] = await readLifecycleContract<readonly [PoolBoundHookParametersV1, Hex]>(client, boundGraph.collectorFactory, lifecycleV4CollectorFactoryAbi, "poolBoundHookParameters", [adapter.implementation, token, market], block);
-  const [deployer, initCodeHash, salt, predictedHook] = await readLifecycleContract<readonly [Address, Hex, Hex, Address]>(client, adapter.implementation, poolBoundV4LifecycleAdapterAbi, "hookDeploymentMetadata", [token, market], block);
-  const remoteInitCodeHash = await readLifecycleContract<Hex>(client, boundGraph.deployer, poolBoundLaunchFeeHookDeployerV1Abi, "initCodeHash", [expected], block);
-  const remotePrediction = await readLifecycleContract<Address>(client, boundGraph.deployer, poolBoundLaunchFeeHookDeployerV1Abi, "predict", [expected, config.hookSalt], block);
+  const [parameters, parameterSalt] = await readLifecycleContract<readonly [PoolBoundHookParametersV1, Hex]>(client, boundGraph.collectorFactory, reviewedV4FeeCollectorFactoryV1Abi, "poolBoundHookParameters", [adapter.implementation, token, market], block);
+  const [deployer, initCodeHash, salt, predictedHook] = await readLifecycleContract<readonly [Address, Hex, Hex, Address]>(client, adapter.implementation, reviewedPoolBoundV4MarketAdapterV1Abi, "hookDeploymentMetadata", [token, market], block);
+  const remoteInitCodeHash = await readLifecycleContract<Hex>(client, boundGraph.deployer, reviewedPoolBoundHookDeployerV1Abi, "initCodeHash", [expected], block);
+  const remotePrediction = await readLifecycleContract<Address>(client, boundGraph.deployer, reviewedPoolBoundHookDeployerV1Abi, "predict", [expected, config.hookSalt], block);
   const localInitCodeHash = poolBoundHookInitCodeHash(boundGraph.creationCode, expected);
   const localPrediction = predictPoolBoundHookAddress({ deployer: boundGraph.deployer, initCodeHash: localInitCodeHash, salt: config.hookSalt });
   if (encodePoolBoundHookParameters(parameters).toLowerCase() !== encodePoolBoundHookParameters(expected).toLowerCase() || parameterSalt.toLowerCase() !== config.hookSalt.toLowerCase() || salt.toLowerCase() !== config.hookSalt.toLowerCase() || deployer.toLowerCase() !== boundGraph.deployer.toLowerCase() || initCodeHash.toLowerCase() !== localInitCodeHash.toLowerCase() || remoteInitCodeHash.toLowerCase() !== localInitCodeHash.toLowerCase() || predictedHook.toLowerCase() !== localPrediction.toLowerCase() || remotePrediction.toLowerCase() !== localPrediction.toLowerCase()) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Bound hook metadata differs from the exact certified constructor economics, factory, initcode, salt or CREATE2 prediction");
   const hookCode = rpcHex(await lifecycleRpc(client, "eth_getCode", [predictedHook, toHex(block.number)]), "bound hook code");
   if (hookCode !== "0x") {
-    const deployedCodeHash = await readLifecycleContract<Hex>(client, deployer, poolBoundLaunchFeeHookDeployerV1Abi, "deployedCodeHash", [predictedHook], block);
-    if (deployedCodeHash === zeroHash || deployedCodeHash.toLowerCase() !== keccak256(hookCode).toLowerCase()) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing hook lacks this exact typed deployer's runtime-code provenance");
+    const deployedCodeHash = await readLifecycleContract<Hex>(client, deployer, reviewedPoolBoundHookDeployerV1Abi, "deployedCodeHash", [predictedHook], block);
+    if ((hookCode.length - 2) / 2 > 24576 || deployedCodeHash === zeroHash || deployedCodeHash.toLowerCase() !== keccak256(hookCode).toLowerCase()) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing hook lacks this exact typed deployer's bounded runtime-code provenance");
     for (const [getter, expectedAddress] of [
       ["poolManager", expected.poolManager], ["registrar", expected.registrar], ["oracleFactory", expected.oracleFactory],
       ["core", expected.core], ["liquidityLocker", expected.liquidityLocker], ["token", expected.token],
@@ -168,6 +206,8 @@ async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRp
       const actual = await readLifecycleContract<Address>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, getter, [], block);
       if (actual.toLowerCase() !== expectedAddress.toLowerCase()) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing hook immutable dependency graph differs from the committed constructor");
     }
+    if (await readLifecycleContract<bigint>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "REQUIRED_HOOK_FLAGS", [], block) !== 0x1afcn ||
+      await readLifecycleContract<bigint>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "ALL_HOOK_MASK", [], block) !== 0x3fffn) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing bound hook callback declarations differ from the reviewed envelope");
     const [currency0, currency1] = BigInt(token) < BigInt(market.quoteAsset) ? [token, market.quoteAsset] : [market.quoteAsset, token];
     const expectedPoolId = keccak256(encodeAbiParameters([{ type: "address" }, { type: "address" }, { type: "uint24" }, { type: "int24" }, { type: "address" }], [currency0, currency1, config.lpFeePips, config.tickSpacing, predictedHook]));
     const actualPoolId = await readLifecycleContract<Hex>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "boundPoolId", [], block);
@@ -198,7 +238,7 @@ export async function buildPoolBoundHookDeploymentTransaction(options: { client:
   if (!hasLifecycleV4HookPermissions(deployment.predictedHook)) throw new LifecyclePlanningError("INVALID_HOOK_BITS", "Finalize a salt with the exact lifecycle hook permissions before predeployment");
   if (hashLaunchPlan(options.plan) !== commitment) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed while constructing hook deployment calldata");
   await assertLifecycleBlock(options.client, block);
-  return { to: deployment.deployer, data: encodeFunctionData({ abi: poolBoundLaunchFeeHookDeployerV1Abi, functionName: "deploy", args: [parameters, deployment.salt] }), value: 0n, deployment };
+  return { to: deployment.deployer, data: encodeFunctionData({ abi: reviewedPoolBoundHookDeployerV1Abi, functionName: "deploy", args: [parameters, deployment.salt] }), value: 0n, deployment };
 }
 
 export function validateLifecycleMarketIdentity(identity: MarketIdentityV1, plan: LaunchPlanV1, token: Address, marketIndex: number): void {

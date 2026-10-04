@@ -1,70 +1,51 @@
 # Examples
 
-Runnable ESM scripts that exercise the real `@black-market/sdk` API. Historical examples never sign or broadcast. `launch.mjs` lists its valid launch matrix by default, simulates without signing, and runs the API metadata/image/publish lifecycle as part of its one explicit `--execute` operation.
+ESM scripts import built public SDK entrypoints, not private source helpers. Old Atomic/Unified/template fixtures have been removed; current reviewed profiles are discovered by registry schema/topology, never a template allowlist.
 
-| Script | Shows |
-| ------ | ----- |
-| `quickstart.mjs` | Offline canonical addresses, templates, recipe derivation, initial-buy estimate, calldata and formatting helpers |
-| `abby-launch.mjs` | Exact reconstruction of the successful Robinhood mainnet Abby launch from transaction calldata |
-| `launch.mjs` | Current Unified Launcher examples: all template/profile/fee-split presets on Abyss and Uniswap V4 V3 |
+| Script | Behavior |
+| --- | --- |
+| `quickstart.mjs` | Offline pure geometry/buy estimate, explicit current config-4 terms/rate/commitment and unchanged lending formatting. Non-deployed wire example; no execution claim. |
+| `launch.mjs` | Read-only review/recovery of an explicit saved economic plan and explicitly selected atomic/staged mode; optional offchain bound salt mining. Prints simulation/progress/one admitted unsigned next step. |
+| `generate-lifecycle-commitment-fixture.mjs` | Independent literal Solidity ABI reference for portable current-config commitment bytes/hash/identity. |
+| `launch-lifecycle-smoke.mjs` | Actual public SDK execution, recovery, custody, V3 harvest and author claims on an explicitly authorized owned loopback graph only. |
 
-## Running
-
-Examples import the built package output (`../dist/index.js`) the same way a consumer imports `@black-market/sdk`, so build first:
+## Offline quickstart
 
 ```sh
 pnpm build
 node examples/quickstart.mjs
+# or: pnpm examples
 ```
 
-or run the offline quickstart through the package script:
+Pure math is not execution proof. Real author/profile/terms/bounds/oracle/dependency identities must come from the explicit reviewed registry. A rate, including zero, must be creator-selected rather than defaulted.
+
+## Read-only reviewed launch CLI
+
+Supply a full saved `LaunchPlanV1` JSON, not a template ID or old request:
 
 ```sh
-pnpm examples
+node examples/launch.mjs \
+  --plan plan.json --rpc http://127.0.0.1:18555 --mode staged \
+  --limits current-limits.json --fork-rpc http://127.0.0.1:18556 --mine
 ```
 
-## Current launch runner
-List the 11 valid 1% fee presets (each supports `abyss` and `uniswap-v4-v3`):
+`--mine` finalizes config-5 salts offchain and prints the returned plan; persist that exact output before begin. `--receipts receipts.json` and `--confirmations N` restore canonical recovery context. The CLI never signs, submits source-chain transactions, uploads metadata or publishes a launch. If the supplied RPC supports sequential `eth_simulateV1`, no disposable fork is needed; otherwise an explicit separate loopback fork is required for executable admission.
+
+`current-limits.json` must contain fresh matching chain/account/core/observed block/hash provenance and actual chain/RPC/account/calldata caps. Gas/chain/block values are decimal strings. Missing/stale/mismatched facts prevent admission; live block gas limit alone is not provider/account policy. Application limit-service callbacks are preferred for real ongoing submission; see the [lifecycle guide](../docs/launch-lifecycle.md). Modes never fall back silently. Wallet chain/signature/receipt handling is caller-owned.
+
+`LaunchApiClient` remains available for separately caller-authorized signed metadata/image/session/publication integration. Publication of an existing confirmed transaction must not trigger another launch; a metadata session is not economic/profile admission.
+
+## Actual owned-fixture proof
+
+The current manifest declares `fixtureOnly: true`, explicit reviewed graph addresses and `executionLimits.provenance.scope: "controlled-local-measurement"`. The Solidity-exported plan file contains `plans` with exact encoded plan/hash/identity/token vectors. No named-template row count is an SDK admission requirement.
 
 ```sh
-node examples/launch.mjs
+LAUNCH_LIFECYCLE_RPC_URL=http://127.0.0.1:18555 \
+LAUNCH_LIFECYCLE_FORK_RPC_URL=http://127.0.0.1:18556 \
+LAUNCH_LIFECYCLE_ALLOW_LOCAL_EXECUTION=1 \
+node examples/launch-lifecycle-smoke.mjs manifest.json sdk-plans.json
 ```
 
-Simulate a unique, no-initial-buy launch without signing or broadcasting:
+This command intentionally executes only authorized disposable fixture transactions, restores snapshots per plan/mode and never treats atomic refusal as implicit staged consent. It observes actual ordered buys/canonical Active state/permanent custody, exact typed deployment provenance, V3 no-argument `claimAndSplit()` preview/harvest, reserved owner/developer balances and authenticated stable-author page receipts/payout balance deltas. Page cursor completion and payment success stay separate.
 
-```sh
-RPC_URL=https://rpc.mainnet.chain.robinhood.com \
-node examples/launch.mjs --simulate \
-  --creator 0xYOUR_ADDRESS \
-  --case quote-staking-owner \
-  --route uniswap-v4-v3 \
-  --paired-token 0xPAIRED_TOKEN \
-  --paired-decimals 18 \
-  --paired-usd-x18 1000000000000000000
-```
-`--execute` is one linear operation: it signs attribution, creates the API session, optionally uploads and verifies an image, submits the Unified Launcher transaction, waits for a successful receipt, then publishes that transaction to the API session. It requires `PRIVATE_KEY`; the Robinhood mainnet RPC is the default. A failure after transaction submission retains the printed transaction hash and API session state for recovery, but never silently submits another launch.
-
-## Verified APIBurnToken launch
-
-The runner created and published this current `uniswap-v4-v3` launch on Robinhood Chain mainnet:
-
-| Field | Value |
-| --- | --- |
-| Token | [`0x02cd85fd3de913a06962afe41e0997c93feb9178`](https://robinhoodchain.blockscout.com/address/0x02cd85fd3de913a06962afe41e0997c93feb9178) |
-| Transaction | [`0x52673e85019787d8ab67256027b8c675eff75aa6c1e4d2f772b9e8c36aa6edcd`](https://robinhoodchain.blockscout.com/tx/0x52673e85019787d8ab67256027b8c675eff75aa6c1e4d2f772b9e8c36aa6edcd) |
-| Route | Active `uniswap-v4-v3` adapter from the schema-/2 launcher stack |
-| Token/pool | Burnable fee-burn template, Lighthouse profile, 5% fee tier |
-| Initial buy | 0.0025 WETH, wrapped and approved exactly by the runner |
-| API state | Published as `optimistic`; image validated as JPEG, 941 × 941 |
-
-If publication returns `awaiting_indexer` after a confirmed transaction, do not invoke `--execute` again. Resume only the existing API publication:
-
-```sh
-node examples/launch.mjs --resume-publish \
-  --session SESSION_ID --capability SESSION_CAPABILITY \
-  --transaction 0xCONFIRMED_TRANSACTION_HASH
-```
-
-The recovery command never signs, wraps, approves, uploads, or submits another on-chain launch.
-
-Lighthouse is the QuoteOracle profile. The dual templates are protocol-limited to Beacon, so their 1% companion pools cannot be Lighthouse. Each template launches its canonical token kind from `LaunchTemplateDefaultsV2`: Standard, Quote Staking, Dual Staking, and Fee Burn deploy burnable tokens; Quote Dividends and Dual Dividends deploy holder-dividend tokens. The SDK's `toUnifiedLaunchRequest` rejects a token kind that contradicts the template; advanced registry-driven launches can still hand-build a `UnifiedLaunchRequest`.
+Real-graph boundary regressions use the same environment plus `LAUNCH_LIFECYCLE_MANIFEST` and `LAUNCH_LIFECYCLE_FIXTURES`, via `node --test test/lifecycle-chain.test.mjs`. Final verification runs after all concurrent source edits settle. Current retained runtime evidence is owned by the protocol repository's [evidence index](../../black-market/docs/10-4-audit/README.md), not by historical immutable launch fixtures.

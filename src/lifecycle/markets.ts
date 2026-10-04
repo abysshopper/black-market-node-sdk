@@ -1,14 +1,15 @@
 import { concatHex, decodeAbiParameters, encodeAbiParameters, getCreate2Address, keccak256, stringToHex, toHex, zeroHash, type Address, type Hex } from "viem";
 import type { MarketConfigV1 } from "./schema.js";
-import { LifecyclePlanningError, type PoolBoundHookSaltProgress } from "./types.js";
+import { LifecyclePlanningError, type LifecycleProfile, type PoolBoundHookSaltProgress } from "./types.js";
 
 export type V4LifecyclePositionConfig = {
   tickLower: number; tickUpper: number; liquidity: bigint; salt: Hex; maxTokenAmount: bigint;
 };
 export type V4LifecycleMarketConfig = {
-  version: 2; lpFeePips: number; tickSpacing: number; sqrtPriceX96: bigint; hookFeePips: number;
+  version: 4; lpFeePips: number; tickSpacing: number; sqrtPriceX96: bigint; hookFeePips: number;
   feeMode: number; protocolFeeDenominator: number; treasury: Address; externalLiquidityDisabled: boolean;
-  oracleConfigId: Hex; positions: readonly V4LifecyclePositionConfig[];
+  oracleConfigId: Hex; profileId: Hex; termsDigest: Hex; developerBeneficiary: Address; developerFeeBps: number;
+  positions: readonly V4LifecyclePositionConfig[];
 };
 export const v4LifecyclePositionComponents = [
   { name: "tickLower", type: "int24" }, { name: "tickUpper", type: "int24" },
@@ -20,23 +21,25 @@ export const v4LifecycleMarketComponents = [
   { name: "protocolFeeDenominator", type: "uint8" }, { name: "treasury", type: "address" },
   { name: "externalLiquidityDisabled", type: "bool" },
   { name: "oracleConfigId", type: "bytes32" },
+  { name: "profileId", type: "bytes32" }, { name: "termsDigest", type: "bytes32" },
+  { name: "developerBeneficiary", type: "address" }, { name: "developerFeeBps", type: "uint16" },
   { name: "positions", type: "tuple[]", components: v4LifecyclePositionComponents },
 ] as const;
 export function encodeV4LifecycleMarketConfig(config: V4LifecycleMarketConfig): Hex {
-  if (config.version !== 2) throw new Error("V4 lifecycle market config version must be 2");
+  if (config.version !== 4) throw new Error("Shared V4 lifecycle market config version must be 4");
+  if (!Number.isInteger(config.developerFeeBps) || config.developerFeeBps < 0 || config.developerFeeBps > 65535) throw new Error("developerFeeBps must be an explicit uint16");
   return encodeAbiParameters([{ type: "tuple", components: v4LifecycleMarketComponents }], [config]);
 }
 export function decodeV4LifecycleMarketConfig(encoded: Hex): V4LifecycleMarketConfig {
   const config = decodeAbiParameters([{ type: "tuple", components: v4LifecycleMarketComponents }], encoded)[0];
-  if (config.version !== 2) throw new Error("V4 lifecycle market config version must be 2");
+  if (config.version !== 4) throw new Error("Shared V4 lifecycle market config version must be 4");
   return config as V4LifecycleMarketConfig;
 }
 
-export type V4PoolBoundLifecycleMarketConfig = Omit<V4LifecycleMarketConfig, "version"> & { version: 3; hookSalt: Hex };
-export const V4_POOL_BOUND_LIFECYCLE_PROFILE_ID = keccak256(stringToHex("black-market.v4-pool-bound-lifecycle-market.v1"));
-export const V4_POOL_BOUND_LIFECYCLE_ADAPTER_ID = keccak256(stringToHex("black-market.adapter.v4-pool-bound-lifecycle.v1"));
-export const V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,(int24,int24,uint128,bytes32,uint256)[])"));
-export const V4_POOL_BOUND_MARKET_ECONOMICS_DOMAIN = keccak256(stringToHex("black-market.v4-pool-bound-market-economics.v1"));
+export type V4PoolBoundLifecycleMarketConfig = Omit<V4LifecycleMarketConfig, "version"> & { version: 5; hookSalt: Hex };
+export const V4_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"));
+export const V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"));
+export const V4_POOL_BOUND_MARKET_ECONOMICS_DOMAIN = keccak256(stringToHex("black-market.reviewed-pool-bound-market-economics.v1"));
 export const V4_LIFECYCLE_HOOK_PERMISSION_MASK = 0x3fffn;
 export const V4_LIFECYCLE_HOOK_PERMISSIONS = 0x1afcn;
 export const poolBoundV4LifecycleMarketComponents = [
@@ -45,17 +48,55 @@ export const poolBoundV4LifecycleMarketComponents = [
   { name: "protocolFeeDenominator", type: "uint8" }, { name: "treasury", type: "address" },
   { name: "externalLiquidityDisabled", type: "bool" }, { name: "oracleConfigId", type: "bytes32" },
   { name: "hookSalt", type: "bytes32" },
+  { name: "profileId", type: "bytes32" }, { name: "termsDigest", type: "bytes32" },
+  { name: "developerBeneficiary", type: "address" }, { name: "developerFeeBps", type: "uint16" },
   { name: "positions", type: "tuple[]", components: v4LifecyclePositionComponents },
 ] as const;
 
 export function encodePoolBoundV4LifecycleMarketConfig(config: V4PoolBoundLifecycleMarketConfig): Hex {
-  if (config.version !== 3) throw new Error("Pool-bound V4 lifecycle market config version must be 3");
+  if (config.version !== 5) throw new Error("Pool-bound V4 lifecycle market config version must be 5");
+  if (!Number.isInteger(config.developerFeeBps) || config.developerFeeBps < 0 || config.developerFeeBps > 65535) throw new Error("developerFeeBps must be an explicit uint16");
   return encodeAbiParameters([{ type: "tuple", components: poolBoundV4LifecycleMarketComponents }], [config]);
 }
 export function decodePoolBoundV4LifecycleMarketConfig(encoded: Hex): V4PoolBoundLifecycleMarketConfig {
   const config = decodeAbiParameters([{ type: "tuple", components: poolBoundV4LifecycleMarketComponents }], encoded)[0];
-  if (config.version !== 3) throw new Error("Pool-bound V4 lifecycle market config version must be 3");
+  if (config.version !== 5) throw new Error("Pool-bound V4 lifecycle market config version must be 5");
   return config as V4PoolBoundLifecycleMarketConfig;
+}
+
+/** Exact pending-source admission terms; author identity is never the live payout address. */
+export function validateReviewedV4LifecycleMarket(options: {
+  market: MarketConfigV1; config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig; profile: LifecycleProfile; token: Address;
+}): void {
+  const { market, config, profile, token } = options;
+  if (config.version !== 4 && config.version !== 5) throw new LifecyclePlanningError("UNSUPPORTED_CONFIG_VERSION", "Reviewed V4 config version must be 4 or 5");
+  const { envelope, developerTerms: terms, protocolMaximumDeveloperFeeBps: protocolCeiling } = profile;
+  if (envelope === undefined || terms === undefined || protocolCeiling === undefined || !terms.enabled ||
+    profile.topology.hookTopology !== (config.version === 4 ? 1 : 2) || market.configVersion !== config.version ||
+    profile.topology.configVersion !== config.version || profile.adapter.configVersion !== config.version ||
+    envelope.topology !== profile.topology.hookTopology || envelope.configVersion !== config.version || envelope.economicVersion !== 3 ||
+    market.adapterId.toLowerCase() !== profile.registration.adapterId.toLowerCase() ||
+    market.profileId.toLowerCase() !== profile.id.toLowerCase() || config.profileId.toLowerCase() !== profile.id.toLowerCase() ||
+    terms.adapter.toLowerCase() !== profile.adapter.implementation.toLowerCase() ||
+    config.termsDigest.toLowerCase() !== envelope.termsDigest.toLowerCase() || config.termsDigest.toLowerCase() !== terms.termsDigest.toLowerCase() ||
+    config.developerBeneficiary.toLowerCase() !== envelope.beneficiary.toLowerCase() ||
+    config.developerBeneficiary.toLowerCase() !== terms.beneficiary.toLowerCase() ||
+    BigInt(config.developerBeneficiary) === 0n || config.developerBeneficiary.toLowerCase() === token.toLowerCase() ||
+    config.developerBeneficiary.toLowerCase() === market.quoteAsset.toLowerCase()) {
+    throw new LifecyclePlanningError("REVIEWED_TERMS_MISMATCH", "Market must explicitly bind the admitted profile, frozen terms and stable author identity");
+  }
+  if (!Number.isInteger(config.developerFeeBps) || config.developerFeeBps < 0 ||
+    config.developerFeeBps > envelope.maximumDeveloperFeeBps || config.developerFeeBps > terms.maximumDeveloperFeeBps ||
+    config.developerFeeBps > protocolCeiling) throw new LifecyclePlanningError("DEVELOPER_FEE_CEILING", "Explicit developer fee exceeds the reviewed or protocol ceiling");
+  const b = envelope.bounds;
+  if (config.treasury.toLowerCase() !== envelope.protocolTreasury.toLowerCase() ||
+    config.protocolFeeDenominator !== envelope.protocolFeeDenominator || config.hookFeePips > b.maximumHookFeePips ||
+    config.lpFeePips > b.maximumLpFeePips || !Number.isInteger(config.feeMode) || config.feeMode < 0 || config.feeMode > 1 || (b.feeModeFlags & (1 << config.feeMode)) === 0 ||
+    config.tickSpacing < b.minimumTickSpacing || config.tickSpacing > b.maximumTickSpacing ||
+    config.positions.length === 0 || config.positions.length > b.maximumPositions || config.externalLiquidityDisabled !== b.externalLiquidityDisabled ||
+    config.oracleConfigId.toLowerCase() !== b.oracleConfigId.toLowerCase()) {
+    throw new LifecyclePlanningError("REVIEWED_BOUNDS_MISMATCH", "Market economics exceed or differ from the exact admitted envelope bounds");
+  }
 }
 
 export type PoolBoundHookParametersV1 = {
@@ -80,8 +121,9 @@ export function encodePoolBoundHookParameters(parameters: PoolBoundHookParameter
 }
 export function hashPoolBoundV4MarketCommitment(options: { chainId: bigint; core: Address; registrar: Address; token: Address; market: MarketConfigV1 }): Hex {
   const { chainId, core, registrar, token, market } = options;
-  if (market.configVersion !== 3 || market.profileId.toLowerCase() !== V4_POOL_BOUND_LIFECYCLE_PROFILE_ID.toLowerCase()) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Market is not the exact pool-bound V4 profile/version");
+  if (market.configVersion !== 5) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Pool-bound V4 market requires reviewed config version 5");
   const config = decodePoolBoundV4LifecycleMarketConfig(market.config);
+  if (config.profileId.toLowerCase() !== market.profileId.toLowerCase()) throw new LifecyclePlanningError("INVALID_BOUND_MARKET", "Config profile differs from the committed market profile");
   const configHash = keccak256(encodePoolBoundV4LifecycleMarketConfig({ ...config, hookSalt: zeroHash }));
   return keccak256(encodeAbiParameters([
     { type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "address" }, { type: "address" },

@@ -1,4 +1,4 @@
-import { decodeEventLog, decodeFunctionResult, encodeFunctionData, toHex, type Hex } from "viem";
+import { decodeEventLog, decodeFunctionResult, encodeFunctionData, encodeFunctionResult, toHex, type Hex } from "viem";
 import { launchLifecycleAbi, lifecycleErc20Abi } from "./abi.js";
 import { LifecyclePhase, type LaunchProgressV1, type LaunchReceiptV1 } from "./schema.js";
 import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
@@ -144,12 +144,43 @@ async function simulateForkPass(fork: ControlledLifecycleFork, planned: PlannedL
           break;
         }
         const currentBlock = await readLifecycleBlock(fork.client);
+        let returnData: Hex | undefined;
+        if (transaction.kind === "atomic" || transaction.kind === "activate") {
+          const progressData = rpcHex(await lifecycleRpc(fork.client, "eth_call", [{ to: planned.plan.orchestrator, data: encodeFunctionData({ abi: launchLifecycleAbi, functionName: "readLaunchProgress", args: [planned.launchId] }) }, toHex(currentBlock.number)]), "fork activation progress");
+          const progress = decodeFunctionResult({ abi: launchLifecycleAbi, functionName: "readLaunchProgress", data: progressData });
+          if (!Array.isArray(receipt.logs)) throw new LifecyclePlanningError("POSTCONDITION_FAILED", "Actual fork receipt does not contain canonical launch logs");
+          const events = receipt.logs.flatMap((raw) => {
+            const log = rpcObject(raw, "fork activation log");
+            if (rpcHex(log.address, "fork log emitter").toLowerCase() !== planned.plan.orchestrator.toLowerCase()) return [];
+            if (!Array.isArray(log.topics)) throw new LifecyclePlanningError("POSTCONDITION_FAILED", "Actual fork log topics are malformed");
+            try { return [decodeEventLog({ abi: launchLifecycleAbi, data: rpcHex(log.data, "fork log data"), topics: log.topics.map((topic) => rpcHex(topic, "fork log topic")) as [Hex, ...Hex[]] })]; }
+            catch { return []; }
+          });
+          const activated = events.filter((event) => event.eventName === "LaunchActivated");
+          const buys = events.filter((event) => event.eventName === "InitialBuyExecuted");
+          if (activated.length !== 1 || !activated.some((event) => event.eventName === "LaunchActivated" && event.args.launchId.toLowerCase() === planned.launchId.toLowerCase() && event.args.planHash.toLowerCase() === planned.planHash.toLowerCase() && event.args.token.toLowerCase() === planned.predictedToken.toLowerCase()) ||
+            progress.phase !== LifecyclePhase.Active || progress.planHash.toLowerCase() !== planned.planHash.toLowerCase() || progress.token.toLowerCase() !== planned.predictedToken.toLowerCase() ||
+            buys.length !== planned.plan.buys.length) throw new LifecyclePlanningError("POSTCONDITION_FAILED", "Actual fork activation differs from the exact committed launch");
+          const quoteSpent: bigint[] = []; const tokenOut: bigint[] = [];
+          for (let buyIndex = 0; buyIndex < buys.length; buyIndex += 1) {
+            const event = buys[buyIndex]; const buy = planned.plan.buys[buyIndex];
+            if (event?.eventName !== "InitialBuyExecuted" || buy === undefined || event.args.launchId.toLowerCase() !== planned.launchId.toLowerCase() ||
+              event.args.buyIndex !== buyIndex || event.args.marketIndex !== buy.marketIndex || event.args.recipient.toLowerCase() !== buy.recipient.toLowerCase() ||
+              event.args.quoteAsset.toLowerCase() !== planned.plan.markets[buy.marketIndex]?.quoteAsset.toLowerCase() ||
+              event.args.quoteSpent > buy.quoteAmountIn || event.args.tokenOut < buy.minTokenOut) throw new LifecyclePlanningError("POSTCONDITION_FAILED", "Actual fork initial buy differs from its committed index, budget, destination or minimum");
+            quoteSpent.push(event.args.quoteSpent); tokenOut.push(event.args.tokenOut);
+          }
+          returnData = encodeFunctionResult({ abi: launchLifecycleAbi, functionName: transaction.kind === "atomic" ? "launchAtomic" : "activateLaunch", result: {
+            launchId: planned.launchId, planHash: progress.planHash, token: progress.token, feeHub: progress.feeHub, rewards: progress.rewards,
+            marketCount: progress.marketCount, positionCount: progress.positionCount, quoteSpent, tokenOut,
+          } });
+        }
         for (const condition of transaction.postconditions) {
           const request = conditionRequest(condition, planned);
           const data = rpcHex(await lifecycleRpc(fork.client, "eth_call", [{ ...request, from: planned.account }, toHex(currentBlock.number)]), "fork postcondition");
           checkCondition(condition, data, planned);
         }
-        steps.push({ transactionId: transaction.id, success: true, gasUsed, gasLimit: gas, gasRequired });
+        steps.push({ transactionId: transaction.id, success: true, gasUsed, gasLimit: gas, gasRequired, returnData });
       } catch (failure) {
         steps.push({ transactionId: transaction.id, success: false, gasLimit: gas, error: failure instanceof Error ? failure.message : String(failure) });
         break;

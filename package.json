@@ -1,7 +1,7 @@
 {
   "name": "@black-market/sdk",
   "version": "0.2.0",
-  "description": "Canonical TypeScript SDK for the Black Market protocol on Robinhood Chain (Abyss DEX, Atomic launches, lending market).",
+  "description": "Canonical TypeScript SDK for Black Market on Robinhood Chain (reviewed multi-market launches, Abyss DEX, lending).",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -33,7 +33,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
-    "examples": "pnpm build && node examples/quickstart.mjs && node examples/abby-launch.mjs && node examples/launch.mjs",
+    "examples": "pnpm build && node examples/quickstart.mjs",
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm build",
     "test": "pnpm build && node --test test/*.test.mjs",

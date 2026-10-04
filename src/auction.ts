@@ -1,6 +1,6 @@
 import { type Address, zeroAddress } from "viem";
 
-/** Fixed supply used by Atomic launches. */
+/** Default display-recipe supply; reviewed lifecycle plans commit their own supply. */
 export const AUCTION_SUPPLY = 1_000_000_000n * 10n ** 18n;
 export const AUCTION_SUPPLY_WHOLE = 1_000_000_000;
 
@@ -62,7 +62,7 @@ function rwa(id: AuctionQuoteId, name: string, address: Address): AuctionQuoteOp
   return { id, symbol: id, name, address, decimals: 18, usdPeg: false };
 }
 
-/** Supported paired assets for Atomic launches: native ETH, wrapped WETH, USDG, then catalog stocks. */
+/** Display catalog only, not an admission allowlist; native ETH is a funding option, not an ERC20 market quote. */
 export const AUCTION_QUOTE_OPTIONS: AuctionQuoteOption[] = [
   { id: "ETH", symbol: "ETH", name: "Ether", address: zeroAddress, decimals: 18, usdPeg: false },
   { id: "WETH", symbol: "WETH", name: "Wrapped Ether", address: ROBINHOOD_WETH, decimals: 18, usdPeg: false },

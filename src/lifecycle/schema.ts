@@ -1,6 +1,6 @@
-import { encodeAbiParameters, keccak256, stringToHex, type Address, type Hex } from "viem";
+import { decodeAbiParameters, encodeAbiParameters, keccak256, stringToHex, type Address, type Hex } from "viem";
 
-/** Versioned opt-in wire schema. No legacy deployment address is selected here. */
+/** Current lifecycle wire schema; deployment and admission are always explicit. */
 export enum LifecycleTokenKind { ERC20, ERC404 }
 export enum LifecycleRewardMode { None, Staking, Dividends }
 export enum LifecycleFundingKind { ERC20, NativeWrap, Swap }
@@ -69,6 +69,113 @@ export type ProfileTopologyV1 = {
 export type MarketLiveStateV1 = {
   sqrtPriceX96: bigint; tick: number; liquidity: bigint; publicTrading: boolean; oracleReadyAt: bigint;
 };
+
+export type LaunchBoundsV2 = {
+  maximumHookFeePips: number; maximumLpFeePips: number; minimumTickSpacing: number; maximumTickSpacing: number;
+  maximumPositions: number; maximumOracleCardinality: number; feeModeFlags: number;
+  externalLiquidityDisabled: boolean; oracleConfigId: Hex;
+};
+export type LaunchGraphV2 = {
+  manager: Address; hookRoot: Address; oracleFactory: Address; locker: Address; collectorFactory: Address;
+  collectorDeployer: Address; hookDeployer: Address; coreCodeHash: Hex; managerCodeHash: Hex;
+  hookRuntimeCodeHash: Hex; oracleFactoryCodeHash: Hex; lockerCodeHash: Hex; collectorFactoryCodeHash: Hex;
+  collectorDeployerCodeHash: Hex; hookDeployerCodeHash: Hex; hookCreationCodeHash: Hex;
+  codeChunk0: Address; codeChunk0Hash: Hex; codeChunk1: Address; codeChunk1Hash: Hex; sharedHookSalt: Hex;
+};
+export type LaunchEnvelopeV2 = {
+  artifactDigest: Hex; reviewManifestDigest: Hex; configBoundsDigest: Hex; termsDigest: Hex;
+  topology: 1 | 2; configVersion: number; economicVersion: number; capabilities: bigint; flags: bigint;
+  callbackFlags: number; callbackMask: number; protocolTreasury: Address; protocolFeeDenominator: number;
+  beneficiary: Address; maximumDeveloperFeeBps: number; bounds: LaunchBoundsV2; graph: LaunchGraphV2;
+};
+export type LifecycleDeveloperTerms = {
+  adapter: Address; beneficiary: Address; maximumDeveloperFeeBps: number; termsDigest: Hex; enabled: boolean;
+};
+export type SourceTermsV3 = {
+  adapter: Address; profileId: Hex; termsDigest: Hex; beneficiary: Address;
+  maximumDeveloperFeeBps: number; developerFeeBps: number;
+};
+export const launchBoundsV2Components = [
+  { name: "maximumHookFeePips", type: "uint24" }, { name: "maximumLpFeePips", type: "uint24" },
+  { name: "minimumTickSpacing", type: "int24" }, { name: "maximumTickSpacing", type: "int24" },
+  { name: "maximumPositions", type: "uint16" }, { name: "maximumOracleCardinality", type: "uint16" },
+  { name: "feeModeFlags", type: "uint8" }, { name: "externalLiquidityDisabled", type: "bool" },
+  { name: "oracleConfigId", type: "bytes32" },
+] as const;
+export const launchGraphV2Components = [
+  { name: "manager", type: "address" }, { name: "hookRoot", type: "address" },
+  { name: "oracleFactory", type: "address" }, { name: "locker", type: "address" },
+  { name: "collectorFactory", type: "address" }, { name: "collectorDeployer", type: "address" },
+  { name: "hookDeployer", type: "address" }, { name: "coreCodeHash", type: "bytes32" },
+  { name: "managerCodeHash", type: "bytes32" }, { name: "hookRuntimeCodeHash", type: "bytes32" },
+  { name: "oracleFactoryCodeHash", type: "bytes32" }, { name: "lockerCodeHash", type: "bytes32" },
+  { name: "collectorFactoryCodeHash", type: "bytes32" }, { name: "collectorDeployerCodeHash", type: "bytes32" },
+  { name: "hookDeployerCodeHash", type: "bytes32" }, { name: "hookCreationCodeHash", type: "bytes32" },
+  { name: "codeChunk0", type: "address" }, { name: "codeChunk0Hash", type: "bytes32" },
+  { name: "codeChunk1", type: "address" }, { name: "codeChunk1Hash", type: "bytes32" },
+  { name: "sharedHookSalt", type: "bytes32" },
+] as const;
+export const launchEnvelopeV2Components = [
+  { name: "artifactDigest", type: "bytes32" }, { name: "reviewManifestDigest", type: "bytes32" },
+  { name: "configBoundsDigest", type: "bytes32" }, { name: "termsDigest", type: "bytes32" },
+  { name: "topology", type: "uint8" }, { name: "configVersion", type: "uint32" },
+  { name: "economicVersion", type: "uint32" }, { name: "capabilities", type: "uint64" },
+  { name: "flags", type: "uint64" }, { name: "callbackFlags", type: "uint16" },
+  { name: "callbackMask", type: "uint16" }, { name: "protocolTreasury", type: "address" },
+  { name: "protocolFeeDenominator", type: "uint8" }, { name: "beneficiary", type: "address" },
+  { name: "maximumDeveloperFeeBps", type: "uint16" },
+  { name: "bounds", type: "tuple", components: launchBoundsV2Components },
+  { name: "graph", type: "tuple", components: launchGraphV2Components },
+] as const;
+export const sourceTermsV3Components = [
+  { name: "adapter", type: "address" }, { name: "profileId", type: "bytes32" },
+  { name: "termsDigest", type: "bytes32" }, { name: "beneficiary", type: "address" },
+  { name: "maximumDeveloperFeeBps", type: "uint16" }, { name: "developerFeeBps", type: "uint16" },
+] as const;
+export function encodeLaunchBounds(bounds: LaunchBoundsV2): Hex {
+  return encodeAbiParameters([{ type: "tuple", components: launchBoundsV2Components }], [bounds]);
+}
+export function decodeLaunchBounds(encoded: Hex): LaunchBoundsV2 {
+  return decodeAbiParameters([{ type: "tuple", components: launchBoundsV2Components }], encoded)[0];
+}
+export function hashLaunchBounds(bounds: LaunchBoundsV2): Hex {
+  return keccak256(encodeLaunchBounds(bounds));
+}
+export function encodeLaunchEnvelope(envelope: LaunchEnvelopeV2): Hex {
+  return encodeAbiParameters([{ type: "tuple", components: launchEnvelopeV2Components }], [envelope]);
+}
+export function decodeLaunchEnvelope(encoded: Hex): LaunchEnvelopeV2 {
+  const envelope = decodeAbiParameters([{ type: "tuple", components: launchEnvelopeV2Components }], encoded)[0];
+  if (envelope.topology !== 1 && envelope.topology !== 2) throw new Error("Unsupported reviewed hook topology");
+  return { ...envelope, topology: envelope.topology };
+}
+/** The registry identity deliberately excludes instance addresses and runtime immutables. */
+export function hashLifecycleProfile(envelope: LaunchEnvelopeV2): Hex {
+  return keccak256(encodeAbiParameters([
+    { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" },
+    { type: "uint8" }, { type: "uint32" }, { type: "uint32" }, { type: "address" }, { type: "uint16" }, { type: "uint64" },
+  ], [keccak256(stringToHex("black-market.reviewed-launch-profile.v2")), envelope.artifactDigest,
+    envelope.reviewManifestDigest, envelope.configBoundsDigest, envelope.termsDigest, envelope.topology,
+    envelope.configVersion, envelope.economicVersion, envelope.beneficiary, envelope.maximumDeveloperFeeBps, envelope.capabilities]));
+}
+/** Exact LaunchGraphLibV2 domain; shared salt is provenance, not an economic dependency. */
+export function hashLaunchDependencies(options: {
+  chainId: bigint; core: Address; registry: Address; registrar: Address; graph: LaunchGraphV2;
+}): Hex {
+  const { chainId, core, registry, registrar, graph: g } = options;
+  return keccak256(encodeAbiParameters([
+    { type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "bytes32" },
+    { type: "address" }, { type: "address" }, { type: "address" }, { type: "bytes32" },
+    { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
+    { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
+    { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" }, { type: "bytes32" },
+    { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
+  ], [keccak256(stringToHex("black-market.reviewed-v4-dependencies.v2")), chainId, core, g.coreCodeHash,
+    registry, registrar, g.manager, g.managerCodeHash, g.hookRoot, g.hookRuntimeCodeHash,
+    g.oracleFactory, g.oracleFactoryCodeHash, g.locker, g.lockerCodeHash, g.collectorFactory, g.collectorFactoryCodeHash,
+    g.collectorDeployer, g.collectorDeployerCodeHash, g.hookDeployer, g.hookDeployerCodeHash,
+    g.hookCreationCodeHash, g.codeChunk0, g.codeChunk0Hash, g.codeChunk1, g.codeChunk1Hash]));
+}
 export const LIFECYCLE_TOKEN_ONLY_CAPABILITY = 1n;
 export const LIFECYCLE_EMPTY_PREPARE_CAPABILITY = 2n;
 export const LIFECYCLE_PERMANENT_CUSTODY_CAPABILITY = 8n;

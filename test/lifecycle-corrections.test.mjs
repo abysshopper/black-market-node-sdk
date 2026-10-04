@@ -124,6 +124,7 @@ function scenarioClient({ progress = emptyProgress(), headProgress = null, recei
           if (selectorOf(lifecycleRegistryAbi, "core") === selector) return padAddress(plan.orchestrator);
           if (selectorOf(lifecycleRegistryAbi, "fundingInputAllowed") === selector) return padBool(true);
           if (selectorOf(lifecycleRegistryAbi, "requireEligible") === selector) return padAddress(ADAPTER);
+          if (selectorOf(lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps") === selector) return word(1000n);
           if (selectorOf(lifecycleRegistryAbi, "profileIds") === selector) {
             const ids = plan.markets.map((market) => market.profileId.slice(2)).join("");
             return "0x" + (plan.markets.length * 32).toString(16).padStart(64, "0") + ids;

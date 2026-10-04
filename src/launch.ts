@@ -1,236 +1,37 @@
-import {
-  type Address,
-  encodeFunctionData,
-  type Hex,
-  isAddress,
-  keccak256,
-  stringToHex,
-  zeroAddress,
-} from "viem";
-import { ABYSS_FEE_TIERS, AbyssPoolProfile, atomicLaunchFactoryAbi, TokenKind } from "./abyss.js";
+import { ABYSS_FEE_TIERS } from "./abyss.js";
 import { AUCTION_SUPPLY } from "./auction.js";
 
-export const INITIAL_TEMPLATE_VERSION = 1 as const;
-export const STANDARD_TEMPLATE_ID = keccak256(stringToHex("black-market.standard"));
-export const QUOTE_STAKING_TEMPLATE_ID = keccak256(stringToHex("black-market.quote-staking"));
-export const QUOTE_DIVIDENDS_TEMPLATE_ID = keccak256(stringToHex("black-market.quote-dividends"));
-export const DUAL_STAKING_TEMPLATE_ID = keccak256(stringToHex("black-market.dual-staking"));
-export const DUAL_DIVIDENDS_TEMPLATE_ID = keccak256(stringToHex("black-market.dual-dividends"));
-export const FEE_BURN_TEMPLATE_ID = keccak256(stringToHex("black-market.fee-burn"));
-export const STANDARD_TEMPLATE_VERSION = INITIAL_TEMPLATE_VERSION;
 export const LAUNCH_REWARD_DURATION = 7 * 24 * 60 * 60;
 
-/**
- * Canonical registered volatile/P3 oracle configuration for Atomic launches.
- * Deployment evidence records maxAbsTickMove=17 and cardinality=4096 for this ID.
- */
-export const ATOMIC_LAUNCH_ORACLE_CONFIG_ID =
+/** Canonical Abyss oracle ID; reviewed V4 uses the selected envelope's exact ID. */
+export const LAUNCH_ORACLE_CONFIG_ID =
   "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d" as const;
-
-/** Existing Abyss execution policy: Atomic launch requests expire after 20 minutes. */
-export const ATOMIC_LAUNCH_DEADLINE_SECONDS = 20 * 60;
-
-/** Existing Abyss execution policy: initial Atomic buys tolerate 50 basis points of price movement. */
-export const ATOMIC_LAUNCH_BUY_SLIPPAGE_BPS = 50;
-
-/**
- * Atomic lifecycle recipes and tests use a $5,000 initial fully diluted market cap.
- * The form converts this editable whole-USD default to an X18 value before recipe derivation.
- */
-export const DEFAULT_ATOMIC_LAUNCH_TARGET_MARKET_CAP_USD = 5_000;
+export const LAUNCH_DEADLINE_SECONDS = 20 * 60;
+export const LAUNCH_BUY_SLIPPAGE_BPS = 50;
+export const DEFAULT_LAUNCH_TARGET_MARKET_CAP_USD = 5_000;
 
 
-export enum LaunchRewardMode {
-  None,
-  Staking,
-  Dividends,
-}
-
-export enum LaunchFeeAssetMode {
-  Profile,
-  PairedOnly,
-  Both,
-  LaunchedOnly,
-}
-
-export enum LaunchFeeDestination {
-  Owner = 1 << 0,
-  Rewards = 1 << 1,
-  Burn = 1 << 2,
-}
-
-export type LaunchTemplateId =
-  | "standard"
-  | "quote-staking"
-  | "quote-dividends"
-  | "dual-staking"
-  | "dual-dividends"
-  | "fee-burn";
 export type AbyssFeePips = (typeof ABYSS_FEE_TIERS)[number]["feePips"];
 
-export type FeeDisposition = {
-  ownerBps: number;
-  rewardsBps: number;
-  burnBps: number;
-};
-
-export type LaunchTemplate = {
-  id: LaunchTemplateId;
-  templateId: Hex;
-  version: typeof INITIAL_TEMPLATE_VERSION;
-  label: string;
-  tokenKinds: readonly TokenKind[];
-  poolProfiles: readonly AbyssPoolProfile[];
-  launchedTokenIsQuote: boolean;
-  rewardMode: LaunchRewardMode;
-  rewardDuration: number;
-  feeAssetMode: LaunchFeeAssetMode;
-  launchedTokenDestinations: number;
-  pairedTokenDestinations: number;
-};
-
-const OWNER = LaunchFeeDestination.Owner;
-const REWARDS = LaunchFeeDestination.Rewards;
-const BURN = LaunchFeeDestination.Burn;
-const BURNABLE_ONLY = [TokenKind.Burnable] as const;
-const DIVIDEND_ONLY = [TokenKind.HolderDividend] as const;
-
-export const LAUNCH_TEMPLATES = [
-  {
-    id: "standard",
-    templateId: STANDARD_TEMPLATE_ID,
-    version: INITIAL_TEMPLATE_VERSION,
-    label: "Standard",
-    tokenKinds: BURNABLE_ONLY,
-    poolProfiles: [AbyssPoolProfile.StandardOracle, AbyssPoolProfile.QuoteOracle],
-    launchedTokenIsQuote: false,
-    rewardMode: LaunchRewardMode.None,
-    rewardDuration: 0,
-    feeAssetMode: LaunchFeeAssetMode.Profile,
-    launchedTokenDestinations: OWNER,
-    pairedTokenDestinations: OWNER,
-  },
-  {
-    id: "quote-staking",
-    templateId: QUOTE_STAKING_TEMPLATE_ID,
-    version: INITIAL_TEMPLATE_VERSION,
-    label: "Quote Staking",
-    tokenKinds: BURNABLE_ONLY,
-    poolProfiles: [AbyssPoolProfile.QuoteOracle],
-    launchedTokenIsQuote: false,
-    rewardMode: LaunchRewardMode.Staking,
-    rewardDuration: LAUNCH_REWARD_DURATION,
-    feeAssetMode: LaunchFeeAssetMode.PairedOnly,
-    launchedTokenDestinations: 0,
-    pairedTokenDestinations: OWNER | REWARDS,
-  },
-  {
-    id: "quote-dividends",
-    templateId: QUOTE_DIVIDENDS_TEMPLATE_ID,
-    version: INITIAL_TEMPLATE_VERSION,
-    label: "Quote Dividends",
-    tokenKinds: DIVIDEND_ONLY,
-    poolProfiles: [AbyssPoolProfile.QuoteOracle],
-    launchedTokenIsQuote: false,
-    rewardMode: LaunchRewardMode.Dividends,
-    rewardDuration: LAUNCH_REWARD_DURATION,
-    feeAssetMode: LaunchFeeAssetMode.PairedOnly,
-    launchedTokenDestinations: 0,
-    pairedTokenDestinations: OWNER | REWARDS,
-  },
-  {
-    id: "dual-staking",
-    templateId: DUAL_STAKING_TEMPLATE_ID,
-    version: INITIAL_TEMPLATE_VERSION,
-    label: "Dual Staking",
-    tokenKinds: BURNABLE_ONLY,
-    poolProfiles: [AbyssPoolProfile.StandardOracle],
-    launchedTokenIsQuote: false,
-    rewardMode: LaunchRewardMode.Staking,
-    rewardDuration: LAUNCH_REWARD_DURATION,
-    feeAssetMode: LaunchFeeAssetMode.Both,
-    launchedTokenDestinations: OWNER | REWARDS | BURN,
-    pairedTokenDestinations: OWNER | REWARDS,
-  },
-  {
-    id: "dual-dividends",
-    templateId: DUAL_DIVIDENDS_TEMPLATE_ID,
-    version: INITIAL_TEMPLATE_VERSION,
-    label: "Dual Dividends",
-    tokenKinds: DIVIDEND_ONLY,
-    poolProfiles: [AbyssPoolProfile.StandardOracle],
-    launchedTokenIsQuote: false,
-    rewardMode: LaunchRewardMode.Dividends,
-    rewardDuration: LAUNCH_REWARD_DURATION,
-    feeAssetMode: LaunchFeeAssetMode.Both,
-    launchedTokenDestinations: OWNER | REWARDS | BURN,
-    pairedTokenDestinations: OWNER | REWARDS,
-  },
-  {
-    id: "fee-burn",
-    templateId: FEE_BURN_TEMPLATE_ID,
-    version: INITIAL_TEMPLATE_VERSION,
-    label: "Fee Burn",
-    tokenKinds: BURNABLE_ONLY,
-    poolProfiles: [AbyssPoolProfile.QuoteOracle],
-    launchedTokenIsQuote: true,
-    rewardMode: LaunchRewardMode.None,
-    rewardDuration: 0,
-    feeAssetMode: LaunchFeeAssetMode.LaunchedOnly,
-    launchedTokenDestinations: BURN,
-    pairedTokenDestinations: 0,
-  },
-] as const satisfies readonly LaunchTemplate[];
-
-export type AtomicLaunchRequest = {
-  creator: Address;
-  templateId: Hex;
-  templateVersion: number;
-  token: {
-    kind: TokenKind;
-    name: string;
-    symbol: string;
-    decimals: number;
-    supply: bigint;
-  };
-  pool: {
-    pairedToken: Address;
-    launchedTokenIsQuote: boolean;
-    profile: AbyssPoolProfile;
-    fee: AbyssFeePips;
-    oracleConfigId: Hex;
-    launchTick: number;
-    liquidity: bigint;
-    launchedTokenAmountMaximum: bigint;
-    pairedTokenAmountMaximum: bigint;
-  };
-  initialBuy: {
-    pairedTokenAmountIn: bigint;
-    launchedTokenAmountOutMinimum: bigint;
-    sqrtPriceLimitX96: bigint;
-  };
-  launchedTokenFees: FeeDisposition;
-  pairedTokenFees: FeeDisposition;
-  deadline: bigint;
-};
-
-export type AtomicLaunchPoolRecipeInput = {
+export type LaunchPoolRecipeInput = {
   pairedTokenDecimals: number;
   pairedTokenUsdPriceX18: bigint;
   targetMarketCapUsdX18: bigint;
   launchedTokenIsQuote: boolean;
   fee: AbyssFeePips;
+  supply?: bigint; tokenBudget?: bigint; tickSpacing?: number;
 };
 
-export type AtomicLaunchPoolRecipe = {
+export type LaunchPoolRecipe = {
   launchTick: number;
   launchSqrtPriceX96: bigint;
   liquidity: bigint;
   launchedTokenAmountMaximum: bigint;
   pairedTokenAmountMaximum: 0n;
+  tickLower: number; tickUpper: number;
 };
 
-export type AtomicLaunchBuySqrtPriceLimitInput = {
+export type LaunchBuySqrtPriceLimitInput = {
   launchSqrtPriceX96: bigint;
   launchedTokenIsQuote: boolean;
   slippageBps?: number;
@@ -249,8 +50,6 @@ const MIN_TICK = -887_272;
 const MAX_TICK = 887_272;
 const MIN_SQRT_RATIO = 4_295_128_739n;
 const MAX_SQRT_RATIO = 1_461_446_703_485_210_103_287_273_052_203_988_822_378_723_970_342n;
-const ZERO_BYTES32 = `0x${"00".repeat(32)}`;
-const BYTES32_HEX = /^0x[0-9a-fA-F]{64}$/;
 
 // Canonical Uniswap v3 TickMath multipliers, matching contracts/src/oracles/TickMathLib.sol.
 const TICK_MULTIPLIERS = [
@@ -304,15 +103,6 @@ function assertTokenDecimals(value: unknown, name: string): asserts value is num
   }
 }
 
-function assertOracleConfigId(value: unknown): asserts value is Hex {
-  if (
-    typeof value !== "string" ||
-    !BYTES32_HEX.test(value) ||
-    value.toLowerCase() === ZERO_BYTES32
-  ) {
-    throw new Error("pool.oracleConfigId must be a nonzero bytes32");
-  }
-}
 
 function assertCanonicalSqrtPrice(value: unknown, name: string): asserts value is bigint {
   assertUint(value, MAX_UINT160, name);
@@ -373,7 +163,7 @@ function getTickAtSqrtRatio(sqrtPriceX96: bigint): number {
   return low;
 }
 
-// Deliberately retain Solidity's signed-remainder alignment semantics from AtomicLaunchFactory.
+// Signed-remainder alignment matches the canonical Solidity range geometry.
 function alignDown(tick: number, tickSpacing: number): number {
   const remainder = tick % tickSpacing;
   return remainder === 0 ? tick : tick - remainder;
@@ -400,7 +190,7 @@ function launchBand(
     tickUpper > MAX_TICK ||
     tickLower >= tickUpper
   ) {
-    throw new Error("launchTick cannot form a valid Atomic launch band");
+    throw new Error("launchTick cannot form a valid one-sided launch band");
   }
   return { tickLower, tickUpper };
 }
@@ -414,12 +204,12 @@ function liquidityForAmount1(amount1: bigint, sqrtLowerX96: bigint, sqrtUpperX96
 }
 
 /**
- * Derives the one-sided Atomic launch position from a target fully diluted market cap.
+ * Derives one-sided launch geometry from explicit supply, budget and fully diluted market cap.
  * The raw price remains a rational bigint until the canonical Q64.96 square root conversion.
  */
-export function deriveAtomicLaunchPoolRecipe(
-  input: AtomicLaunchPoolRecipeInput,
-): AtomicLaunchPoolRecipe {
+export function deriveLaunchPoolRecipe(
+  input: LaunchPoolRecipeInput,
+): LaunchPoolRecipe {
   assertTokenDecimals(input.pairedTokenDecimals, "pairedTokenDecimals");
   assertPositiveUint(input.pairedTokenUsdPriceX18, MAX_UINT256, "pairedTokenUsdPriceX18");
   assertPositiveUint(input.targetMarketCapUsdX18, MAX_UINT256, "targetMarketCapUsdX18");
@@ -427,27 +217,31 @@ export function deriveAtomicLaunchPoolRecipe(
     throw new Error("launchedTokenIsQuote must be a boolean");
   }
 
-  const feeTier = getFeeTier(input.fee);
+  const supply = input.supply ?? AUCTION_SUPPLY; const tokenBudget = input.tokenBudget ?? supply;
+  assertPositiveUint(supply, MAX_UINT256, "supply"); assertPositiveUint(tokenBudget, MAX_UINT256, "tokenBudget");
+  if (tokenBudget > supply) throw new Error("tokenBudget cannot exceed supply");
+  const tickSpacing = input.tickSpacing ?? getFeeTier(input.fee).tickSpacing;
+  if (!Number.isInteger(tickSpacing) || tickSpacing < 1 || tickSpacing > 32767) throw new Error("tickSpacing must be 1..32767");
   const pairedTokenUnit = 10n ** BigInt(input.pairedTokenDecimals);
-  const [priceNumerator, priceDenominator]: [bigint, bigint] = input.launchedTokenIsQuote ? [input.targetMarketCapUsdX18 * pairedTokenUnit, input.pairedTokenUsdPriceX18 * AUCTION_SUPPLY] : [input.pairedTokenUsdPriceX18 * AUCTION_SUPPLY, input.targetMarketCapUsdX18 * pairedTokenUnit];
+  const [priceNumerator, priceDenominator]: [bigint, bigint] = input.launchedTokenIsQuote ? [input.targetMarketCapUsdX18 * pairedTokenUnit, input.pairedTokenUsdPriceX18 * supply] : [input.pairedTokenUsdPriceX18 * supply, input.targetMarketCapUsdX18 * pairedTokenUnit];
   const targetSqrtPriceX96 = integerSqrt((priceNumerator << 192n) / priceDenominator);
   const rawTick = getTickAtSqrtRatio(targetSqrtPriceX96);
   const launchTick = input.launchedTokenIsQuote
-    ? Math.ceil(rawTick / feeTier.tickSpacing) * feeTier.tickSpacing
-    : Math.floor(rawTick / feeTier.tickSpacing) * feeTier.tickSpacing;
+    ? Math.ceil(rawTick / tickSpacing) * tickSpacing
+    : Math.floor(rawTick / tickSpacing) * tickSpacing;
   assertInt24(launchTick, "launchTick");
 
   const { tickLower, tickUpper } = launchBand(
     launchTick,
-    feeTier.tickSpacing,
+    tickSpacing,
     input.launchedTokenIsQuote,
   );
   const sqrtLowerX96 = getSqrtRatioAtTick(tickLower);
   const sqrtUpperX96 = getSqrtRatioAtTick(tickUpper);
   const launchSqrtPriceX96 = input.launchedTokenIsQuote ? sqrtLowerX96 : sqrtUpperX96;
   const liquidity = input.launchedTokenIsQuote
-    ? liquidityForAmount0(AUCTION_SUPPLY, sqrtLowerX96, sqrtUpperX96)
-    : liquidityForAmount1(AUCTION_SUPPLY, sqrtLowerX96, sqrtUpperX96);
+    ? liquidityForAmount0(tokenBudget, sqrtLowerX96, sqrtUpperX96)
+    : liquidityForAmount1(tokenBudget, sqrtLowerX96, sqrtUpperX96);
   if (liquidity <= 0n || liquidity > MAX_UINT128) {
     throw new Error("Derived liquidity is outside the uint128 range");
   }
@@ -456,39 +250,41 @@ export function deriveAtomicLaunchPoolRecipe(
     launchTick,
     launchSqrtPriceX96,
     liquidity,
-    launchedTokenAmountMaximum: AUCTION_SUPPLY,
+    launchedTokenAmountMaximum: tokenBudget,
     pairedTokenAmountMaximum: 0n,
+    tickLower, tickUpper,
   };
 }
 
-export type AtomicLaunchInitialBuyEstimateInput = {
+export type LaunchInitialBuyEstimateInput = {
   launchSqrtPriceX96: bigint;
   liquidity: bigint;
   pairedTokenAmountIn: bigint;
   launchedTokenIsQuote: boolean;
-  fee: AbyssFeePips;
+  fee: number;
   sqrtPriceLimitX96?: bigint;
 };
 
-export type AtomicLaunchInitialBuyEstimate = {
+export type LaunchInitialBuyEstimate = {
   launchedTokenAmountOut: bigint;
   pairedTokenAmountConsumed: bigint;
   sqrtPriceAfterX96: bigint;
 };
 
 /**
- * Pure estimate for the first exact-input buy against a fresh one-sided Atomic
+ * Pure estimate for the first exact-input buy against a fresh one-sided
  * launch position. No wallet balance, allowance, pool deployment, or RPC state.
  * Uses conservative input-fee rounding; execution simulation remains the final
  * authority before submission.
  */
-export function estimateAtomicLaunchInitialBuy(
-  input: AtomicLaunchInitialBuyEstimateInput,
-): AtomicLaunchInitialBuyEstimate {
+export function estimateLaunchInitialBuy(
+  input: LaunchInitialBuyEstimateInput,
+): LaunchInitialBuyEstimate {
   assertCanonicalSqrtPrice(input.launchSqrtPriceX96, "launchSqrtPriceX96");
   assertPositiveUint(input.liquidity, MAX_UINT128, "liquidity");
   assertUint(input.pairedTokenAmountIn, MAX_UINT256, "pairedTokenAmountIn");
-  const fee = BigInt(getFeeTier(input.fee).feePips);
+  if (!Number.isInteger(input.fee) || input.fee < 0 || input.fee >= 1000000) throw new Error("fee must be pips below 1000000");
+  const fee = BigInt(input.fee);
   const amountAfterFee =
     (input.pairedTokenAmountIn * (1_000_000n - fee)) / 1_000_000n;
   if (amountAfterFee === 0n) {
@@ -533,17 +329,17 @@ function ceilSqrtRatio(numerator: bigint, denominator: bigint): bigint {
 
 /**
  * Produces the router's exclusive sqrt-price guard for the paired-token initial buy.
- * A paired input moves down for deployAbove and up for fee-burn/deployBelow.
+ * A paired input moves down when the launch token is currency1 and up when it is currency0.
  */
-export function deriveAtomicLaunchBuySqrtPriceLimitX96(
-  input: AtomicLaunchBuySqrtPriceLimitInput,
+export function deriveLaunchBuySqrtPriceLimitX96(
+  input: LaunchBuySqrtPriceLimitInput,
 ): bigint {
   assertCanonicalSqrtPrice(input.launchSqrtPriceX96, "launchSqrtPriceX96");
   if (typeof input.launchedTokenIsQuote !== "boolean") {
     throw new Error("launchedTokenIsQuote must be a boolean");
   }
 
-  const slippageBps = input.slippageBps ?? ATOMIC_LAUNCH_BUY_SLIPPAGE_BPS;
+  const slippageBps = input.slippageBps ?? LAUNCH_BUY_SLIPPAGE_BPS;
   if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 9_999) {
     throw new Error("slippageBps must be an integer from 1 through 9,999");
   }
@@ -557,168 +353,4 @@ export function deriveAtomicLaunchBuySqrtPriceLimitX96(
 
   const limit = ceilSqrtRatio(squaredLaunchSqrt * (10_000n - slippage), 10_000n);
   return limit <= MIN_SQRT_RATIO ? MIN_SQRT_RATIO + 1n : limit;
-}
-export function getLaunchTemplate(id: LaunchTemplateId): LaunchTemplate {
-  const template = LAUNCH_TEMPLATES.find((candidate) => candidate.id === id);
-  if (!template) throw new Error(`Unknown launch template: ${id}`);
-  return template;
-}
-
-export function getLaunchTemplateByHash(templateId: Hex): LaunchTemplate {
-  const template = LAUNCH_TEMPLATES.find(
-    (candidate) => candidate.templateId.toLowerCase() === templateId.toLowerCase(),
-  );
-  if (!template) throw new Error(`Unknown launch template id: ${templateId}`);
-  return template;
-}
-
-function dispositionTotal(disposition: FeeDisposition): number {
-  return disposition.ownerBps + disposition.rewardsBps + disposition.burnBps;
-}
-
-function dispositionDestinations(disposition: FeeDisposition): number {
-  return (
-    (disposition.ownerBps === 0 ? 0 : OWNER) |
-    (disposition.rewardsBps === 0 ? 0 : REWARDS) |
-    (disposition.burnBps === 0 ? 0 : BURN)
-  );
-}
-
-function validateDisposition(
-  name: "launchedTokenFees" | "pairedTokenFees",
-  disposition: FeeDisposition,
-  active: boolean,
-  allowedDestinations: number,
-): void {
-  if (
-    !Number.isInteger(disposition.ownerBps) ||
-    !Number.isInteger(disposition.rewardsBps) ||
-    !Number.isInteger(disposition.burnBps) ||
-    disposition.ownerBps < 0 ||
-    disposition.rewardsBps < 0 ||
-    disposition.burnBps < 0
-  ) {
-    throw new Error(`${name} must contain nonnegative integer basis points`);
-  }
-
-  const total = dispositionTotal(disposition);
-  if (active ? total !== 10_000 : total !== 0) {
-    throw new Error(`${name} must total ${active ? "10,000" : "zero"} basis points`);
-  }
-  if (dispositionDestinations(disposition) & ~allowedDestinations) {
-    throw new Error(`${name} uses a destination not allowed by the template`);
-  }
-}
-
-export function buildAtomicLaunchCalldata(
-  request: AtomicLaunchRequest,
-  nativeBuyAmount = 0n,
-): Hex {
-  if (!isAddress(request.creator) || request.creator.toLowerCase() === zeroAddress) {
-    throw new Error("creator must be a nonzero address");
-  }
-  const template = getLaunchTemplateByHash(request.templateId);
-  if (request.templateVersion !== template.version) throw new Error("Unsupported template version");
-  if (!template.tokenKinds.includes(request.token.kind)) {
-    throw new Error("Token kind is not supported by the template");
-  }
-  if (!template.poolProfiles.includes(request.pool.profile)) {
-    throw new Error("Pool profile is not supported by the template");
-  }
-  if (!isAddress(request.pool.pairedToken) || request.pool.pairedToken.toLowerCase() === zeroAddress) {
-    throw new Error("pairedToken must be a nonzero address");
-  }
-  if (request.pool.launchedTokenIsQuote !== template.launchedTokenIsQuote) {
-    throw new Error("Pool orientation does not match the template");
-  }
-
-  const feeTier = getFeeTier(request.pool.fee);
-  assertOracleConfigId(request.pool.oracleConfigId);
-  assertInt24(request.pool.launchTick, "pool.launchTick");
-  assertTokenDecimals(request.token.decimals, "token.decimals");
-  assertPositiveUint(request.token.supply, MAX_UINT256, "token.supply");
-  assertPositiveUint(request.pool.liquidity, MAX_UINT128, "pool.liquidity");
-  assertPositiveUint(
-    request.pool.launchedTokenAmountMaximum,
-    MAX_UINT256,
-    "pool.launchedTokenAmountMaximum",
-  );
-  assertUint(request.pool.pairedTokenAmountMaximum, MAX_UINT256, "pool.pairedTokenAmountMaximum");
-  if (request.pool.pairedTokenAmountMaximum !== 0n) {
-    throw new Error("pool.pairedTokenAmountMaximum must be zero for a single-sided Atomic launch");
-  }
-  if (request.pool.launchedTokenAmountMaximum > request.token.supply) {
-    throw new Error("pool.launchedTokenAmountMaximum cannot exceed token.supply");
-  }
-  assertPositiveUint(request.deadline, MAX_UINT256, "deadline");
-
-  assertUint(request.initialBuy.pairedTokenAmountIn, MAX_UINT256, "initialBuy.pairedTokenAmountIn");
-  assertUint(nativeBuyAmount, MAX_UINT256, "nativeBuyAmount");
-  assertUint(
-    request.initialBuy.launchedTokenAmountOutMinimum,
-    MAX_UINT256,
-    "initialBuy.launchedTokenAmountOutMinimum",
-  );
-  assertUint(request.initialBuy.sqrtPriceLimitX96, MAX_UINT160, "initialBuy.sqrtPriceLimitX96");
-  const effectiveBuyAmount = request.initialBuy.pairedTokenAmountIn + nativeBuyAmount;
-  if (effectiveBuyAmount === 0n) {
-    if (
-      request.initialBuy.launchedTokenAmountOutMinimum !== 0n ||
-      request.initialBuy.sqrtPriceLimitX96 !== 0n
-    ) {
-      throw new Error("zero initial buy cannot set output or price limits");
-    }
-  } else {
-    if (request.initialBuy.sqrtPriceLimitX96 === 0n) {
-      throw new Error("nonzero initial buy requires a directional price limit");
-    }
-    assertCanonicalSqrtPrice(
-      request.initialBuy.sqrtPriceLimitX96,
-      "initialBuy.sqrtPriceLimitX96",
-    );
-    const { tickLower, tickUpper } = launchBand(
-      request.pool.launchTick,
-      feeTier.tickSpacing,
-      request.pool.launchedTokenIsQuote,
-    );
-    const launchSqrtPriceX96 = getSqrtRatioAtTick(
-      request.pool.launchedTokenIsQuote ? tickLower : tickUpper,
-    );
-    if (
-      (!request.pool.launchedTokenIsQuote &&
-        request.initialBuy.sqrtPriceLimitX96 >= launchSqrtPriceX96) ||
-      (request.pool.launchedTokenIsQuote &&
-        request.initialBuy.sqrtPriceLimitX96 <= launchSqrtPriceX96)
-    ) {
-      throw new Error("initial buy price limit does not protect the paired-token swap direction");
-    }
-  }
-
-  const launchedFeesActive =
-    template.feeAssetMode === LaunchFeeAssetMode.Both ||
-    template.feeAssetMode === LaunchFeeAssetMode.LaunchedOnly ||
-    (template.feeAssetMode === LaunchFeeAssetMode.Profile &&
-      request.pool.profile === AbyssPoolProfile.StandardOracle);
-  const pairedFeesActive =
-    template.feeAssetMode === LaunchFeeAssetMode.Profile ||
-    template.feeAssetMode === LaunchFeeAssetMode.PairedOnly ||
-    template.feeAssetMode === LaunchFeeAssetMode.Both;
-  validateDisposition(
-    "launchedTokenFees",
-    request.launchedTokenFees,
-    launchedFeesActive,
-    template.launchedTokenDestinations,
-  );
-  validateDisposition(
-    "pairedTokenFees",
-    request.pairedTokenFees,
-    pairedFeesActive,
-    template.pairedTokenDestinations,
-  );
-
-  return encodeFunctionData({
-    abi: atomicLaunchFactoryAbi,
-    functionName: "deployAndLaunch",
-    args: [request],
-  });
 }
