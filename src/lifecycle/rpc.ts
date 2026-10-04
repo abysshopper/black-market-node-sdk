@@ -1,5 +1,7 @@
 import { decodeFunctionResult, encodeFunctionData, isHex, toHex, type Abi, type Address, type Hex } from "viem";
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLimitContext, type LifecycleLimitSource, type LifecycleLimits, type LifecycleRpcClient, type ResolvedLifecycleLimits } from "./types.js";
+import { lifecycleRegistryAbi } from "./abi.js";
+import type { ProfileTopologyV1 } from "./schema.js";
 
 export async function lifecycleRpc(client: LifecycleRpcClient, method: string, params: readonly unknown[] = []): Promise<unknown> {
   return client.request({ method, params });
@@ -39,6 +41,27 @@ export async function readLifecycleContract<T>(client: LifecycleRpcClient, to: A
   // ABI decoding validates scalar widths and tuple layout; T names that exact frozen ABI result.
   const decoded = decodeFunctionResult({ abi, functionName, data: result }) as T;
   return decoded;
+}
+
+/** Empty selector reverts/returns are the legacy registry boundary, not a topology certificate. */
+export async function readLifecycleProfileTopology(client: LifecycleRpcClient, registry: Address, profileId: Hex, block: LifecycleBlock): Promise<ProfileTopologyV1 | undefined> {
+  const data = encodeFunctionData({ abi: lifecycleRegistryAbi, functionName: "profileTopology", args: [profileId] });
+  let result: Hex;
+  try {
+    result = rpcHex(await lifecycleRpc(client, "eth_call", [{ to: registry, data }, toHex(block.number)]), "profile topology");
+  } catch (failure) {
+    let current: unknown = failure;
+    while (current !== null && typeof current === "object") {
+      const error = current as { data?: unknown; message?: unknown; cause?: unknown };
+      if (error.data === "0x" || (error.data === undefined && typeof error.message === "string" && /execution reverted/i.test(error.message))) return undefined;
+      current = error.cause;
+    }
+    throw failure;
+  }
+  if (result === "0x") return undefined;
+  const topology = decodeFunctionResult({ abi: lifecycleRegistryAbi, functionName: "profileTopology", data: result });
+  if (topology.hookTopology !== 0 && topology.hookTopology !== 1 && topology.hookTopology !== 2) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Registry returned an unsupported hook topology");
+  return { ...topology, hookTopology: topology.hookTopology };
 }
 export async function resolveLifecycleLimits(context: LifecycleLimitContext, source?: LifecycleLimitSource): Promise<{ limits: ResolvedLifecycleLimits; configuration: LifecycleLimits }> {
   let configuration: LifecycleLimits = {};

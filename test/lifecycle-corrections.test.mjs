@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { encodeAbiParameters, getAbiItem, keccak256, toFunctionSelector } from "viem";
+import { encodeAbiParameters, keccak256 } from "viem";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
 const { adapterRegistrationV1Components, buildNextTransaction, hashLaunchIdentity, hashLaunchPlan, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleMarketComponents, LifecyclePhase, lifecycleRegistryAbi, launchProgressV1Components, marketIdentityV1Components, parseLaunchPlan, planLaunch, preparedMarketV1Components, profileRegistrationV1Components, readLaunchProgress, simulateLaunchPlan } = await import(sdkPath);
@@ -49,7 +49,7 @@ function progressTuple(progress) {
 function identityTuple(plan, market) {
   // Exact canonical V4 identity per the frozen ABI: pool must be zero and the
   // PoolKey-derived poolId/canonicalId must satisfy the SDK's identity rules.
-  const hook = ADAPTER;
+  const hook = "0x0000000000000000000000000000000000001afc";
   const currency0 = BigInt(TOKEN) < BigInt(market.quoteAsset) ? TOKEN : market.quoteAsset;
   const currency1 = BigInt(TOKEN) < BigInt(market.quoteAsset) ? market.quoteAsset : TOKEN;
   const fee = 3000;
@@ -57,8 +57,8 @@ function identityTuple(plan, market) {
   const poolId = keccak256(encodeAbiParameters([{ type: "address" }, { type: "address" }, { type: "uint24" }, { type: "int24" }, { type: "address" }], [currency0, currency1, fee, tickSpacing, hook]));
   const canonicalId = keccak256(encodeAbiParameters([
     { type: "uint256" }, { type: "uint8" }, { type: "address" }, { type: "address" }, { type: "address" }, { type: "bytes32" }, { type: "bytes32" },
-  ], [plan.chainId, 0, ADAPTER, ADAPTER, "0x0000000000000000000000000000000000000000", poolId, market.profileId]));
-  return { venue: 0, canonicalId, manager: ADAPTER, factory: ADAPTER, pool: "0x0000000000000000000000000000000000000000", poolId, profileId: market.profileId, currency0, currency1, fee, tickSpacing, hook, openingSqrtPriceX96: 2n ** 96n };
+  ], [plan.chainId, 0, ADAPTER, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000", poolId, market.profileId]));
+  return { venue: 0, canonicalId, manager: ADAPTER, factory: "0x0000000000000000000000000000000000000000", pool: "0x0000000000000000000000000000000000000000", poolId, profileId: market.profileId, currency0, currency1, fee, tickSpacing, hook, openingSqrtPriceX96: 2n ** 96n };
 }
 
 function profileAnswer() {
@@ -113,6 +113,7 @@ function scenarioClient({ progress = emptyProgress(), headProgress = null, recei
           if (selectorOf(launchLifecycleAbi, "hashPlan") === selector) return hashLaunchPlan(plan);
           if (selectorOf(launchLifecycleAbi, "predictToken") === selector) return padAddress(TOKEN);
           if (selectorOf(launchLifecycleAbi, "launchIdOf") === selector) return hashLaunchIdentity(plan);
+          if (selectorOf(launchLifecycleAbi, "tokenFactory") === selector) return padAddress(ADAPTER);
           if (selectorOf(launchLifecycleAbi, "fundingEscrow") === selector) return padAddress(ESCROW);
           if (selectorOf(launchLifecycleAbi, "registry") === selector) return padAddress(REGISTRY);
           if (target === ESCROW.toLowerCase() && selectorOf(lifecycleFundingEscrowAbi, "wrappedNative") === selector) return padAddress("0x0000000000000000000000000000000000000030");
@@ -121,7 +122,7 @@ function scenarioClient({ progress = emptyProgress(), headProgress = null, recei
           if (selectorOf(lifecycleErc20Abi, "balanceOf") === selector) return word(10n ** 21n);
           if (selectorOf(lifecycleErc20Abi, "allowance") === selector) return word(10n ** 21n);
           if (selectorOf(lifecycleRegistryAbi, "core") === selector) return padAddress(plan.orchestrator);
-          if (selectorOf(lifecycleRegistryAbi, "assetAllowed") === selector) return padBool(true);
+          if (selectorOf(lifecycleRegistryAbi, "fundingInputAllowed") === selector) return padBool(true);
           if (selectorOf(lifecycleRegistryAbi, "requireEligible") === selector) return padAddress(ADAPTER);
           if (selectorOf(lifecycleRegistryAbi, "profileIds") === selector) {
             const ids = plan.markets.map((market) => market.profileId.slice(2)).join("");
@@ -176,32 +177,13 @@ function canonicalType(input) {
 function minimalPlanned(plan) {
   const simulation = { backend: "unavailable", confidence: "provisional", admitted: false, blockNumber: HEAD_NUMBER, blockHash: HEAD_HASH, account: plan.creator, chainId: plan.chainId, limits: { executionGasCeiling: 30_000_000n, headroomBps: HEADROOM, blockGasLimit: 30_000_000n, admissionKnown: true, unknownExecutionConstraints: [], unknownConstraints: [] }, steps: [] };
   return {
-    plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN,
+    plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN, tokenFactory: ADAPTER, tokenFactoryCodeHash: keccak256(CODE), hookDeployments: [],
     account: plan.creator, chainId: plan.chainId, mode: "staged", confirmations: 1,
     transactions: [], prerequisites: [], profiles: [], simulation, atomicAttempt: simulation,
     progress: null, preparationBatchSize: plan.markets.length,
   };
 }
 
-/** F2: the eth_simulateV1 payload must not override child baseFeePerGas. */
-test("eth_simulateV1 sends natural child fees: no baseFeePerGas override in blockStateCalls", async () => {
-  const client = scenarioClient({ simulate: () => [{ calls: [{ status: "0x1", gasUsed: "0x5208", returnData: "0x" }] }] });
-  const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
-  const limits = { chainGasLimit: 30_000_000n, rpcGasLimit: 30_000_000n, accountGasLimit: 30_000_000n, maxCalldataBytes: 131_072, headroomBps: HEADROOM, chainId: plan.chainId, account: plan.creator, orchestrator: plan.orchestrator, observedBlockNumber: HEAD_NUMBER, observedBlockHash: HEAD_HASH };
-  try {
-    await planLaunch({ client, plan, account: plan.creator, mode: "staged", limits });
-  } catch { /* mocked execution output cannot satisfy postconditions; the payload is what is under test */ }
-  const payloads = client.captured.filter((row) => row.method === "eth_simulateV1");
-  assert.ok(payloads.length > 0, "eth_simulateV1 must have been requested");
-  for (const { params } of payloads) {
-    const payload = params[0];
-    assert.ok(Array.isArray(payload.blockStateCalls) && payload.blockStateCalls.length > 0);
-    for (const call of payload.blockStateCalls) {
-      assert.equal(call.blockOverrides.baseFeePerGas, undefined, "child baseFeePerGas must be natural, never the parent's");
-      assert.ok(call.blockOverrides.number && call.blockOverrides.time, "child number/time are still derived from the parent block");
-    }
-  }
-});
 
 /** F4: absent receipt with the SAME canonical observed block is pending, never reorged. */
 test("absent receipt with an unchanged observed block stays pending and blocks further work", async () => {

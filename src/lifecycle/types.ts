@@ -1,7 +1,7 @@
 import type { Address, Hash, Hex } from "viem";
 import type {
   AdapterRegistrationV1, AssetFundingV1, LaunchExecutionMode, LaunchPlanV1, LaunchProgressV1,
-  MarketLiveStateV1, PreparedMarketV1, ProfileRegistrationV1,
+  MarketLiveStateV1, PreparedMarketV1, ProfileRegistrationV1, ProfileTopologyV1,
 } from "./schema.js";
 
 /** viem public clients or a raw JSON-RPC client; neither selects a transport. */
@@ -66,7 +66,7 @@ export type LifecycleFundingPrerequisite = {
   allowance?: bigint; spender: Address; nativeValue: bigint; conversion: "none" | "native-wrap" | "allowlisted-swap";
 };
 export type LifecycleProfile = {
-  id: Hex; registration: ProfileRegistrationV1; adapter: AdapterRegistrationV1;
+  id: Hex; registration: ProfileRegistrationV1; adapter: AdapterRegistrationV1; topology: ProfileTopologyV1;
   venueKind: "uniswap-v4" | "abyss" | "unknown";
   admitted: boolean; reason?: string;
 };
@@ -88,11 +88,18 @@ export type CanonicalLaunchProgress = {
   markets: readonly LifecycleMarketProgress[]; receipts: readonly LifecycleReceiptStatus[];
   token: Address; planHash: Hash; launchId: Hash;
 };
+export type PoolBoundHookDeployment = { deployer: Address; initCodeHash: Hex; salt: Hex; predictedHook: Address };
+export type LifecyclePoolBoundHookDeployment = PoolBoundHookDeployment & { marketIndex: number };
+export type PoolBoundHookSaltProgress = { attempts: bigint; salt: Hex; predictedHook: Address };
+export type PoolBoundLifecyclePreparationProgress = PoolBoundHookSaltProgress & { marketIndex: number };
 export type PlannedLaunch = {
   plan: LaunchPlanV1; planHash: Hash; launchId: Hash; predictedToken: Address;
+  tokenFactory: Address; tokenFactoryCodeHash: Hex;
   account: Address; chainId: bigint; mode: LaunchExecutionMode; confirmations: number;
   transactions: readonly LifecycleTransaction[]; prerequisites: readonly LifecycleFundingPrerequisite[];
   profiles: readonly LifecycleProfile[]; simulation: LifecycleSimulation;
+  /** Exact CREATE2 metadata captured from the final committed bound markets. */
+  hookDeployments: readonly LifecyclePoolBoundHookDeployment[];
   atomicAttempt: LifecycleSimulation; progress: CanonicalLaunchProgress;
   preparationBatchSize: number; limits?: LifecycleLimitSource;
 };

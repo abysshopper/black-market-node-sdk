@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { decodeFunctionResult, encodeAbiParameters, encodeFunctionData, keccak256, parseAbi, toHex } from "viem";
+import { decodeFunctionResult, encodeAbiParameters, encodeFunctionData, keccak256, parseAbi, toHex, zeroHash } from "viem";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
-const { buildNextTransaction, createControlledLifecycleFork, launchLifecycleAbi, lifecycleDirectoryAbi, LifecycleFundingKind, LifecyclePhase, LifecycleRewardMode, lifecycleErc20Abi, parseLaunchPlan, planLaunch, predictLifecycleToken, readLaunchProgress, simulateLaunchPlan } = await import(sdkPath);
+const { buildNextTransaction, buildPoolBoundHookDeploymentTransaction, createControlledLifecycleFork, decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, hashLaunchPlan, launchLifecycleAbi, lifecycleDirectoryAbi, lifecycleRegistryAbi, LifecycleFundingKind, LifecyclePhase, LifecycleRewardMode, lifecycleErc20Abi, parseLaunchPlan, planLaunch, predictLifecycleToken, preparePoolBoundLifecyclePlan, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment, simulateLaunchPlan, V4_POOL_BOUND_LIFECYCLE_PROFILE_ID } = await import(sdkPath);
 const enabled = Boolean(process.env.LAUNCH_LIFECYCLE_RPC_URL && process.env.LAUNCH_LIFECYCLE_FORK_RPC_URL && process.env.LAUNCH_LIFECYCLE_MANIFEST && process.env.LAUNCH_LIFECYCLE_FIXTURES && process.env.LAUNCH_LIFECYCLE_ALLOW_LOCAL_EXECUTION === "1");
 
 test("real-AMM lifecycle planning, admission, sequential execution and canonical recovery", { skip: !enabled, concurrency: false }, async (t) => {
@@ -14,6 +14,10 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
   const exported = JSON.parse(await readFile(process.env.LAUNCH_LIFECYCLE_FIXTURES, "utf8"));
   const baseFixture = exported.fixtures.find((row) => row.name === "staged-erc20-q1");
   assert.ok(baseFixture, "Real Solidity-authored fixture required");
+  const boundFixture = exported.poolBoundFixtures?.find((row) => row.name === "pool-bound-staged-erc20-q1");
+  const boundMultiFixture = exported.poolBoundFixtures?.find((row) => row.name === "pool-bound-staged-erc20-q2");
+  const boundOnlyFixture = exported.poolBoundFixtures?.find((row) => row.name === "pool-bound-only-staged-erc20-q2");
+  assert.ok(boundFixture && boundMultiFixture && boundOnlyFixture, "Actual separately-nonced original mixed and additive V4-only Solidity-authored bound fixtures are required");
   let requestId = 0;
   const client = { async request({ method, params = [] }) {
     const response = await fetch(rpcUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++requestId, method, params }) });
@@ -24,7 +28,8 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
   const chainId = BigInt(await client.request({ method: "eth_chainId" }));
   assert.equal(chainId, BigInt(manifest.chainId));
   const configured = manifest.executionLimits;
-  assert.ok(configured, "Actual operator admission constraints required");
+  assert.ok(configured?.provenance && exported.executionLimits?.provenance, "Actual reviewed operator policy with provenance is required");
+  for (const [key, value] of Object.entries(exported.executionLimits)) assert.deepEqual(configured[key], value, `Fixture and manifest reviewed execution policy ${key}`);
   const limits = async ({ block, chainId, account, orchestrator }) => ({
     chainId, account, orchestrator, observedBlockNumber: block.number, observedBlockHash: block.hash,
     chainGasLimit: BigInt(configured.chainTransactionGasLimit) < block.gasLimit ? BigInt(configured.chainTransactionGasLimit) : block.gasLimit,
@@ -33,8 +38,8 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
   });
   const fork = createControlledLifecycleFork({ sourceRpcUrl: rpcUrl, forkRpcUrl: process.env.LAUNCH_LIFECYCLE_FORK_RPC_URL, allowTransactions: true, impersonation: "anvil" });
   let planNonce = 50_000n;
-  async function freshPlan(supply, rewardMode) {
-    const plan = parseLaunchPlan(JSON.stringify(baseFixture.plan));
+  async function freshPlan(supply, rewardMode, selectedFixture = baseFixture) {
+    const plan = parseLaunchPlan(JSON.stringify(selectedFixture.plan));
     if (supply !== undefined) plan.token.supply = supply;
     if (rewardMode !== undefined) {
       plan.token.rewardMode = rewardMode;
@@ -44,7 +49,7 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
       plan.feeAssets = plan.feeAssets.map((policy) => ({ ...policy, ownerBps: rewardMode === LifecycleRewardMode.None ? 10000 : 8000, rewardsBps: rewardMode === LifecycleRewardMode.None ? 0 : 2000, burnBps: 0 }));
     }
     plan.nonce = ++planNonce;
-    const oldToken = baseFixture.predictedToken;
+    const oldToken = selectedFixture.predictedToken;
     const orientations = plan.markets.map((market) => BigInt(oldToken) < BigInt(market.quoteAsset));
     let token;
     for (let salt = 0n; salt < 4096n; salt += 1n) {
@@ -55,7 +60,7 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
     }
     assert.ok(token, "Deterministic token orientation search must find a real compatible token");
     plan.feeAssets = plan.feeAssets.map((policy) => policy.asset.toLowerCase() === oldToken.toLowerCase() ? { ...policy, asset: token } : policy).sort((a, b) => BigInt(a.asset) < BigInt(b.asset) ? -1 : 1);
-    return plan;
+    return plan.markets.some((market) => market.configVersion === 3) ? (await preparePoolBoundLifecyclePlan({ client, plan })).plan : plan;
   }
   async function isolated(fn) {
     const snapshot = await client.request({ method: "evm_snapshot" });
@@ -92,6 +97,167 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
     throw new Error("Funding prerequisites never reached begin");
   }
 
+  async function readContract(to, abi, functionName, args = []) {
+    const data = encodeFunctionData({ abi, functionName, args });
+    return decodeFunctionResult({ abi, functionName, data: await client.request({ method: "eth_call", params: [{ to, data }, "latest"] }) });
+  }
+
+  await t.test("both reusable shared and single-pool offerings are certified; an empty legacy topology selector never admits bound profiles", async () => isolated(async () => {
+    const profiles = await readLifecycleProfiles({ client, orchestrator: manifest.addresses.orchestrator });
+    const shared = profiles.find((profile) => profile.topology.hookTopology === 1);
+    const bound = profiles.find((profile) => profile.id.toLowerCase() === V4_POOL_BOUND_LIFECYCLE_PROFILE_ID.toLowerCase());
+    assert.equal(shared?.admitted, true);
+    assert.equal(bound?.admitted, true);
+    assert.equal(bound.topology.hookTopology, 2);
+    assert.equal(bound.registration.hook, "0x0000000000000000000000000000000000000000");
+    const registry = await readContract(manifest.addresses.orchestrator, launchLifecycleAbi, "registry");
+    const selector = encodeFunctionData({ abi: lifecycleRegistryAbi, functionName: "profileTopology", args: [bound.id] }).slice(0, 10);
+    const legacy = { request: (args) => args.method === "eth_call" && args.params?.[0]?.to.toLowerCase() === registry.toLowerCase() && args.params?.[0]?.data.startsWith(selector) ? Promise.resolve("0x") : client.request(args) };
+    const legacyProfiles = await readLifecycleProfiles({ client: legacy, orchestrator: manifest.addresses.orchestrator, profileIds: [shared.id, bound.id] });
+    assert.equal(legacyProfiles[0].admitted, true, "Known shared admission still rechecks the actual deployed immutable graph");
+    assert.equal(legacyProfiles[1].admitted, false, "Code existence or a zero global hook cannot substitute for bound topology certification");
+  }));
+
+  await t.test("bound metadata accepts unmined bits while wallet admission requires exact bits and rejects a shared-profile masquerade", async () => isolated(async () => {
+    const plan = await freshPlan(undefined, undefined, boundFixture);
+    const market = plan.markets[0];
+    const config = decodePoolBoundV4LifecycleMarketConfig(market.config);
+    let badPlan;
+    for (let salt = 0n; salt < 16n; salt += 1n) {
+      const candidate = { ...plan, markets: plan.markets.map((item, index) => index === 0 ? { ...item, config: encodePoolBoundV4LifecycleMarketConfig({ ...config, hookSalt: toHex(salt, { size: 32 }) }) } : item) };
+      const metadata = await readPoolBoundHookDeployment({ client, plan: candidate, marketIndex: 0 });
+      if ((BigInt(metadata.predictedHook) & 0x3fffn) !== 0x1afcn) { badPlan = candidate; break; }
+    }
+    assert.ok(badPlan, "A wrong-bit candidate still provides exact metadata for offchain mining");
+    const refused = await planLaunch({ client, plan: badPlan, account: plan.creator, mode: "staged", limits, fork });
+    assert.equal(refused.simulation.admitted, false);
+    await assert.rejects(buildNextTransaction({ client, planned: refused, limits, fork }), { code: "PLAN_NOT_ADMITTED" });
+    const sharedProfile = baseFixture.plan.markets[0].profileId;
+    const wrongProfile = { ...plan, markets: plan.markets.map((item, index) => index === 0 ? { ...item, profileId: sharedProfile } : item) };
+    await assert.rejects(planLaunch({ client, plan: wrongProfile, account: plan.creator, mode: "staged", limits, fork }), { code: "INVALID_MARKET" });
+  }));
+
+  await t.test("bound mining is invalidated by concurrent economic edits, and stale reviewed economics cannot produce a wallet transaction", async () => isolated(async () => {
+    const plan = await freshPlan(undefined, undefined, boundFixture);
+    const draft = { ...plan, markets: plan.markets.map((market) => market.configVersion === 3 ? { ...market, config: encodePoolBoundV4LifecycleMarketConfig({ ...decodePoolBoundV4LifecycleMarketConfig(market.config), hookSalt: zeroHash }) } : market) };
+    let edited = false;
+    await assert.rejects(preparePoolBoundLifecyclePlan({ client, plan: draft, onProgress: () => {
+      if (edited) return;
+      edited = true;
+      draft.markets = draft.markets.map((market, index) => index === 0 ? { ...market, tokenBudget: market.tokenBudget + 1n } : market);
+    } }), { code: "PLAN_MUTATED" });
+    const planned = await planLaunch({ client, plan, account: plan.creator, mode: "staged", limits, fork });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    const changed = { ...planned, plan: { ...plan, markets: plan.markets.map((market, index) => index === 0 ? { ...market, tokenBudget: market.tokenBudget + 1n } : market) } };
+    await assert.rejects(buildNextTransaction({ client, planned: changed, limits, fork }), { code: "PLAN_MUTATED" });
+    const before = await readPoolBoundHookDeployment({ client, plan, marketIndex: 0 });
+    const after = await readPoolBoundHookDeployment({ client, plan: changed.plan, marketIndex: 0 });
+    assert.notEqual(after.initCodeHash, before.initCodeHash, "Even a one-unit budget change invalidates the mined initcode commitment");
+    assert.notEqual(after.predictedHook.toLowerCase(), before.predictedHook.toLowerCase());
+  }));
+
+  await t.test("factory runtime drift invalidates mining and reviewed execution even when token and hook predictions remain unchanged", async () => isolated(async () => {
+    const plan = await freshPlan(undefined, undefined, boundFixture);
+    const planned = await planLaunch({ client, plan, account: plan.creator, mode: "staged", limits, fork });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    const metadata = await readPoolBoundHookDeployment({ client, plan, marketIndex: 0 });
+    const factoryCode = await client.request({ method: "eth_getCode", params: [planned.tokenFactory, "latest"] });
+    let mutation;
+    const miningClient = { async request(request) {
+      if (request.method === "eth_getBlockByNumber" && request.params?.[0] === "latest" && mutation !== undefined) await mutation;
+      return client.request(request);
+    } };
+    await assert.rejects(preparePoolBoundLifecyclePlan({ client: miningClient, plan, onProgress() {
+      mutation ??= client.request({ method: "anvil_setCode", params: [planned.tokenFactory, `${factoryCode}00`] });
+    } }), { code: "TOKEN_FACTORY_BINDING" });
+    await mutation;
+    assert.equal(await client.request({ method: "eth_getCode", params: [planned.tokenFactory, "latest"] }), `${factoryCode}00`, "Actual fork runtime changes without altering executable factory instructions");
+    assert.equal(await predictLifecycleToken({ client, plan }), planned.predictedToken, "Unchanged CREATE2 prediction alone cannot certify unchanged factory provenance");
+    assert.deepEqual(await readPoolBoundHookDeployment({ client, plan, marketIndex: 0 }), metadata);
+    await assert.rejects(buildNextTransaction({ client, planned, limits, fork }), { code: "TOKEN_FACTORY_BINDING" });
+  }));
+
+  await t.test("mixed shared/bound V4 markets cannot bypass the one-quote rule with different roots or adapter IDs", async () => isolated(async () => {
+    const plan = await freshPlan(undefined, undefined, boundFixture);
+    const shared = { ...parseLaunchPlan(JSON.stringify(baseFixture.plan)).markets[0], quoteAsset: plan.markets[0].quoteAsset };
+    const duplicate = { ...plan, markets: [shared, plan.markets[0]] };
+    await assert.rejects(planLaunch({ client, plan: duplicate, account: plan.creator, mode: "staged", limits, fork }), { code: "DUPLICATE_V4_QUOTE" });
+  }));
+
+  await t.test("exact permissionless hook predeployment before token deployment is reusable, but changed runtime lacks factory provenance", async () => isolated(async () => {
+    const plan = await freshPlan(undefined, undefined, boundFixture);
+    const deployment = await buildPoolBoundHookDeploymentTransaction({ client, plan, marketIndex: 0 });
+    const token = await predictLifecycleToken({ client, plan });
+    assert.equal(await client.request({ method: "eth_getCode", params: [token, "latest"] }), "0x");
+    const gasPrice = BigInt(await client.request({ method: "eth_gasPrice" }));
+    const estimate = BigInt(await client.request({ method: "eth_estimateGas", params: [{ from: plan.creator, to: deployment.to, data: deployment.data, gasPrice: toHex(gasPrice) }] }));
+    await send({ ...deployment, from: plan.creator, gas: estimate * 115n / 100n, gasPrice });
+    const metadata = await readPoolBoundHookDeployment({ client, plan, marketIndex: 0 });
+    assert.equal(metadata.predictedHook.toLowerCase(), deployment.deployment.predictedHook.toLowerCase());
+    const { planned, receipts, begin } = await startStaged(plan);
+    receipts.push(await send(begin));
+    const prepare = await buildNextTransaction({ client, planned, receipts, limits, fork });
+    assert.equal(prepare.kind, "prepare");
+    receipts.push(await send(prepare));
+    const progress = await readLaunchProgress({ client, planned, receipts });
+    assert.equal(progress.markets[0].prepared.identity.hook.toLowerCase(), metadata.predictedHook.toLowerCase(), "Actual adapter preparation reuses exactly the proven CREATE2 hook");
+    assert.deepEqual(await readPoolBoundHookDeployment({ client, plan, marketIndex: 0 }), metadata, "Prepared state does not make exact metadata unavailable");
+    await client.request({ method: "anvil_setCode", params: [metadata.predictedHook, "0x60006000f3"] });
+    await assert.rejects(readPoolBoundHookDeployment({ client, plan, marketIndex: 0 }), { code: "HOOK_DEPLOYMENT_CHANGED" });
+  }));
+
+  await t.test("an explicitly committed bound-only multipool companion also completes without replacing the original mixed launch", async () => isolated(async () => {
+    const plan = await freshPlan(undefined, undefined, boundOnlyFixture);
+    const planned = await planLaunch({ client, plan, account: plan.creator, mode: "staged", limits, fork });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    const receipts = [];
+    for (let safety = 0; safety < 24; safety += 1) {
+      const next = await buildNextTransaction({ client, planned, receipts, limits, fork });
+      if (next === undefined) break;
+      receipts.push(await send(next));
+    }
+    const done = await readLaunchProgress({ client, planned, receipts });
+    assert.equal(done.canonical.phase, LifecyclePhase.Active);
+    assert.equal(done.canonical.marketCount, plan.markets.length);
+    assert.equal(done.canonical.positionCount, plan.markets.reduce((count, market) => count + decodePoolBoundV4LifecycleMarketConfig(market.config).positions.length, 0));
+  }));
+
+  await t.test("the original mixed bound multipool launch activates every committed venue, quote, position and salt", async () => isolated(async () => {
+    const plan = await freshPlan(undefined, undefined, boundMultiFixture);
+    const planned = await planLaunch({ client, plan, account: plan.creator, mode: "staged", limits, fork });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    assert.equal(planned.hookDeployments.length, 2);
+    const receipts = [];
+    for (let safety = 0; safety < 24; safety += 1) {
+      const next = await buildNextTransaction({ client, planned, receipts, limits, fork });
+      if (next === undefined) break;
+      receipts.push(await send(next));
+    }
+    const done = await readLaunchProgress({ client, planned, receipts });
+    assert.equal(done.canonical.phase, LifecyclePhase.Active);
+    assert.equal(done.canonical.marketCount, plan.markets.length);
+    assert.equal(done.canonical.positionCount, plan.markets.reduce((count, market) => count + (market.configVersion === 3 ? decodePoolBoundV4LifecycleMarketConfig(market.config) : decodeAbyssLifecycleMarketConfig(market.config)).positions.length, 0));
+    for (const deployment of planned.hookDeployments) {
+      const market = done.markets[deployment.marketIndex];
+      assert.equal(market.prepared.identity.hook.toLowerCase(), deployment.predictedHook.toLowerCase());
+      assert.equal(market.live.publicTrading, true);
+      assert.deepEqual(await readPoolBoundHookDeployment({ client, plan, marketIndex: deployment.marketIndex }), { deployer: deployment.deployer, initCodeHash: deployment.initCodeHash, salt: deployment.salt, predictedHook: deployment.predictedHook });
+    }
+  }));
+
+  await t.test("adapter dependency loss refuses bound continuation but does not strand exact adapter-free cancellation", async () => isolated(async () => {
+    const plan = await freshPlan(undefined, undefined, boundFixture);
+    const { planned, receipts, begin } = await startStaged(plan);
+    receipts.push(await send(begin));
+    const profile = planned.profiles.find((profile) => profile.topology.hookTopology === 2);
+    await client.request({ method: "anvil_setCode", params: [profile.adapter.implementation, "0x"] });
+    await assert.rejects(buildNextTransaction({ client, planned, receipts, limits, fork }), { code: "PLAN_NOT_ADMITTED" });
+    const cancel = await buildNextTransaction({ client, planned, receipts, action: "cancel", limits, fork });
+    assert.equal(cancel.kind, "cancel");
+    receipts.push(await send(cancel));
+    assert.equal((await readLaunchProgress({ client, planned, receipts })).canonical.phase, LifecyclePhase.Cancelled);
+  }));
+
   await t.test("wrong chain/account and missing mode are refused before any execution", async () => isolated(async () => {
     const plan = await freshPlan();
     const foreignClient = { request: (args) => args.method === "eth_chainId" ? Promise.resolve(toHex(chainId + 1n)) : client.request(args) };
@@ -123,38 +289,30 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
     assert.equal(await client.request({ method: "eth_getBalance", params: [plan.creator, "latest"] }), balance);
   }));
 
-  // Measured on the live graph: a 2-market launchAtomic's validated gas envelope
-  // exceeds the 16M chain/RPC transaction cap (raw sends at 15M/14M exhaust and
-  // revert). Correct SDK behavior is refusal with explicit staged-consent fallback,
-  // never silent staged substitution. Flip when a compatible graph/cap admits it.
-  const atomicEnvelopeAvailable = false;
-  await t.test("calldata admission, missing data fee and dynamic account caps are distinct boundaries", async () => isolated(async () => {
+  await t.test("calldata admission and dynamic account caps are distinct boundaries", async () => isolated(async () => {
     const plan = await freshPlan();
-    const valid = await planLaunch({ client, plan, account: plan.creator, mode: "atomic", limits, fork });
-    assert.equal(valid.simulation.admitted, atomicEnvelopeAvailable, valid.simulation.reason);
-    if (!atomicEnvelopeAvailable) assert.match(valid.simulation.reason ?? "", /staged/);
-    if (atomicEnvelopeAvailable) assert.equal(valid.transactions.at(-1).estimate.feeConfidence, "execution-only");
-    const shortData = await planLaunch({ client, plan, account: plan.creator, mode: "atomic", fork, limits: async (context) => ({ ...await limits(context), maxCalldataBytes: 32 }) });
+    const valid = await planLaunch({ client, plan, account: plan.creator, mode: "staged", limits, fork });
+    assert.equal(valid.simulation.admitted, true, valid.simulation.reason);
+    const shortData = await planLaunch({ client, plan, account: plan.creator, mode: "staged", fork, limits: async (context) => ({ ...await limits(context), maxCalldataBytes: 32 }) });
     assert.equal(shortData.simulation.admitted, false);
     const tinyAccount = async (context) => ({ ...await limits(context), accountGasLimit: 30_000n });
     await assert.rejects(buildNextTransaction({ client, planned: valid, fork, limits: tinyAccount }), { code: "PLAN_NOT_ADMITTED" });
-    const dataFees = await planLaunch({ client, plan, account: plan.creator, mode: "atomic", fork, limits: async (context) => ({ ...await limits(context), estimateDataFee: async () => 123n }) });
-    assert.equal(dataFees.simulation.admitted, atomicEnvelopeAvailable);
-    if (atomicEnvelopeAvailable) for (const transaction of dataFees.transactions) assert.equal(transaction.estimate.totalFee, transaction.estimate.executionFee + 123n);
   }));
 
-  await t.test("atomic refusal never silently starts staged; explicit consent keeps the same economics and completes execution", async () => isolated(async () => {
+  await t.test("an explicit constrained-account atomic refusal never silently stages, while fresh staged consent completes the same economics", async () => isolated(async () => {
     const plan = await freshPlan();
-    const normal = await planLaunch({ client, plan, account: plan.creator, mode: "atomic", limits, fork });
-    assert.equal(normal.simulation.admitted, atomicEnvelopeAvailable, normal.simulation.reason);
-    if (!atomicEnvelopeAvailable) assert.match(normal.simulation.reason ?? "", /staged/);
+    const constrainedAccount = async (context) => ({ ...await limits(context), accountGasLimit: 30_000n });
+    const normal = await planLaunch({ client, plan, account: plan.creator, mode: "atomic", limits: constrainedAccount, fork });
+    assert.equal(normal.simulation.admitted, false);
+    assert.equal(normal.mode, "atomic");
+    assert.equal(normal.planHash, hashLaunchPlan(plan));
+    await assert.rejects(buildNextTransaction({ client, planned: normal, limits: constrainedAccount, fork }), { code: "PLAN_NOT_ADMITTED" });
+    assert.equal((await readLaunchProgress({ client, planned: normal })).canonical.phase, LifecyclePhase.None);
     const staged = await planLaunch({ client, plan, account: plan.creator, mode: "staged", limits, fork });
     assert.equal(staged.planHash, normal.planHash);
     assert.equal(staged.mode, "staged");
     assert.equal(staged.transactions.at(-1).kind, "activate");
     assert.equal(staged.simulation.admitted, true, staged.simulation.reason);
-    // With the 2-market atomic envelope over the cap, an explicit staged consent
-    // is also what actually completes: same economics, deterministic token.
     const receipts = [];
     for (let safety = 0; safety < 20; safety += 1) {
       const next = await buildNextTransaction({ client, planned: staged, receipts, limits, fork });
@@ -169,7 +327,6 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
   for (const rewardMode of [LifecycleRewardMode.None, LifecycleRewardMode.Staking, LifecycleRewardMode.Dividends]) await t.test(`the exact ERC20 supply boundary for reward mode ${rewardMode} remains executable on the real stack`, async () => isolated(async () => {
     const plan = await freshPlan(rewardMode === LifecycleRewardMode.None ? (1n << 256n) - 1n : 10n ** 77n, rewardMode);
     const atomic = await planLaunch({ client, plan, account: plan.creator, mode: "atomic", limits, fork });
-    assert.equal(atomic.simulation.admitted, atomicEnvelopeAvailable, atomic.simulation.reason);
     const planned = await planLaunch({ client, plan, account: plan.creator, mode: "staged", limits, fork });
     assert.equal(planned.predictedToken, atomic.predictedToken);
     assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
@@ -369,7 +526,7 @@ test("real-AMM lifecycle planning, admission, sequential execution and canonical
 
   await t.test("a genuinely-admitted single-market atomic fixture executes in one transaction on the live graph", async () => isolated(async () => {
     const row = exported.admitted ?? exported.fixtures.find((entry) => entry.name === "atomic-erc20-q1-single");
-    if (row === undefined) return t.diagnostic("atomic-erc20-q1-single not yet exported by the current sdk-plans.json");
+    assert.ok(row, "The separately committed single-market atomic fixture is required");
     assert.equal(row.name, "atomic-erc20-q1-single");
     const plan = parseLaunchPlan(JSON.stringify(row.plan));
     assert.equal(plan.markets.length, 1);

@@ -63,6 +63,9 @@ export type ProfileRegistrationV1 = {
   adapterId: Hex; configSchema: Hex; dependencyDigest: Hex; venue: Address; factory: Address; hook: Address;
   capabilities: bigint; enabled: boolean;
 };
+export type ProfileTopologyV1 = {
+  hookTopology: 0 | 1 | 2; configVersion: number; hookDeployer: Address; hookCreationCodeHash: Hex;
+};
 export type MarketLiveStateV1 = {
   sqrtPriceX96: bigint; tick: number; liquidity: bigint; publicTrading: boolean; oracleReadyAt: bigint;
 };
@@ -160,6 +163,10 @@ export const profileRegistrationV1Components = [
   { name: "dependencyDigest", type: "bytes32" }, { name: "venue", type: "address" },
   { name: "factory", type: "address" }, { name: "hook", type: "address" },
   { name: "capabilities", type: "uint64" }, { name: "enabled", type: "bool" },
+] as const;
+export const profileTopologyV1Components = [
+  { name: "hookTopology", type: "uint8" }, { name: "configVersion", type: "uint32" },
+  { name: "hookDeployer", type: "address" }, { name: "hookCreationCodeHash", type: "bytes32" },
 ] as const;
 export const marketLiveStateV1Components = [
   { name: "sqrtPriceX96", type: "uint160" }, { name: "tick", type: "int24" }, { name: "liquidity", type: "uint128" },
