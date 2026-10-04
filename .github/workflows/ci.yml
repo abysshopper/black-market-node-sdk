@@ -114,22 +114,18 @@ jobs:
       - name: Import smoke
         working-directory: smoke
         run: |
-          node -e "import('@black-market/sdk').then((sdk) => {
-            const required = [
-              'createProtocolPublicClient',
-              'createProtocolWalletClient',
-              'getAddresses',
-              'robinhoodMainnet',
-              'LAUNCH_TEMPLATES',
-              'deriveAtomicLaunchPoolRecipe',
-              'estimateAtomicLaunchInitialBuy',
-              'buildAtomicLaunchCalldata',
-              'DEFAULT_ATOMIC_LAUNCH_TARGET_MARKET_CAP_USD',
-            ];
-            for (const key of required) {
-              if (sdk[key] === undefined) throw new Error('missing export: ' + key);
+          node --input-type=module -e "
+            import assert from 'node:assert/strict';
+            import { readFile } from 'node:fs/promises';
+            import * as sdk from '@black-market/sdk';
+            import * as lifecycle from '@black-market/sdk/lifecycle';
+            const fixture = JSON.parse(await readFile('../test/fixtures/launch-lifecycle-v1.json', 'utf8'));
+            for (const api of [sdk, lifecycle]) {
+              const plan = api.parseLaunchPlan(JSON.stringify(fixture.plan));
+              assert.equal(api.encodeLaunchPlan(plan), fixture.encodedPlan);
+              assert.equal(api.hashLaunchPlan(plan), fixture.planHash);
+              assert.equal(api.hashLaunchIdentity(plan), fixture.launchId);
+              assert.deepEqual(api.parseLaunchPlan(api.serializeLaunchPlan(plan)), plan);
             }
-            const addresses = sdk.getAddresses(4663);
-            if (!addresses.abyssRouter) throw new Error('address map is empty');
-            console.log('import smoke OK:', sdk.robinhoodMainnet.name);
-          })"
+            console.log('packed lifecycle commitment smoke OK:', fixture.planHash);
+          "

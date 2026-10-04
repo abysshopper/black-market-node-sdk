@@ -134,6 +134,25 @@ pnpm test       # build + node:test suite
 pnpm typecheck
 ```
 
+## 0.3.0 migration
+
+- Breaking cutover to explicit lifecycle plans and signed V2 registry profiles.
+  Historical Atomic/Unified builders, template catalogs and old-name aliases are removed.
+- V4 shared config 4 and pool-bound config 5 commit author terms and an explicit developer rate.
+  Old configs are rejected; no automatic conversion or compatibility fallback is provided.
+- Registry admission uses `registerProfile`, reads use `profileEnvelope` / `profileId`,
+  and the EIP-712 domain is `Black Market Launch Registry`, version `2`.
+  Regenerate author consent for the exact new deployment graph.
+- Pool deployment exports use `FixedFeePoolHookV1`, `PoolHookDeployerV1`,
+  `PoolMarketAdapterV1`, `PoolFeeCollectorDeployerV1` and `PoolFeeCollectorFactoryV1`.
+  Profile/dependency hash preimages and current economic tuples remain unchanged.
+- The root and `/lifecycle` package entrypoints support commitment codecs, explicit
+  planning/recovery and stable-author V3 fee operations. No production launch deployment
+  or author authorization is bundled with this release.
+
+The earlier `v0.2.0` GitHub release refers to an older snapshot whose npm publication failed.
+This release uses a new tag rather than moving that historical tag.
+
 ## Releasing
 
 Releases are published to npm by GitHub Actions with [trusted publishing (OIDC)](https://docs.npmjs.com/trusted-publishers) — no npm tokens are stored in this repository.
