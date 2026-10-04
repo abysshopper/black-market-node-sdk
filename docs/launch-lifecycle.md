@@ -348,9 +348,23 @@ async function submitNext(
 ): Promise<LifecycleReceiptReference | undefined> {
   const next = await buildNextTransaction({ client, planned, limits, receipts, fork });
   if (!next) return undefined;
+  // Guard every returned transaction, including the first approval/reset.
+  if (wallet.chain && wallet.chain.id !== next.chainId) {
+    throw new Error("Configured wallet chain differs from the planned transaction");
+  }
+  const connectedChainId = await wallet.getChainId(); // Failure is a refusal, not a fallback.
+  if (!Number.isSafeInteger(connectedChainId) || connectedChainId <= 0
+    || connectedChainId !== next.chainId) {
+    throw new Error("Connected wallet chain cannot prove the planned transaction domain");
+  }
+  // An unconfigured wallet can use the public client's explicit Chain descriptor.
+  const chain = wallet.chain ?? client.chain;
+  if (!chain || chain.id !== next.chainId) {
+    throw new Error("Configure a viem Chain matching the planned transaction");
+  }
   let effectiveHash;
   const hash = await wallet.sendTransaction({
-    account: next.from, chain: wallet.chain,
+    account: next.from, chain,
     to: next.to, data: next.data, value: next.value,
     gas: next.gas, gasPrice: next.gasPrice,
   });
@@ -368,6 +382,18 @@ async function submitNext(
   };
 }
 ```
+
+The public client authenticates the planning/read domain, **not** the chain of a
+separate wallet. Check both the wallet's configured chain (when present) and its
+fresh connected `getChainId()` against **every** returned `next.chainId` before
+sending/signing, including ERC20 approvals, allowance resets, hook predeployment
+and cancellation. An unavailable or invalid connected identity is a refusal.
+The example supports a wallet without `wallet.chain` when `client.chain` supplies
+a matching explicit viem `Chain`; if neither supplies one, configure a reviewed
+matching descriptor first. The validated descriptor is passed as viem's `chain`
+override for the planned domain, retaining viem's own connected-chain check at
+send time; do not pass `chain: null` or disable that check. The wallet must honor
+the domain through signing/submission even if its network changes during a prompt.
 
 Persist transaction hashes immediately and update observed canonical block/hash after a receipt. If a wallet reports replacement, retain the original hash and supply the effective `replacementHash`. A same-nonce transfer to self is classified as `replacement-cancelled`, not launch completion. A receipt on a removed block is `reorged`; status-zero receipts are `reverted`. Confirmation policy applies before confirmed/reverted/replacement-cancelled classification. An unknown hash without a previously observed receipt remains pending, not an invented reorg.
 
@@ -388,7 +414,9 @@ const cancel = await buildNextTransaction({
   client, planned, fork, receipts, action: "cancel",
 });
 // The stored limit callback is refreshed automatically, or supply current limits explicitly.
-// Submit with the same exact from/to/data/value/gas/gasPrice treatment as a normal step.
+// Before sending/signing cancel, apply the same configured/connected chain checks
+// against cancel.chainId and pass the validated viem Chain override shown above.
+// Preserve the same exact from/to/data/value/gas/gasPrice envelope and receipt handling.
 ```
 
 Cancellation still needs current stateful execution admission and account confirmation safety; stale/missing execution constraints are not bypassed as a recovery shortcut. Active/Cancelled are terminal, and there is no creator-controlled pause after activation.
