@@ -134,7 +134,7 @@ pnpm test       # build + node:test suite
 pnpm typecheck
 ```
 
-## 0.3.0 migration
+## 0.3.1 migration
 
 - Breaking cutover to explicit lifecycle plans and signed V2 registry profiles.
   Historical Atomic/Unified builders, template catalogs and old-name aliases are removed.
@@ -150,8 +150,9 @@ pnpm typecheck
   planning/recovery and stable-author V3 fee operations. No production launch deployment
   or author authorization is bundled with this release.
 
-The earlier `v0.2.0` GitHub release refers to an older snapshot whose npm publication failed.
-This release uses a new tag rather than moving that historical tag.
+The earlier `v0.2.0` and `v0.3.0` GitHub releases are preserved; their npm uploads failed.
+Version `0.3.1` adds the matching GitHub repository metadata required by npm trusted
+publishing, without changing the lifecycle API.
 
 ## Releasing
 
