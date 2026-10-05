@@ -1,7 +1,7 @@
 {
   "name": "@black-market/sdk",
-  "version": "0.5.1",
-  "description": "Canonical TypeScript SDK for Black Market on Robinhood Chain (reviewed multi-market launches, Abyss DEX, lending).",
+  "version": "0.5.2",
+  "description": "TypeScript SDK for Abyss token launches, swaps, and lending.",
   "license": "MIT",
   "repository": {
     "type": "git",
