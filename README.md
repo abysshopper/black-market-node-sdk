@@ -43,3 +43,6 @@ Keep `.env` and private recovery files out of Git.
 [Example setup](https://github.com/abysshopper/black-market-node-sdk/tree/main/examples)
 · [API guide](https://github.com/abysshopper/black-market-node-sdk/blob/main/docs/launch-lifecycle.md)
 · [MIT license](https://github.com/abysshopper/black-market-node-sdk/blob/main/LICENSE)
+
+[Agent guide](https://github.com/abysshopper/black-market-node-sdk/blob/main/AGENTS.md)
+· [Skills](https://github.com/abysshopper/black-market-node-sdk/tree/main/.agents/skills)
