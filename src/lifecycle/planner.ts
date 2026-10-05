@@ -2,7 +2,7 @@ import { encodeAbiParameters, encodeFunctionData, keccak256, toHex, zeroAddress,
 import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleRegistryAbi } from "./abi.js";
 import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecycleMode, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LifecycleVenue, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, LIFECYCLE_MULTI_POSITION_CAPABILITY, LIFECYCLE_REQUIRED_CAPABILITIES, marketIdentityV1Components, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1, type MarketIdentityV1 } from "./schema.js";
 import { ABYSS_LIFECYCLE_CONFIG_SCHEMA, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment, validateLifecycleMarketIdentity } from "./progress.js";
-import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, hasLifecycleV4HookPermissions, minePoolBoundHookSalt, predictPoolBoundHookAddress, validateReviewedV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
+import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, hasLifecycleV4HookPermissions, minePoolBoundHookSalt, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
 import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity } from "./rpc.js";
 import { simulateLaunchTransactions } from "./simulation.js";
 import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PoolBoundLifecyclePreparationProgress, type SimulateLaunchPlanOptions } from "./types.js";
@@ -40,7 +40,7 @@ function validatePlanShape(plan: LaunchPlanV1): void {
     if (market.configVersion === 4) config = decodeV4LifecycleMarketConfig(market.config);
     else if (market.configVersion === 5) config = decodePoolBoundV4LifecycleMarketConfig(market.config);
     if (config !== undefined) {
-      if (config.profileId.toLowerCase() !== market.profileId.toLowerCase()) throw new LifecyclePlanningError("REVIEWED_TERMS_MISMATCH", "Inner config profile differs from the committed market profile");
+      if (config.profileId.toLowerCase() !== market.profileId.toLowerCase()) throw new LifecyclePlanningError("PROFILE_TERMS_MISMATCH", "Inner config profile differs from the committed market profile");
       const quote = market.quoteAsset.toLowerCase();
       if (v4Quotes.has(quote)) throw new LifecyclePlanningError("DUPLICATE_V4_QUOTE", "Only one V4 market per quote asset is allowed across shared and pool-bound offerings; put multiple positions in that market");
       v4Quotes.add(quote);
@@ -137,7 +137,7 @@ async function validatePendingInputs(client: LifecycleRpcClient, planned: Planne
       const schema = profile.registration.configSchema.toLowerCase();
       const config = schema === V4_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? decodeV4LifecycleMarketConfig(market.config) : schema === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? decodePoolBoundV4LifecycleMarketConfig(market.config) : schema === ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? decodeAbyssLifecycleMarketConfig(market.config) : undefined;
       if (config === undefined) throw new LifecyclePlanningError("UNSUPPORTED_SCHEMA", `Unsupported lifecycle config schema ${profile.registration.configSchema}`);
-      if ("developerFeeBps" in config) validateReviewedV4LifecycleMarket({ market, config, profile, token: planned.predictedToken });
+      if ("developerFeeBps" in config) validateV4LifecycleMarket({ market, config, profile, token: planned.predictedToken });
       if (config.positions.length === 0 || config.positions.length > 32 || positionCount + config.positions.length > 32) throw new LifecyclePlanningError("INVALID_POSITION_COUNT", "A launch commits at most 32 positive positions across every market/venue");
       positionCount += config.positions.length;
       const rewards = progress.canonical.rewards === zeroAddress && plan.token.rewardMode === LifecycleRewardMode.Dividends ? planned.predictedToken : progress.canonical.rewards;

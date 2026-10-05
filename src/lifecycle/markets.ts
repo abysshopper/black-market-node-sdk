@@ -39,7 +39,7 @@ export function decodeV4LifecycleMarketConfig(encoded: Hex): V4LifecycleMarketCo
 export type V4PoolBoundLifecycleMarketConfig = Omit<V4LifecycleMarketConfig, "version"> & { version: 5; hookSalt: Hex };
 export const V4_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"));
 export const V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"));
-export const V4_POOL_BOUND_MARKET_ECONOMICS_DOMAIN = keccak256(stringToHex("black-market.reviewed-pool-bound-market-economics.v1"));
+export const V4_POOL_BOUND_MARKET_ECONOMICS_DOMAIN = keccak256(stringToHex("black-market.pool-bound-market-economics.v1"));
 export const V4_LIFECYCLE_HOOK_PERMISSION_MASK = 0x3fffn;
 export const V4_LIFECYCLE_HOOK_PERMISSIONS = 0x1afcn;
 export const poolBoundV4LifecycleMarketComponents = [
@@ -65,7 +65,7 @@ export function decodePoolBoundV4LifecycleMarketConfig(encoded: Hex): V4PoolBoun
 }
 
 /** Exact pending-source admission terms; author identity is never the live payout address. */
-export function validateReviewedV4LifecycleMarket(options: {
+export function validateV4LifecycleMarket(options: {
   market: MarketConfigV1; config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig; profile: LifecycleProfile; token: Address;
 }): void {
   const { market, config, profile, token } = options;
@@ -83,19 +83,20 @@ export function validateReviewedV4LifecycleMarket(options: {
     config.developerBeneficiary.toLowerCase() !== terms.beneficiary.toLowerCase() ||
     BigInt(config.developerBeneficiary) === 0n || config.developerBeneficiary.toLowerCase() === token.toLowerCase() ||
     config.developerBeneficiary.toLowerCase() === market.quoteAsset.toLowerCase()) {
-    throw new LifecyclePlanningError("REVIEWED_TERMS_MISMATCH", "Market must explicitly bind the admitted profile, frozen terms and stable author identity");
+    throw new LifecyclePlanningError("PROFILE_TERMS_MISMATCH", "Market must explicitly bind the admitted profile, frozen terms and stable author identity");
   }
   if (!Number.isInteger(config.developerFeeBps) || config.developerFeeBps < 0 ||
     config.developerFeeBps > envelope.maximumDeveloperFeeBps || config.developerFeeBps > terms.maximumDeveloperFeeBps ||
     config.developerFeeBps > protocolCeiling) throw new LifecyclePlanningError("DEVELOPER_FEE_CEILING", "Explicit developer fee exceeds the reviewed or protocol ceiling");
   const b = envelope.bounds;
   if (config.treasury.toLowerCase() !== envelope.protocolTreasury.toLowerCase() ||
-    config.protocolFeeDenominator !== envelope.protocolFeeDenominator || config.hookFeePips > b.maximumHookFeePips ||
-    config.lpFeePips > b.maximumLpFeePips || !Number.isInteger(config.feeMode) || config.feeMode < 0 || config.feeMode > 1 || (b.feeModeFlags & (1 << config.feeMode)) === 0 ||
+    config.protocolFeeDenominator !== envelope.protocolFeeDenominator || !Number.isInteger(config.hookFeePips) || config.hookFeePips < 0 || config.hookFeePips >= 1000000 ||
+    !Number.isInteger(config.lpFeePips) || config.lpFeePips < 0 || config.lpFeePips >= 1000000 ||
+    !Number.isInteger(config.feeMode) || config.feeMode < 0 || config.feeMode > 1 || (b.feeModeFlags & (1 << config.feeMode)) === 0 ||
     config.tickSpacing < b.minimumTickSpacing || config.tickSpacing > b.maximumTickSpacing ||
     config.positions.length === 0 || config.positions.length > b.maximumPositions || config.externalLiquidityDisabled !== b.externalLiquidityDisabled ||
     config.oracleConfigId.toLowerCase() !== b.oracleConfigId.toLowerCase()) {
-    throw new LifecyclePlanningError("REVIEWED_BOUNDS_MISMATCH", "Market economics exceed or differ from the exact admitted envelope bounds");
+    throw new LifecyclePlanningError("PROFILE_BOUNDS_MISMATCH", "Market economics exceed or differ from the exact admitted envelope bounds");
   }
 }
 

@@ -1,6 +1,6 @@
 import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData, keccak256, stringToHex, toHex, zeroAddress, zeroHash, type Address, type Hash, type Hex } from "viem";
-import { abyssLifecycleAdapterAbi, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, reviewedV4FeeCollectorFactoryV1Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, reviewedPoolBoundHookDeployerV1Abi, reviewedSharedHookDeployerV1Abi, poolBoundLaunchFeeHookV1Abi, reviewedPoolBoundV4MarketAdapterV1Abi, reviewedSharedV4MarketAdapterV1Abi } from "./abi.js";
-import { decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, hashPoolBoundV4MarketCommitment, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, validateReviewedV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type PoolBoundHookParametersV1 } from "./markets.js";
+import { abyssLifecycleAdapterAbi, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, poolFeeCollectorFactoryV1Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, poolHookDeployerV1Abi, sharedHookDeployerV1Abi, poolBoundLaunchFeeHookV1Abi, poolMarketAdapterV1Abi, sharedMarketAdapterV1Abi } from "./abi.js";
+import { decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, hashPoolBoundV4MarketCommitment, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type PoolBoundHookParametersV1 } from "./markets.js";
 import { hashLaunchIdentity, hashLaunchPlan, hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, launchProgressV1Components, LifecycleMode, LifecyclePhase, LifecycleVenue, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MULTI_POSITION_CAPABILITY, type AdapterRegistrationV1, type LaunchPlanV1, type LaunchProgressV1, type MarketIdentityV1, type MarketLiveStateV1, type PreparedMarketV1, type ProfileRegistrationV1, type ProfileTopologyV1, type LaunchEnvelopeV2, type LifecycleDeveloperTerms } from "./schema.js";
 import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, readLifecycleContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
 import { LifecyclePlanningError, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleMarketProgress, type LifecycleProfile, type LifecycleReceiptReference, type LifecycleReceiptStatus, type LifecycleRpcClient, type PoolBoundHookDeployment, type ReadLaunchProgressOptions } from "./types.js";
@@ -52,14 +52,14 @@ async function certifyLifecycleProfile(client: LifecycleRpcClient, orchestrator:
     hashLaunchBounds(envelope.bounds).toLowerCase() !== envelope.configBoundsDigest.toLowerCase() ||
     envelope.capabilities !== registration.capabilities || envelope.capabilities !== adapter.capabilities ||
     (envelope.capabilities & ~(LIFECYCLE_REQUIRED_CAPABILITIES | LIFECYCLE_ERC404_CAPABILITY | LIFECYCLE_MULTI_POSITION_CAPABILITY)) !== 0n) {
-    throw new LifecyclePlanningError("REVIEWED_ENVELOPE", "Frozen reviewed profile identity, bounds, capabilities or economic version differs from registry admission");
+    throw new LifecyclePlanningError("PROFILE_ENVELOPE", "Frozen reviewed profile identity, bounds, capabilities or economic version differs from registry admission");
   }
   const b = envelope.bounds;
-  if (b.maximumHookFeePips >= 1000000 || b.maximumLpFeePips >= 1000000 || b.minimumTickSpacing < 1 ||
+  if (b.minimumTickSpacing < 1 ||
     b.maximumTickSpacing > 32767 || b.minimumTickSpacing > b.maximumTickSpacing || b.maximumPositions < 1 || b.maximumPositions > 32 ||
     b.maximumOracleCardinality < 2 || b.maximumOracleCardinality > 4096 || b.feeModeFlags === 0 || (b.feeModeFlags & ~3) !== 0 ||
-    envelope.protocolTreasury === zeroAddress || (envelope.protocolFeeDenominator !== 0 && (envelope.protocolFeeDenominator < 4 || envelope.protocolFeeDenominator > 10))) throw new LifecyclePlanningError("REVIEWED_BOUNDS", "Registry envelope has unsupported executable bounds");
-  const abi = bound ? reviewedPoolBoundV4MarketAdapterV1Abi : reviewedSharedV4MarketAdapterV1Abi;
+    envelope.protocolTreasury === zeroAddress || (envelope.protocolFeeDenominator !== 0 && (envelope.protocolFeeDenominator < 4 || envelope.protocolFeeDenominator > 10))) throw new LifecyclePlanningError("PROFILE_BOUNDS", "Registry envelope has unsupported executable bounds");
+  const abi = bound ? poolMarketAdapterV1Abi : sharedMarketAdapterV1Abi;
   for (const [getter, expected] of [["PROFILE_ID", id], ["CONFIG_SCHEMA", registration.configSchema], ["implementationRegistry", registry]] as const) {
     const actual = await readLifecycleContract<Hex>(client, adapter.implementation, abi, getter, [], block);
     if (actual.toLowerCase() !== expected.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Reviewed adapter metadata differs from registry certification");
@@ -77,12 +77,12 @@ async function certifyLifecycleProfile(client: LifecycleRpcClient, orchestrator:
     [g.hookDeployer, g.hookDeployerCodeHash]] as const) {
     if (keccak256(await readDependencyCode(client, address, block)).toLowerCase() !== expectedHash.toLowerCase()) throw new LifecyclePlanningError("PROFILE_CODE_HASH", "Live runtime differs from the frozen reviewed graph hash");
   }
-  const collectorDeployer = await readLifecycleContract<Address>(client, g.collectorFactory, reviewedV4FeeCollectorFactoryV1Abi, "collectorDeployer", [], block);
+  const collectorDeployer = await readLifecycleContract<Address>(client, g.collectorFactory, poolFeeCollectorFactoryV1Abi, "collectorDeployer", [], block);
   const launcher = await readLifecycleContract<Address>(client, g.locker, lifecycleV4LockerAbi, "launcher", [], block);
   const lockerManager = await readLifecycleContract<Address>(client, g.locker, lifecycleV4LockerAbi, "poolManager", [], block);
   if (collectorDeployer.toLowerCase() !== g.collectorDeployer.toLowerCase() || launcher.toLowerCase() !== adapter.implementation.toLowerCase() ||
     lockerManager.toLowerCase() !== g.manager.toLowerCase() || g.locker.toLowerCase() === g.manager.toLowerCase() || g.locker.toLowerCase() === g.hookRoot.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Reviewed collector or locker authority differs from the frozen graph");
-  const deployerAbi = shared ? reviewedSharedHookDeployerV1Abi : reviewedPoolBoundHookDeployerV1Abi;
+  const deployerAbi = shared ? sharedHookDeployerV1Abi : poolHookDeployerV1Abi;
   const creationCodeHash = await readLifecycleContract<Hex>(client, g.hookDeployer, deployerAbi, "creationCodeHash", [], block);
   const chunk0 = await readLifecycleContract<Address>(client, g.hookDeployer, deployerAbi, "codeChunk0", [], block);
   const chunk1 = await readLifecycleContract<Address>(client, g.hookDeployer, deployerAbi, "codeChunk1", [], block);
@@ -101,7 +101,7 @@ async function certifyLifecycleProfile(client: LifecycleRpcClient, orchestrator:
     const recordedHash = await readLifecycleContract<Hex>(client, g.hookDeployer, deployerAbi, "deployedCodeHash", [g.hookRoot], block);
     const initCodeHash = keccak256(concatHex([creationCode, encodeAbiParameters([{ type: "address" }, { type: "address" }, { type: "address" }], [g.manager, adapter.implementation, g.oracleFactory])]));
     const prediction = predictPoolBoundHookAddress({ deployer: g.hookDeployer, initCodeHash, salt: g.sharedHookSalt });
-    const remotePrediction = await readLifecycleContract<Address>(client, g.hookDeployer, reviewedSharedHookDeployerV1Abi, "predict", [g.manager, adapter.implementation, g.oracleFactory, g.sharedHookSalt], block);
+    const remotePrediction = await readLifecycleContract<Address>(client, g.hookDeployer, sharedHookDeployerV1Abi, "predict", [g.manager, adapter.implementation, g.oracleFactory, g.sharedHookSalt], block);
     if (recordedHash === zeroHash || recordedHash.toLowerCase() !== g.hookRuntimeCodeHash.toLowerCase() || keccak256(rootCode).toLowerCase() !== recordedHash.toLowerCase() ||
       !hasLifecycleV4HookPermissions(g.hookRoot) || prediction.toLowerCase() !== g.hookRoot.toLowerCase() || remotePrediction.toLowerCase() !== prediction.toLowerCase()) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Shared root lacks exact typed-deployer runtime and constructor/salt provenance");
     for (const [getter, expected] of [["registrar", adapter.implementation], ["poolManager", g.manager], ["oracleFactory", g.oracleFactory]] as const) {
@@ -110,9 +110,9 @@ async function certifyLifecycleProfile(client: LifecycleRpcClient, orchestrator:
     if (await readLifecycleContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "REQUIRED_HOOK_FLAGS", [], block) !== 0x1afcn ||
       await readLifecycleContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "ALL_HOOK_MASK", [], block) !== 0x3fffn) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Shared hook callbacks differ from admission");
   } else if (g.hookRoot !== zeroAddress || g.hookRuntimeCodeHash !== zeroHash || g.sharedHookSalt !== zeroHash) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Bound topology cannot reuse a shared root");
-  if ([zeroAddress, orchestrator, registry, adapter.implementation, g.manager, g.hookRoot, g.locker, g.collectorFactory, g.collectorDeployer, g.hookDeployer].some((address) => address.toLowerCase() === envelope.beneficiary.toLowerCase())) throw new LifecyclePlanningError("REVIEWED_TERMS", "Stable author identity is an excluded reviewed graph destination");
+  if ([zeroAddress, orchestrator, registry, adapter.implementation, g.manager, g.hookRoot, g.locker, g.collectorFactory, g.collectorDeployer, g.hookDeployer].some((address) => address.toLowerCase() === envelope.beneficiary.toLowerCase())) throw new LifecyclePlanningError("PROFILE_TERMS", "Stable author identity is an excluded reviewed graph destination");
   const [move, cardinality] = await readLifecycleContract<readonly [number, number]>(client, g.oracleFactory, lifecycleOracleFactoryAbi, "oracleConfigs", [b.oracleConfigId], block);
-  if (move === 0 || move > 887272 || cardinality < 2 || cardinality > b.maximumOracleCardinality) throw new LifecyclePlanningError("REVIEWED_BOUNDS", "Reviewed oracle configuration exceeds the admitted bounds");
+  if (move === 0 || move > 887272 || cardinality < 2 || cardinality > b.maximumOracleCardinality) throw new LifecyclePlanningError("PROFILE_BOUNDS", "Reviewed oracle configuration exceeds the admitted bounds");
   return { topology, boundGraph: bound ? { manager: g.manager, oracleFactory: g.oracleFactory, locker: g.locker, collectorFactory: g.collectorFactory, deployer: g.hookDeployer, creationCode } : undefined };
 }
 
@@ -143,7 +143,7 @@ export async function readLifecycleProfiles(options: { client: LifecycleRpcClien
         developerTerms = { adapter: implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled };
         if (implementation.toLowerCase() !== adapter.implementation.toLowerCase() || beneficiary.toLowerCase() !== envelope.beneficiary.toLowerCase() ||
           termsDigest.toLowerCase() !== envelope.termsDigest.toLowerCase() || maximumDeveloperFeeBps !== envelope.maximumDeveloperFeeBps ||
-          maximumDeveloperFeeBps > protocolMaximumDeveloperFeeBps) throw new LifecyclePlanningError("REVIEWED_TERMS", "Registry developer terms differ from the frozen reviewed envelope");
+          maximumDeveloperFeeBps > protocolMaximumDeveloperFeeBps) throw new LifecyclePlanningError("PROFILE_TERMS", "Registry developer terms differ from the frozen reviewed envelope");
       }
       await certifyLifecycleProfile(options.client, options.orchestrator, registry, id, registration, adapter, topology, envelope, block, chainId);
       const eligible = await readLifecycleContract<Address>(options.client, registry, lifecycleRegistryAbi, "requireEligible", [registration.adapterId, id, topology.configVersion, LIFECYCLE_REQUIRED_CAPABILITIES], block);
@@ -175,7 +175,7 @@ async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRp
   if (boundGraph === undefined) throw new LifecyclePlanningError("UNCERTIFIED_TOPOLOGY", "Market does not have a certified pool-bound deployer graph");
   const token = await readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], block);
   const config = decodePoolBoundV4LifecycleMarketConfig(market.config);
-  validateReviewedV4LifecycleMarket({ market, config, token, profile: {
+  validateV4LifecycleMarket({ market, config, token, profile: {
     id: market.profileId, registration, adapter, topology: recorded, envelope,
     developerTerms: { adapter: implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled },
     protocolMaximumDeveloperFeeBps, venueKind: "uniswap-v4", admitted: enabled,
@@ -188,16 +188,16 @@ async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRp
     marketCommitment: hashPoolBoundV4MarketCommitment({ chainId, core: plan.orchestrator, registrar: adapter.implementation, token, market }),
     expectedPositionCount: config.positions.length,
   };
-  const [parameters, parameterSalt] = await readLifecycleContract<readonly [PoolBoundHookParametersV1, Hex]>(client, boundGraph.collectorFactory, reviewedV4FeeCollectorFactoryV1Abi, "poolBoundHookParameters", [adapter.implementation, token, market], block);
-  const [deployer, initCodeHash, salt, predictedHook] = await readLifecycleContract<readonly [Address, Hex, Hex, Address]>(client, adapter.implementation, reviewedPoolBoundV4MarketAdapterV1Abi, "hookDeploymentMetadata", [token, market], block);
-  const remoteInitCodeHash = await readLifecycleContract<Hex>(client, boundGraph.deployer, reviewedPoolBoundHookDeployerV1Abi, "initCodeHash", [expected], block);
-  const remotePrediction = await readLifecycleContract<Address>(client, boundGraph.deployer, reviewedPoolBoundHookDeployerV1Abi, "predict", [expected, config.hookSalt], block);
+  const [parameters, parameterSalt] = await readLifecycleContract<readonly [PoolBoundHookParametersV1, Hex]>(client, boundGraph.collectorFactory, poolFeeCollectorFactoryV1Abi, "poolBoundHookParameters", [adapter.implementation, token, market], block);
+  const [deployer, initCodeHash, salt, predictedHook] = await readLifecycleContract<readonly [Address, Hex, Hex, Address]>(client, adapter.implementation, poolMarketAdapterV1Abi, "hookDeploymentMetadata", [token, market], block);
+  const remoteInitCodeHash = await readLifecycleContract<Hex>(client, boundGraph.deployer, poolHookDeployerV1Abi, "initCodeHash", [expected], block);
+  const remotePrediction = await readLifecycleContract<Address>(client, boundGraph.deployer, poolHookDeployerV1Abi, "predict", [expected, config.hookSalt], block);
   const localInitCodeHash = poolBoundHookInitCodeHash(boundGraph.creationCode, expected);
   const localPrediction = predictPoolBoundHookAddress({ deployer: boundGraph.deployer, initCodeHash: localInitCodeHash, salt: config.hookSalt });
   if (encodePoolBoundHookParameters(parameters).toLowerCase() !== encodePoolBoundHookParameters(expected).toLowerCase() || parameterSalt.toLowerCase() !== config.hookSalt.toLowerCase() || salt.toLowerCase() !== config.hookSalt.toLowerCase() || deployer.toLowerCase() !== boundGraph.deployer.toLowerCase() || initCodeHash.toLowerCase() !== localInitCodeHash.toLowerCase() || remoteInitCodeHash.toLowerCase() !== localInitCodeHash.toLowerCase() || predictedHook.toLowerCase() !== localPrediction.toLowerCase() || remotePrediction.toLowerCase() !== localPrediction.toLowerCase()) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Bound hook metadata differs from the exact certified constructor economics, factory, initcode, salt or CREATE2 prediction");
   const hookCode = rpcHex(await lifecycleRpc(client, "eth_getCode", [predictedHook, toHex(block.number)]), "bound hook code");
   if (hookCode !== "0x") {
-    const deployedCodeHash = await readLifecycleContract<Hex>(client, deployer, reviewedPoolBoundHookDeployerV1Abi, "deployedCodeHash", [predictedHook], block);
+    const deployedCodeHash = await readLifecycleContract<Hex>(client, deployer, poolHookDeployerV1Abi, "deployedCodeHash", [predictedHook], block);
     if ((hookCode.length - 2) / 2 > 24576 || deployedCodeHash === zeroHash || deployedCodeHash.toLowerCase() !== keccak256(hookCode).toLowerCase()) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing hook lacks this exact typed deployer's bounded runtime-code provenance");
     for (const [getter, expectedAddress] of [
       ["poolManager", expected.poolManager], ["registrar", expected.registrar], ["oracleFactory", expected.oracleFactory],
@@ -238,7 +238,7 @@ export async function buildPoolBoundHookDeploymentTransaction(options: { client:
   if (!hasLifecycleV4HookPermissions(deployment.predictedHook)) throw new LifecyclePlanningError("INVALID_HOOK_BITS", "Finalize a salt with the exact lifecycle hook permissions before predeployment");
   if (hashLaunchPlan(options.plan) !== commitment) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed while constructing hook deployment calldata");
   await assertLifecycleBlock(options.client, block);
-  return { to: deployment.deployer, data: encodeFunctionData({ abi: reviewedPoolBoundHookDeployerV1Abi, functionName: "deploy", args: [parameters, deployment.salt] }), value: 0n, deployment };
+  return { to: deployment.deployer, data: encodeFunctionData({ abi: poolHookDeployerV1Abi, functionName: "deploy", args: [parameters, deployment.salt] }), value: 0n, deployment };
 }
 
 export function validateLifecycleMarketIdentity(identity: MarketIdentityV1, plan: LaunchPlanV1, token: Address, marketIndex: number): void {

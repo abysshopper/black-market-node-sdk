@@ -72,7 +72,7 @@ test("pool-bound config commits salt before reviewed identity/terms and refuses 
 test("bound economic commitment matches the independently encoded domain and normalizes only hookSalt", () => {
   const configHash = keccak256(literalV5({ ...config, hookSalt: zeroHash }));
   const expected = keccak256(encodeAbiParameters(parseAbiParameters("bytes32,uint256,address,address,address,bytes32,bytes32,address,uint256,uint32,bytes32"), [
-    keccak256(stringToHex("black-market.reviewed-pool-bound-market-economics.v1")), context.chainId, context.core,
+    keccak256(stringToHex("black-market.pool-bound-market-economics.v1")), context.chainId, context.core,
     context.registrar, context.token, market.adapterId, market.profileId, market.quoteAsset,
     market.tokenBudget, market.configVersion, configHash,
   ]));

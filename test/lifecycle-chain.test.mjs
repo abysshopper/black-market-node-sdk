@@ -101,7 +101,7 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
     const marketIndex = plan.markets.findIndex((market) => market.configVersion === 5);
     const config = decodePoolBoundV4LifecycleMarketConfig(plan.markets[marketIndex].config);
     const changed = { ...plan, markets: plan.markets.map((market, i) => i === marketIndex ? { ...market, config: encodePoolBoundV4LifecycleMarketConfig({ ...config, developerBeneficiary: plan.creator }) } : market) };
-    await assert.rejects(preparePoolBoundLifecyclePlan({ client, plan: changed }), { code: "REVIEWED_TERMS_MISMATCH" });
+    await assert.rejects(preparePoolBoundLifecyclePlan({ client, plan: changed }), { code: "PROFILE_TERMS_MISMATCH" });
   });
 
   await t.test("unknown execution limits never authorize a wallet envelope or implicit staged fallback", async () => {

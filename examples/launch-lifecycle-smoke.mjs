@@ -177,4 +177,4 @@ for (const row of exported.plans) for (const mode of ["atomic", "staged"]) {
     await client.request({ method: "evm_mine" });
   }
 }
-console.log(JSON.stringify({ schema: "black-market.reviewed-node-sdk-smoke.v1", results }, (_key, value) => typeof value === "bigint" ? value.toString() : value, 2));
+console.log(JSON.stringify({ schema: "black-market.node-sdk-smoke.v1", results }, (_key, value) => typeof value === "bigint" ? value.toString() : value, 2));

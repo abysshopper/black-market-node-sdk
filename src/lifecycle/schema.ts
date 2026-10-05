@@ -71,7 +71,7 @@ export type MarketLiveStateV1 = {
 };
 
 export type LaunchBoundsV2 = {
-  maximumHookFeePips: number; maximumLpFeePips: number; minimumTickSpacing: number; maximumTickSpacing: number;
+  minimumTickSpacing: number; maximumTickSpacing: number;
   maximumPositions: number; maximumOracleCardinality: number; feeModeFlags: number;
   externalLiquidityDisabled: boolean; oracleConfigId: Hex;
 };
@@ -96,7 +96,6 @@ export type SourceTermsV3 = {
   maximumDeveloperFeeBps: number; developerFeeBps: number;
 };
 export const launchBoundsV2Components = [
-  { name: "maximumHookFeePips", type: "uint24" }, { name: "maximumLpFeePips", type: "uint24" },
   { name: "minimumTickSpacing", type: "int24" }, { name: "maximumTickSpacing", type: "int24" },
   { name: "maximumPositions", type: "uint16" }, { name: "maximumOracleCardinality", type: "uint16" },
   { name: "feeModeFlags", type: "uint8" }, { name: "externalLiquidityDisabled", type: "bool" },
@@ -154,7 +153,7 @@ export function hashLifecycleProfile(envelope: LaunchEnvelopeV2): Hex {
   return keccak256(encodeAbiParameters([
     { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" },
     { type: "uint8" }, { type: "uint32" }, { type: "uint32" }, { type: "address" }, { type: "uint16" }, { type: "uint64" },
-  ], [keccak256(stringToHex("black-market.reviewed-launch-profile.v2")), envelope.artifactDigest,
+  ], [keccak256(stringToHex("black-market.launch-profile.v2")), envelope.artifactDigest,
     envelope.reviewManifestDigest, envelope.configBoundsDigest, envelope.termsDigest, envelope.topology,
     envelope.configVersion, envelope.economicVersion, envelope.beneficiary, envelope.maximumDeveloperFeeBps, envelope.capabilities]));
 }
@@ -170,7 +169,7 @@ export function hashLaunchDependencies(options: {
     { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
     { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" }, { type: "bytes32" },
     { type: "address" }, { type: "bytes32" }, { type: "address" }, { type: "bytes32" },
-  ], [keccak256(stringToHex("black-market.reviewed-v4-dependencies.v2")), chainId, core, g.coreCodeHash,
+  ], [keccak256(stringToHex("black-market.v4-dependencies.v2")), chainId, core, g.coreCodeHash,
     registry, registrar, g.manager, g.managerCodeHash, g.hookRoot, g.hookRuntimeCodeHash,
     g.oracleFactory, g.oracleFactoryCodeHash, g.locker, g.lockerCodeHash, g.collectorFactory, g.collectorFactoryCodeHash,
     g.collectorDeployer, g.collectorDeployerCodeHash, g.hookDeployer, g.hookDeployerCodeHash,

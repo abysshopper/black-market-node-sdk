@@ -1,17 +1,35 @@
-# Reviewed launch lifecycle API
+# Launch lifecycle API
 
-`@black-market/sdk/lifecycle` is the browser-safe launch API; its exports are also available from `@black-market/sdk`. Supply the exact chain, core, creator and reviewed registry domain. Planning, salt preparation, reads and unsigned builders never sign, publish metadata or write to the source chain. A successful controlled-local simulation is not production deployment approval.
+`@black-market/sdk/lifecycle` is the browser-safe launch API; its exports are also available from `@black-market/sdk`. Supply the exact chain, core, creator and registry domain. Planning, salt preparation, reads and unsigned builders never sign, publish metadata or write to the source chain. A successful controlled-local simulation is not production deployment approval.
 
-The canonical authorities are the reviewed registry/certification/adapter/config contracts under `contracts/src/launch/lifecycle/v2`, the reviewed typed hook deployers, and `contracts/src/launch/fees/v3` in the sibling protocol repository. Plan identity remains `LaunchPlanV1`; shared V4 now accepts **config 4 only**, bound V4 **config 5 only**, and Abyss keeps its canonical schema. Old Atomic/Unified request encoders, template catalogs and old V4 profile/adapter constants have been removed. Immutable old contracts/pools and unrelated DEX/lending functions are not upgraded or rebound.
+The canonical authorities are the registry/certification/adapter/config contracts under `contracts/src/launch/lifecycle/v2`, the typed hook deployers, and `contracts/src/launch/fees/v3` in the sibling protocol repository. Plan identity remains `LaunchPlanV1`; shared V4 accepts **config 4 only**, bound V4 **config 5 only**, and Abyss keeps its canonical schema. Old Atomic/Unified request encoders, template catalogs and old V4 profile/adapter constants have been removed. Immutable old contracts/pools and unrelated DEX/lending functions are not upgraded or rebound.
 
-The clean pool-only deployment uses `DeployPoolLaunchV1`, `PoolHookDeployerV1`,
-`PoolMarketAdapterV1`, `PoolFeeCollectorFactoryV1` and `LaunchCertificationV2`.
-Registry V2 has no legacy certification child or unsigned admission endpoint.
-Use `profileEnvelope`, `profileId` and signed `registerProfile`; envelope/bounds/graph
-types and encoding helpers now use `Launch` names without the `Reviewed` prefix.
+The keystore-only `DeployPoolLaunchV1` deployment includes fixed pool-bound V4
+(`PoolHookDeployerV1`, `PoolMarketAdapterV1`, `PoolFeeCollectorFactoryV1`) and canonical Abyss:
+two adapters and five automatically admitted profiles.
+Registry V2 has one `LaunchCertificationV2` child and no arbitrary unsigned V4 endpoint.
+V4 uses `profileEnvelope`, `profileId` and signed six-argument `registerProfile`.
+Admin-only `registerAbyssProfile(uint8,registration)` independently certifies the four canonical
+config-1 variants; they have no author envelope or royalty allocation.
+Envelope/bounds/graph types and encoding helpers use `Launch` names.
 There are no old-name aliases. The admission EIP-712 domain is `Black Market Launch Registry`,
-version `2`; regenerate author consent after cutover. Existing profile/dependency hash
-preimages and config tuples remain unchanged. Old deployment evidence is not new-graph proof.
+version `2`; regenerate author consent after cutover. Market configuration tuple layouts remain
+unchanged; bounds encoding changes below require fresh profile identities and consent.
+Old deployment evidence is not new-graph proof.
+
+`LaunchBoundsV2` has seven members beginning with `minimumTickSpacing`; both former LP/hook
+fee-ceiling fields are removed. Creators independently select valid market LP and hook rates
+below 1,000,000 pips, including 15%, without a profile-level trading-fee cap. Author royalty
+ceilings remain separate. Regenerate bounds digests, profile IDs and consent for the new tuple.
+
+Shared contracts are `FixedFeeSharedHookV1`, `SharedHookDeployerV1` and
+`SharedMarketAdapterV1`. ABI exports are `sharedMarketAdapterV1Abi`,
+`sharedHookDeployerV1Abi`, `poolMarketAdapterV1Abi`, `poolHookDeployerV1Abi` and
+`poolFeeCollectorFactoryV1Abi`; validation uses `validateV4LifecycleMarket`.
+The factory getter is `dependencyDigest(address)`. Identity domains are
+`black-market.launch-profile.v2`, `black-market.v4-dependencies.v2` and
+`black-market.pool-bound-market-economics.v1`. No old-name aliases remain; regenerate
+profile identities, commitments and author consent for these domain labels.
 
 ## Public operations
 
@@ -58,7 +76,7 @@ The exact canonical registry getters are `profileCount`, `profileIds(offset,limi
 - `developerTerms?: {adapter, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled}`.
 - `protocolMaximumDeveloperFeeBps?: number`.
 
-The profile identity uses domain `black-market.reviewed-launch-profile.v2` and commits the four review/economic digests, topology/config/economic versions, stable beneficiary, maximum rate and capabilities. It deliberately excludes instance addresses. `hashLifecycleProfile`, `encode/decodeLaunchEnvelope`, `encode/decode/hashLaunchBounds` and `hashLaunchDependencies` expose exact canonical encodings/domains. Graph dependency hashing includes chain/core/registry/registrar, live runtime commitments and exact code-chunk provenance; only the shared deployment salt is outside that economic dependency digest.
+The profile identity uses domain `black-market.launch-profile.v2` and commits the four review/economic digests, topology/config/economic versions, stable beneficiary, maximum author rate and capabilities. It deliberately excludes instance addresses. `hashLifecycleProfile`, `encode/decodeLaunchEnvelope`, `encode/decode/hashLaunchBounds` and `hashLaunchDependencies` expose exact canonical encodings/domains. Graph dependency hashing includes chain/core/registry/registrar, live runtime commitments and exact code-chunk provenance; only the shared deployment salt is outside that economic dependency digest.
 
 Profile certification checks reviewed capabilities/bounds, adapter/core/graph runtime hashes, manager/oracle/locker/collector dependencies, typed hook deployer and STOP-prefixed creation-code chunks. Shared roots additionally require exact constructor/salt prediction and the deployer's recorded runtime. Bound roots require exact immutable constructor/key/economic commitment and recorded runtime when deployed. Address bits `0x1afc` under mask `0x3fff` are necessary but never sufficient. Runtime/initcode portability bounds remain 24,576/49,152 bytes; no compiler/code-size relaxation is assumed.
 
@@ -99,7 +117,7 @@ const config = encodeV4LifecycleMarketConfig({
 });
 ```
 
-`validateReviewedV4LifecycleMarket` checks profile/terms/topology/version, explicit rate ceilings and exact envelope bounds. Registry/adapter validation remains the execution authority. Positions must require **zero quote deposit** at the committed opening price in actual token orientation. Quotes fund ordered buys, not two-sided initial LP. At most one V4 market per quote is allowed across all templates/topologies/fees/salts; put that quote's positions into one market. Abyss may use the same quote.
+`validateV4LifecycleMarket` checks profile/terms/topology/version, explicit author-rate ceilings and exact envelope bounds. Registry/adapter validation remains the execution authority. Positions must require **zero quote deposit** at the committed opening price in actual token orientation. Quotes fund ordered buys, not two-sided initial LP. At most one V4 market per quote is allowed across all templates/topologies/fees/salts; put that quote's positions into one market. Abyss may use the same quote.
 
 Abyss retains `encodeAbyssLifecycleMarketConfig` / `decodeAbyssLifecycleMarketConfig`: canonical pool profile, fee, oracle ID, opening price and ordered tick/liquidity/token-max positions. Quote/fee assets and direct ERC20/native-wrap funding are permissionless subject to actual code, transfers/balances/budgets and canonical bindings. Quote catalog metadata is not admission. Only swap-conversion inputs/targets use registry funding admission.
 
@@ -119,7 +137,7 @@ const optionalPredeploy = await buildPoolBoundHookDeploymentTransaction({client,
 // Inspect only; separately admit/authenticate/sign any optional predeployment.
 ```
 
-The reviewed collector supplies canonical normalized economic commitment and constructor metadata. `hashPoolBoundV4MarketCommitment` uses domain `black-market.reviewed-pool-bound-market-economics.v1`: chain, core, registrar, predicted token, adapter/profile/quote/budget/version and encoded config hash with **only hookSalt zeroed**. Developer identity/digest/rate remain committed. The 18-word constructor freezes manager, registrar, oracle factory, core, locker, token/quote, fees/spacing/price/policy, economic commitment and position count. Salt is used verbatim by CREATE2, not as a constructor argument.
+The collector supplies canonical normalized economic commitment and constructor metadata. `hashPoolBoundV4MarketCommitment` uses domain `black-market.pool-bound-market-economics.v1`: chain, core, registrar, predicted token, adapter/profile/quote/budget/version and encoded config hash with **only hookSalt zeroed**. Developer identity/digest/rate remain committed. The 18-word constructor freezes manager, registrar, oracle factory, core, locker, token/quote, fees/spacing/price/policy, economic commitment and position count. Salt is used verbatim by CREATE2, not as a constructor argument.
 
 Mining is cancellable/nonblocking; `abort()` raises `AbortError` and does not cancel an onchain launch. Persist the returned finalized plan, not the draft. A salt-only change preserves normalized economics but changes final plan hash. Other changes invalidate initcode/mining; concurrent mutation is refused. Normal next-step review rechecks token factory and the captured `hookDeployments` baseline. Predeployment is permissionless, but code presence or self-reported getters alone cannot be adopted as provenance. It does not register/initialize/seal/open a market and does not eliminate real code-deposit/setup gas.
 
