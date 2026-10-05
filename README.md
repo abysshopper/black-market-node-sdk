@@ -1,4 +1,4 @@
-![Abyss](assets/splash.png)
+![Abyss](https://raw.githubusercontent.com/abysshopper/black-market-node-sdk/main/assets/splash.png)
 
 # @black-market/sdk
 
@@ -59,30 +59,50 @@ Staged preparation does **not** split activation: minting, permanent locking,
 every initial buy, and public opening remain one transaction. Unavailable
 stateful simulation or execution-limit evidence prevents executable admission.
 
-See the [launch lifecycle guide](docs/launch-lifecycle.md) for codecs, saved-plan
-review, salt mining, simulation, recovery, and stable-author fee claims.
-[`examples/`](examples/README.md) includes unsigned review and explicitly authorized
-local-chain execution. `LaunchApiClient` optionally handles signed metadata
-sessions and publication; it does not create or broadcast a chain launch.
+See the [launch lifecycle guide](https://github.com/abysshopper/black-market-node-sdk/blob/main/docs/launch-lifecycle.md)
+for codecs, saved-plan review, salt mining, simulation, recovery, and stable-author
+fee claims. [`examples/`](https://github.com/abysshopper/black-market-node-sdk/tree/main/examples)
+also includes read-only discovery and unsigned saved-plan review. `LaunchApiClient`
+handles signed metadata sessions and publication; it does not broadcast a chain launch.
 
-## Create one local smoke token
+## Launch examples: one command per case
 
-Use the [owned-fixture smoke guide](docs/launch-lifecycle.md#individual-token-creation-smoke)
-to prepare a current-chain fork, then run one catalogue case:
+**Running any command below deliberately signs, spends funds, launches a token,
+and publishes through your configured API. Mainnet execution is irreversible.**
+No flags, parameters, fixture files, default private keys or API skips are used.
+
+Setup once with **Node 24+**: install dependencies (`pnpm install` in this repository,
+or `pnpm add @black-market/sdk viem` in a consumer), copy
+[`examples/.env.example`](https://github.com/abysshopper/black-market-node-sdk/blob/main/examples/.env.example)
+to `.env` in your working directory, and set your funded wallet's `PRIVATE_KEY`
+and actual `LAUNCH_API_URL`. Existing process environment wins over `.env`.
+Consumer projects may copy the example files plus both shared helpers into `examples/`;
+the implementation imports the installed public `@black-market/sdk` package.
 
 ```sh
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json --list
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json \
-  --case erc20-v4-basic --output /tmp/node-launch-one \
-  --execute --api-url http://127.0.0.1:18763
+node examples/launch-erc20-v4.mjs
+node examples/launch-erc20-abyss.mjs
+node examples/launch-erc404-v4.mjs
+node examples/launch-erc404-abyss.mjs
+node examples/launch-erc20-staking-v4.mjs
+node examples/launch-erc20-dividends-abyss.mjs
+node examples/launch-erc20-burn-mixed.mjs
+node examples/launch-erc404-dividends-mixed.mjs
 ```
 
-Without `--execute`, this only saves an unsigned finalized plan—no simulation
-transactions, signing, API session or launch. Execution verifies the actual token,
-markets, permanent custody, buys and API publication/indexing. `--chain-only`
-explicitly skips the API and is not an end-to-end pass. Every run uses a fresh
-directory with redacted evidence retained on failure; no source-chain rollback,
-production write, package publishing or git push is performed.
+Run only the case you intend to launch. `RPC_URL` defaults to the SDK official
+chain-4663 mainnet endpoint. Optional `SIMULATION_RPC_URL` selects a separate owned
+loopback Anvil for SDK controlled simulation; otherwise actual native `eth_simulateV1`
+support is required. Admission failures do not change mode or economics.
+Gas/calldata defaults are **EXAMPLE ceilings, not verified provider/account limits**.
+Full setup, exact case economics, optional environment caps, and recovery are in the
+[example guide](https://github.com/abysshopper/black-market-node-sdk/blob/main/examples/README.md#individual-token-creation).
+
+Every run creates a fresh `launch-results/<timestamp-case-random>/` and retains
+redacted logs, plans, signed transaction hashes **before broadcast**, and real receipts
+even on failure. Only `private-recovery.json` (mode `0600`) stores raw signed bytes,
+API signatures and capabilities. **Do not blindly rerun after an ambiguous broadcast**;
+inspect the retained hash first. There is no broadcast retry, relaunch or source rollback.
 
 ## Networks and configuration
 
@@ -135,7 +155,7 @@ LAUNCH_API_TEST_PRIVATE_KEY="$DISPOSABLE_TEST_PRIVATE_KEY" pnpm test:api:write
 defaults to the mainnet orchestrator above and must match the service signing domain.
 No image store, indexed launch, funded wallet, or chain write is required. These
 sessions prove HTTP metadata behavior, not image publication or a chain launch.
-Service requirements are in the [API integration section](docs/launch-lifecycle.md#real-http-api-integration).
+Service requirements are in the [API integration section](https://github.com/abysshopper/black-market-node-sdk/blob/main/docs/launch-lifecycle.md#real-http-api-integration).
 
 ## License
 

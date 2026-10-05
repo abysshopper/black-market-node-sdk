@@ -1,8 +1,9 @@
 # Examples
 
-ESM scripts import the built public SDK. The deployed mainnet graph uses pool-bound
-V4 config 5 and canonical Abyss config 1. Discovery is read-only by default;
-source-chain and API writes require explicit caller authorization.
+The launch examples use the installed public `@black-market/sdk` package and viem,
+including when copied into a consumer project. The deployed chain-4663 graph uses
+pool-bound V4 config 5 and canonical Abyss config 1. Discovery is read-only; running
+a fixed launch example with configured wallet/API deliberately executes real writes.
 
 | Script | Behavior |
 | --- | --- |
@@ -10,7 +11,7 @@ source-chain and API writes require explicit caller authorization.
 | `launch.mjs` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config-5 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
 | `generate-lifecycle-commitment-fixture.mjs` | Independent offline ABI reference for current config-4/Abyss commitment bytes/hash/identity, not a deployment or executable launch. |
 | `launch-lifecycle-smoke.mjs` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |
-| `smoke-launch.mjs` | One catalogue token creation with actual current lifecycle execution and signed API publication/indexing; defaults to unsigned plan-only and retains failure artifacts. |
+| `launch-erc20-*.mjs`, `launch-erc404-*.mjs` | Eight independent zero-parameter launch cases with actual SDK admission, local signing, chain verification and mandatory API publication/indexing. |
 
 ## Deployed read-only discovery
 
@@ -67,40 +68,134 @@ See [service prerequisites](../docs/launch-lifecycle.md#real-http-api-integratio
 
 ## Individual token creation
 
-Prepare the two owned Anvil RPCs and fixture with the
-[shared smoke setup](../../black-market/docs/sdk-launch-smoke.md). This forks the
-current deployed chain-4663 graph; it does not redeploy contracts or fabricate API facts.
-The fixture carries the eight scenario definitions, native-wrap quote asset,
-registered oracle ID, unlocked creator and explicit measured local execution caps.
+**Running one of these files signs and broadcasts a real launch and writes to your
+configured API. Mainnet execution is irreversible and spends real funds.** Choose
+one command per intended launch; there are no flags, parameters or fixture files.
+
+### Setup once
+
+Use **Node 24+**. In this repository run `pnpm install`. In a consumer project install
+both public dependencies with `pnpm add @black-market/sdk viem` (or
+`npm install @black-market/sdk viem`) and copy the selected files with
+`launch-example.mjs` and `launch-example-support.mjs` into `examples/`.
+Copy `examples/.env.example` to `.env` in the directory you will run commands from:
 
 ```sh
-pnpm smoke:launch --help
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json --list
-
-# Unsigned plan only: no signing, API write, source or simulation transaction.
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json \
-  --case erc404-dividends-mixed --output /tmp/node-smoke-plan
-
-# One real launch and publication to your actual owned loopback API/indexer.
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json \
-  --case erc404-dividends-mixed --output /tmp/node-smoke-api \
-  --execute --api-url http://127.0.0.1:18763 --publish-timeout-seconds 90
-
-# Explicit partial scope; this cannot claim API/end-to-end success.
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json \
-  --case erc20-burn-mixed --output /tmp/node-smoke-chain --execute --chain-only
+cp examples/.env.example .env
+chmod 600 .env
 ```
 
-Choose any single ID printed by `--list`; modes, positions, rewards and burn economics
-come from that exact case with no fallback. Each output directory must be new, with
-an existing parent. Read `result.json`, `events.jsonl`, finalized `plan.json` and
-`receipts.json` after success or failure. Submitted hashes are saved before polling;
-local chain state is kept for debugging. Only `private-recovery.json` (mode `0600`)
-contains the one-time API capability/signature—never share it or commit run artifacts.
-Publication uses the actual activation hash and retries only a genuine pending-indexer
-HTTP `202`, respecting its delay and the deadline. A missing/incompatible API indexer
-fails with the completed chain evidence retained; it never launches another token.
-See the [lifecycle smoke contract](../docs/launch-lifecycle.md#individual-token-creation-smoke).
+Edit `.env` once:
+
+```dotenv
+PRIVATE_KEY=
+LAUNCH_API_URL=
+RPC_URL=
+SIMULATION_RPC_URL=
+```
+
+Set `PRIVATE_KEY` to **your funded EOA's** 32-byte hex key and `LAUNCH_API_URL` to
+your actual HTTPS or owned loopback API service root. There is no default wallet,
+public development key, guessed API URL, or silent API skip. The API needs actual
+application storage and an indexer observing the same chain as the execution RPC.
+Existing environment variables take precedence over the working-directory `.env`,
+loaded once using Node's native `process.loadEnvFile`. No shell interpolation is used.
+
+Blank `RPC_URL` uses the SDK official Robinhood chain-4663 mainnet endpoint; HTTPS
+providers and explicit owned loopback HTTP execution RPCs are supported.
+The creator is derived locally from the key, and the deployment/WETH addresses come
+from `getAddresses(4663)`. The runner checks chain identity, EOA and deployed core,
+discovers admitted profiles, verifies the actual wrapped-native binding and reads
+the registered P1 `(1,4096)` oracle configuration. No fixture defines these facts.
+Optional `NFT_BASE_URI` supplies your actually hosted ERC404 NFT metadata base URI.
+Blank uses an empty base URI: NFT units/mirror behavior remain real, but the example
+does not claim hosted NFT metadata exists.
+
+Blank `SIMULATION_RPC_URL` selects the actual SDK native sequential `eth_simulateV1`
+backend. Set it only to a **separate owned disposable loopback Anvil** for the canonical
+SDK controlled fork; only this simulation environment is reset/impersonated/reverted.
+Unsupported native simulation, insufficient funds or failed admission stop before API
+staging/broadcast. There is no mode fallback, admission override or reduced case.
+
+### Commands and fixed cases
+
+```sh
+node examples/launch-erc20-v4.mjs
+node examples/launch-erc20-abyss.mjs
+node examples/launch-erc404-v4.mjs
+node examples/launch-erc404-abyss.mjs
+node examples/launch-erc20-staking-v4.mjs
+node examples/launch-erc20-dividends-abyss.mjs
+node examples/launch-erc20-burn-mixed.mjs
+node examples/launch-erc404-dividends-mixed.mjs
+```
+
+| File suffix | Token / rewards | Markets and permanent positions | Mode / opening buys |
+| --- | --- | --- | --- |
+| `erc20-v4` | ERC20 / none | V4: 1 | atomic / 1 |
+| `erc20-abyss` | ERC20 / none | Abyss: 1 | atomic / 1 |
+| `erc404-v4` | ERC404 / none | V4: 1 | staged / 1 |
+| `erc404-abyss` | ERC404 / none | Abyss: 1 | atomic / 1 |
+| `erc20-staking-v4` | ERC20 / staking | V4: 2 | staged / 2 |
+| `erc20-dividends-abyss` | ERC20 / dividends | Abyss: 3 | staged / 1 |
+| `erc20-burn-mixed` | ERC20 / token-only burn 3000 bps | dual-fee V4: 2; Abyss: 1 | staged / 1 per market |
+| `erc404-dividends-mixed` | ERC404 / dividends | V4: 2; Abyss: 3 | staged / 1 per market |
+
+ERC20 supply is `1_000_000e18`; ERC404 supply is `10_000e18`, NFT unit `100e18`.
+Positions retain `1000e18` liquidity and the case's exact ranges. Each ordered buy
+spends up to `0.001 ETH` through native-wrap funding. Rewards use 4000 bps where
+selected; token-only burn is 3000 bps in the burn case. V4 uses frozen registered
+treasury/author terms with developer rate `0`; executor fee is 275 bps.
+Hook salts/random identities are finalized and saved before execution.
+
+### Example execution ceilings
+
+Defaults are **EXAMPLE ceilings, not verified provider or account limits**:
+chain/RPC/account gas `16000000`, calldata `131072` bytes, headroom `1000` bps.
+The chain cap is additionally bounded by every observed block gas limit. If your
+provider/account policy differs, configure decimal environment values:
+`EXAMPLE_CHAIN_GAS_CAP`, `EXAMPLE_RPC_GAS_CAP`, `EXAMPLE_ACCOUNT_GAS_CAP`,
+`EXAMPLE_MAX_CALLDATA_BYTES`, `EXAMPLE_HEADROOM_BPS`. These do not bypass SDK admission.
+
+### Evidence and failure recovery
+
+Each run automatically creates `launch-results/<timestamp-case-random>/`; there is
+no user output option. Inspect `result.json`, `events.jsonl`, finalized `plan.json`,
+`receipts.json` and `published-token.json`. Exact admitted wallet envelopes are signed
+locally; computed hashes and unsigned envelopes are durably retained as
+`broadcast-attempt` **before the one raw broadcast**. Real receipts are saved before
+status/canonical-state assertions. No unlocked-account signing or sending is used.
+Public evidence redacts known keys, signatures, signed raw bytes, API capabilities,
+authorization values and RPC endpoint credentials. Only `private-recovery.json`
+(mode `0600`) retains raw signed transactions and one-time API recovery material;
+never share or commit it. `launch-results/` is ignored.
+
+Every case requires actual API metadata staging, publication using the activation
+hash, and an indexed DTO matching token/creator/hash/metadata. Genuine pending-indexer
+HTTP `202` responses are polled for up to 90 seconds respecting `Retry-After`;
+other API failures are not retried or converted to partial success. Broadcast/API
+failures retain logs/hashes and exit nonzero. The runner never retries a raw send,
+relaunches, cancels or rolls back the source chain. **Do not blindly rerun after an
+ambiguous broadcast**: inspect the durable transaction hash on chain first.
+See [chain/API invariants](../docs/launch-lifecycle.md#individual-token-creation-examples).
+
+### Owned-local wallet verification helpers
+
+`launch-example-support.mjs` exports
+`createLocalLaunchWallet({privateKey,creator,chainId,orchestrator,client,redactor})`
+and `submitSignedRecorded({transaction,wallet,client,wait,artifacts,signal})`.
+`client.request({method,params})` is an explicit RPC adapter; `transaction` carries
+`id`, `kind`, and exact unsigned `wire` chain/from/to/data/value/gas fields plus
+optional nonce/fees/type/accessList. `wait(hash)` returns a real receipt.
+The signer exposes `address`, `signTypedData(typedData)` and `signTransaction(wire)`
+returning `{wire,rawTransaction,transactionHash}`. Retain the result privately.
+Use `RunArtifacts(output,caseId,redactor)` with `Redactor` and a fresh directory for
+durable evidence; call `initialize()` before work and `finish(status,error)` afterward.
+The shared `runLaunchExample(caseObject)` in `launch-example.mjs` takes the same fixed
+case objects as the eight files, loads environment and auto-creates its output.
+Offline diagnostic tests are in `test/launch-example.test.mjs`; they do not claim
+real launch or API-indexer proof.
+
 
 ## Actual owned-fixture proof
 

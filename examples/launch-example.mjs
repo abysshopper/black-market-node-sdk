@@ -1,18 +1,18 @@
-// One actual current-lifecycle launch on a caller-owned loopback fixture. No live defaults.
+// Running a fixed launch example deliberately signs, broadcasts and publishes.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import {
-  decodeEventLog, decodeFunctionResult, encodeFunctionData, isAddress, keccak256,
+  decodeEventLog, decodeFunctionResult, encodeAbiParameters, encodeFunctionData, keccak256,
   recoverTypedDataAddress, toHex, zeroAddress, zeroHash,
 } from "viem";
 import {
-  HELP, errorEvidence, findRevertData, loopbackUrl, parseArguments, pause,
-  publishUntilIndexed, Redactor, rpcRequestSignal, RunArtifacts, smokeError, submitRecorded,
-} from "./smoke-launch-support.mjs";
-
-const CURRENT_ORCHESTRATOR = "0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E";
-const WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
+  createLocalLaunchWallet, errorEvidence, findRevertData, launchApiUrl,
+  loadExampleEnvironment, readExampleConfiguration, pause, publishUntilIndexed,
+  Redactor, rpcRequestSignal, RunArtifacts, exampleError,
+  submitSignedRecorded, transactionEnvelope,
+} from "./launch-example-support.mjs";
 const UNIT = 10n ** 18n;
 const OPENING_PRICE = 2n ** 96n;
 const MIN_SQRT_RATIO = 4295128739n;
@@ -20,70 +20,46 @@ const MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342n;
 const same = (left, right) => typeof left === "string" && typeof right === "string" && left.toLowerCase() === right.toLowerCase();
 const addressEqual = (actual, expected, label) => assert.ok(same(actual, expected), `${label}: expected ${expected}, got ${actual}`);
 
-function unsignedInteger(value, label, positive = true) {
-  if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/.test(value) || positive && BigInt(value) === 0n) throw smokeError("INVALID_FIXTURE", `${label} must be an exact ${positive ? "positive" : "unsigned"} decimal string`);
-  return BigInt(value);
-}
-
-function readFixture(file, options) {
-  const fixture = JSON.parse(readFileSync(file, "utf8"));
-  if (fixture.schema !== "black-market.launch-smoke-fixture.v1" || fixture.fixtureOnly !== true) throw smokeError("INVALID_FIXTURE", "Use the owned black-market.launch-smoke-fixture.v1, fixtureOnly:true manifest, never a deployment manifest");
-  if (!Array.isArray(fixture.cases) || fixture.cases.length === 0 || fixture.cases.some((row) => typeof row?.id !== "string" || row.id.length === 0) || new Set(fixture.cases.map((row) => row.id)).size !== fixture.cases.length) throw smokeError("INVALID_FIXTURE", "The fixture must contain unique named catalogue cases");
-  // --list deliberately stops before URL validation or any SDK/RPC operation.
-  if (options.list) return fixture;
-  const chainId = unsignedInteger(fixture.chainId, "chainId");
-  if (chainId !== 4663n) throw smokeError("INVALID_FIXTURE", "These cases require the owned fork of current Robinhood chain 4663");
-  for (const field of ["orchestrator", "creator", "quoteAsset"]) if (!isAddress(fixture[field]) || same(fixture[field], zeroAddress)) throw smokeError("INVALID_FIXTURE", `${field} must be a nonzero address`);
-  addressEqual(fixture.orchestrator, CURRENT_ORCHESTRATOR, "Current lifecycle orchestrator");
-  addressEqual(fixture.quoteAsset, WETH, "Canonical native-wrap quote asset");
-  if (fixture.quoteDecimals !== 18) throw smokeError("INVALID_FIXTURE", "Smoke economics require the actual 18-decimal canonical WETH");
-  if (!/^0x[\da-f]{64}$/i.test(fixture.oracleConfigId ?? "") || same(fixture.oracleConfigId, zeroHash)) throw smokeError("INVALID_FIXTURE", "An actual nonzero registered oracleConfigId is required");
-  fixture.rpcUrl = loopbackUrl(fixture.rpcUrl, "Execution RPC");
-  fixture.forkRpcUrl = loopbackUrl(fixture.forkRpcUrl, "Simulation RPC");
-  const source = new URL(fixture.rpcUrl); const fork = new URL(fixture.forkRpcUrl);
-  const port = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
-  if (port(source) === port(fork)) throw smokeError("UNSAFE_ENDPOINT", "Execution and disposable simulation RPCs must use distinct loopback ports, not hostname aliases");
-  const policy = fixture.executionLimits;
-  if (policy?.provenance?.scope !== "controlled-local-measurement") throw smokeError("INVALID_FIXTURE", "Execution limits require controlled-local-measurement provenance");
-  for (const field of ["chainTransactionGasLimit", "rpcTransactionGasLimit", "accountTransactionGasLimit"]) unsignedInteger(policy[field], field);
-  if (!Number.isSafeInteger(policy.maxCalldataBytes) || policy.maxCalldataBytes <= 0 || !Number.isSafeInteger(policy.headroomBps) || policy.headroomBps < 0 || policy.headroomBps > 10000) throw smokeError("INVALID_FIXTURE", "Actual calldata cap and explicit 0..10000 headroomBps are required");
-  if (!options.chainOnly && (options.apiUrl ?? fixture.apiUrl) !== undefined) fixture.apiUrl = loopbackUrl(options.apiUrl ?? fixture.apiUrl, "Launch API");
-  else delete fixture.apiUrl;
-  if (options.execute && !options.chainOnly && !fixture.apiUrl) throw smokeError("MISSING_CONFIGURATION", "Execution requires an explicit owned --api-url/fixture.apiUrl, or --chain-only to omit the API");
-  return fixture;
-}
 
 function validateCase(scenario) {
-  if (![0, 1].includes(scenario.tokenKind) || ![0, 1, 2].includes(scenario.rewardMode) || !["atomic", "staged"].includes(scenario.mode)) throw smokeError("UNSUPPORTED_CASE", "Case token kind, reward mode and execution mode must be explicit supported values");
+  if (![0, 1].includes(scenario.tokenKind) || ![0, 1, 2].includes(scenario.rewardMode) || !["atomic", "staged"].includes(scenario.mode)) throw exampleError("UNSUPPORTED_CASE", "Case token kind, reward mode and execution mode must be explicit supported values");
   const allowed = new Set(["id", "description", "tokenKind", "rewardMode", "mode", "markets", "buysPerMarket", "burnBps"]);
-  for (const key of Object.keys(scenario)) if (!allowed.has(key)) throw smokeError("UNSUPPORTED_CASE", `Unsupported case economic field ${key}; it cannot be silently ignored`);
-  if (!Array.isArray(scenario.markets) || scenario.markets.length < 1 || scenario.markets.length > 16 || !Number.isSafeInteger(scenario.buysPerMarket) || scenario.buysPerMarket < 1 || scenario.buysPerMarket * scenario.markets.length > 64) throw smokeError("UNSUPPORTED_CASE", "Case market/buy counts exceed lifecycle bounds");
-  if (scenario.burnBps !== undefined && (!Number.isSafeInteger(scenario.burnBps) || scenario.burnBps < 0 || scenario.burnBps > 10000 || scenario.rewardMode !== 0)) throw smokeError("UNSUPPORTED_CASE", "Token-only burn policy requires an explicit reward-free 0..10000 share");
+  for (const key of Object.keys(scenario)) if (!allowed.has(key)) throw exampleError("UNSUPPORTED_CASE", `Unsupported case economic field ${key}; it cannot be silently ignored`);
+  if (!Array.isArray(scenario.markets) || scenario.markets.length < 1 || scenario.markets.length > 16 || !Number.isSafeInteger(scenario.buysPerMarket) || scenario.buysPerMarket < 1 || scenario.buysPerMarket * scenario.markets.length > 64) throw exampleError("UNSUPPORTED_CASE", "Case market/buy counts exceed lifecycle bounds");
+  if (scenario.burnBps !== undefined && (!Number.isSafeInteger(scenario.burnBps) || scenario.burnBps < 0 || scenario.burnBps > 10000 || scenario.rewardMode !== 0)) throw exampleError("UNSUPPORTED_CASE", "Token-only burn policy requires an explicit reward-free 0..10000 share");
   let positions = 0;
   for (const market of scenario.markets) {
-    if (!["v4", "abyss"].includes(market.venue) || !Number.isSafeInteger(market.positions) || market.positions < 1 || market.positions > 32) throw smokeError("UNSUPPORTED_CASE", "Case requires a supported venue and 1..32 exact positions per market");
-    for (const key of Object.keys(market)) if (!["venue", "positions", "feeMode"].includes(key)) throw smokeError("UNSUPPORTED_CASE", `Unsupported market economic field ${key}`);
-    if (market.feeMode !== undefined && (market.venue !== "v4" || ![0, 1].includes(market.feeMode))) throw smokeError("UNSUPPORTED_CASE", "Only V4 markets support explicit feeMode 0/1");
+    if (!["v4", "abyss"].includes(market.venue) || !Number.isSafeInteger(market.positions) || market.positions < 1 || market.positions > 32) throw exampleError("UNSUPPORTED_CASE", "Case requires a supported venue and 1..32 exact positions per market");
+    for (const key of Object.keys(market)) if (!["venue", "positions", "feeMode"].includes(key)) throw exampleError("UNSUPPORTED_CASE", `Unsupported market economic field ${key}`);
+    if (market.feeMode !== undefined && (market.venue !== "v4" || ![0, 1].includes(market.feeMode))) throw exampleError("UNSUPPORTED_CASE", "Only V4 markets support explicit feeMode 0/1");
     positions += market.positions;
   }
-  if (positions > 64) throw smokeError("UNSUPPORTED_CASE", "Case exceeds 64 permanent positions");
+  if (positions > 64) throw exampleError("UNSUPPORTED_CASE", "Case exceeds 64 permanent positions");
 }
 
 function rpcClient(url, artifacts, signal, label) {
   let id = 0;
+  const endpoint = new URL(url);
+  const headers = { "Content-Type": "application/json" };
+  if (endpoint.username || endpoint.password) {
+    const authorization = `Basic ${Buffer.from(`${decodeURIComponent(endpoint.username)}:${decodeURIComponent(endpoint.password)}`).toString("base64")}`;
+    artifacts.redactor.addSecret(authorization);
+    headers.Authorization = authorization;
+    endpoint.username = ""; endpoint.password = "";
+  }
   return { async request({ method, params = [] }) {
     const requestSignal = rpcRequestSignal(signal, label, method);
     const started = Date.now();
     try {
-      const response = await fetch(url, {
-        method: "POST", redirect: "error", headers: { "Content-Type": "application/json" },
+      const response = await fetch(endpoint, {
+        method: "POST", redirect: "error", headers,
         body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
         signal: requestSignal,
       });
-      if (!response.ok) throw smokeError("RPC_HTTP_ERROR", `${label} ${method}: HTTP ${response.status}`, { status: response.status });
+      if (!response.ok) throw exampleError("RPC_HTTP_ERROR", `${label} ${method}: HTTP ${response.status}`, { status: response.status });
       const body = await response.json();
-      if (body.error) throw smokeError(body.error.code ?? "RPC_ERROR", `${label} ${method}: ${body.error.message}`, { data: body.error.data, cause: body.error });
-      if (!("result" in body)) throw smokeError("INVALID_RPC_RESPONSE", `${label} ${method}: result was omitted`, { data: body });
+      if (body.error) throw exampleError(body.error.code ?? "RPC_ERROR", `${label} ${method}: ${body.error.message}`, { data: body.error.data, cause: body.error });
+      if (!("result" in body)) throw exampleError("INVALID_RPC_RESPONSE", `${label} ${method}: result was omitted`, { data: body });
       if (method === "eth_simulateV1" || label === "simulation" && ["eth_sendTransaction", "anvil_reset", "evm_snapshot", "evm_revert"].includes(method)) artifacts.event("rpc-observation", { backend: label, method, params, result: body.result, elapsedMs: Date.now() - started });
       return body.result;
     } catch (error) {
@@ -118,7 +94,7 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   const selected = {};
   if (scenario.markets.some((row) => row.venue === "v4")) {
     const bound = profiles.filter((row) => row.venueKind === "uniswap-v4" && same(row.registration.configSchema, sdk.V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA) && row.topology.hookTopology === 2 && row.topology.configVersion === 5);
-    if (bound.length !== 1 || !bound[0].admitted || !bound[0].envelope || !bound[0].developerTerms) throw smokeError("PROFILE_NOT_ADMITTED", "An unambiguous admitted certified pool-bound V4/schema5 profile with frozen terms is required", { data: bound });
+    if (bound.length !== 1 || !bound[0].admitted || !bound[0].envelope || !bound[0].developerTerms) throw exampleError("PROFILE_NOT_ADMITTED", "An unambiguous admitted certified pool-bound V4/schema5 profile with frozen terms is required", { data: bound });
     selected.v4 = bound[0];
   }
   if (scenario.markets.some((row) => row.venue === "abyss")) {
@@ -129,20 +105,27 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
       const profile = profiles.find((row) => same(row.id, canonicalId) && same(row.adapter.implementation, adapter));
       if (profile) canonical.push(profile);
     }
-    if (canonical.length !== 1 || !canonical[0].admitted || canonical[0].topology.configVersion !== 1 || !same(canonical[0].registration.configSchema, sdk.ABYSS_LIFECYCLE_CONFIG_SCHEMA)) throw smokeError("PROFILE_NOT_ADMITTED", "The registry-discovered canonical Abyss profile3 QUOTE_ORACLE/schema1 is required", { data: canonical });
+    if (canonical.length !== 1 || !canonical[0].admitted || canonical[0].topology.configVersion !== 1 || !same(canonical[0].registration.configSchema, sdk.ABYSS_LIFECYCLE_CONFIG_SCHEMA)) throw exampleError("PROFILE_NOT_ADMITTED", "The registry-discovered canonical Abyss profile3 QUOTE_ORACLE/schema1 is required", { data: canonical });
     selected.abyss = canonical[0];
   }
   const escrow = await read(fixture.orchestrator, sdk.launchLifecycleAbi, "fundingEscrow");
   addressEqual(await read(escrow, sdk.lifecycleFundingEscrowAbi, "wrappedNative"), fixture.quoteAsset, "Actual native-wrap funding binding");
   assert.equal(await read(fixture.quoteAsset, sdk.erc20Abi, "decimals"), fixture.quoteDecimals, "Actual quote decimals");
+  if (selected.v4) addressEqual(await read(selected.v4.adapter.implementation, sdk.poolMarketAdapterV1Abi, "oracleFactory"), fixture.oracleFactory, "V4 registered oracle factory");
+  if (selected.abyss) addressEqual(await read(selected.abyss.adapter.implementation, sdk.abyssLifecycleAdapterAbi, "factory"), fixture.oracleFactory, "Abyss registered factory");
+  fixture.oracleConfigId = keccak256(encodeAbiParameters([{ type: "uint24" }, { type: "uint16" }], [1, 4096]));
+  const oracle = await read(fixture.oracleFactory, sdk.abyssFactoryAbi, "oracleConfigs", [fixture.oracleConfigId]);
+  assert.equal(Number(oracle[0]), 1, "Canonical P1 oracle must be registered");
+  assert.equal(Number(oracle[1]), 4096, "Canonical P1 oracle cardinality");
+  artifacts.event("quote-oracle-discovered", { quoteAsset: fixture.quoteAsset, oracleFactory: fixture.oracleFactory, oracleConfigId: fixture.oracleConfigId, oracle });
   const block = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
   const identity = { nonce: BigInt(`0x${randomBytes(32).toString("hex")}`), tokenSalt: `0x${randomBytes(32).toString("hex")}` };
   artifacts.save("identity.json", { ...identity, caseId: scenario.id, creator: fixture.creator });
   const token = {
-    kind: scenario.tokenKind, rewardMode: scenario.rewardMode, name: `Smoke ${scenario.id}`, symbol: "SMOKE",
+    kind: scenario.tokenKind, rewardMode: scenario.rewardMode, name: `Example ${scenario.id}`, symbol: "EXAMPLE",
     supply: (scenario.tokenKind === 1 ? 10_000n : 1_000_000n) * UNIT,
     nftUnit: scenario.tokenKind === 1 ? 100n * UNIT : 0n,
-    metadataURI: scenario.tokenKind === 1 ? "ipfs://sdk-smoke/" : "", salt: identity.tokenSalt,
+    metadataURI: scenario.tokenKind === 1 ? fixture.nftBaseUri : "", salt: identity.tokenSalt,
     inventoryRecipient: fixture.creator, burnOnCancel: false,
   };
   const draft = {
@@ -163,7 +146,7 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
     if (spec.venue === "v4") {
       const envelope = profile.envelope;
       const feeMode = spec.feeMode ?? 0;
-      if (spec.positions > envelope.bounds.maximumPositions || 60 < envelope.bounds.minimumTickSpacing || 60 > envelope.bounds.maximumTickSpacing || !(envelope.bounds.feeModeFlags & 1 << feeMode)) throw smokeError("UNSUPPORTED_CASE", "Exact V4 positions, spacing or fee mode exceed the actual certified envelope", { data: { spec, bounds: envelope.bounds } });
+      if (spec.positions > envelope.bounds.maximumPositions || 60 < envelope.bounds.minimumTickSpacing || 60 > envelope.bounds.maximumTickSpacing || !(envelope.bounds.feeModeFlags & 1 << feeMode)) throw exampleError("UNSUPPORTED_CASE", "Exact V4 positions, spacing or fee mode exceed the actual certified envelope", { data: { spec, bounds: envelope.bounds } });
       config = sdk.encodePoolBoundV4LifecycleMarketConfig({
         version: 5, lpFeePips: 3000, hookFeePips: 10000, tickSpacing: 60, sqrtPriceX96: OPENING_PRICE,
         feeMode, protocolFeeDenominator: envelope.protocolFeeDenominator, treasury: envelope.protocolTreasury,
@@ -204,12 +187,13 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   return { plan: prepared.plan, predictedToken };
 }
 
-function apiTransport({ artifacts, signal }) {
+function apiTransport({ artifacts, signal, apiUrl }) {
   let requestTimeoutMs = 30_000;
   return {
     setTimeoutMs(ms) { requestTimeoutMs = Math.max(1, Math.min(30_000, ms)); },
     async fetch(url, init = {}) {
-      loopbackUrl(new URL(url).origin, "API request origin");
+      if (new URL(url).origin !== new URL(apiUrl).origin) throw exampleError("UNSAFE_ENDPOINT", "API request changed the configured origin");
+      launchApiUrl(new URL(url).origin);
       const started = Date.now();
       artifacts.event("api-request", { method: init.method ?? "GET", url: String(url), headers: init.headers, body: init.body ? JSON.parse(init.body) : undefined });
       try {
@@ -230,12 +214,12 @@ function apiTransport({ artifacts, signal }) {
   };
 }
 
-async function stageMetadata({ client, fixture, plan, sdk, artifacts, transport }) {
+async function stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet }) {
   artifacts.stage("api-metadata");
   artifacts.result.api.status = "staging";
   delete artifacts.result.api.reason;
-  const metadata = { name: plan.token.name, symbol: plan.token.symbol, description: `Actual Node SDK launch smoke: ${artifacts.result.caseId}` };
-  const idempotencyKey = `node-smoke-${randomUUID()}`;
+  const metadata = { name: plan.token.name, symbol: plan.token.symbol, description: `Actual Node SDK launch example: ${artifacts.result.caseId}` };
+  const idempotencyKey = `node-example-${randomUUID()}`;
   const nonce = `0x${randomBytes(32).toString("hex")}`;
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + 600n;
   const typedData = {
@@ -244,13 +228,13 @@ async function stageMetadata({ client, fixture, plan, sdk, artifacts, transport 
     primaryType: "LaunchAttribution",
     message: { chainId: plan.chainId.toString(), wallet: plan.creator, metadataHash: sdk.canonicalLaunchMetadataHash(metadata), imageSha256: zeroHash, imageContentType: "", imageContentLength: "0", idempotencyKey, nonce, deadline: deadline.toString() },
   };
-  const signature = await client.request({ method: "eth_signTypedData_v4", params: [plan.creator, JSON.stringify(typedData)] });
+  const signature = await wallet.signTypedData(typedData);
   artifacts.redactor.addSecret(signature);
   const request = { chainId: Number(plan.chainId), wallet: plan.creator, metadata, authorization: { nonce, deadline: deadline.toString(), signature } };
-  const recovery = { schema: "black-market.launch-smoke-recovery.v1", sdk: "node", caseId: artifacts.result.caseId, apiUrl: fixture.apiUrl, idempotencyKey, typedData, request };
+  const recovery = { ...artifacts.recovery, schema: "black-market.launch-example-recovery.v1", sdk: "node", caseId: artifacts.result.caseId, apiUrl: fixture.apiUrl, idempotencyKey, typedData, request };
   artifacts.privateRecovery(recovery);
   const signer = await recoverTypedDataAddress({ ...typedData, signature });
-  addressEqual(signer, plan.creator, "Anvil attribution signer");
+  addressEqual(signer, plan.creator, "Attribution signer");
   const api = new sdk.LaunchApiClient({ baseUrl: fixture.apiUrl, retries: 1, fetch: transport.fetch.bind(transport) });
   const session = await api.createUploadSession(request, idempotencyKey);
   if (session.capability) artifacts.redactor.addSecret(session.capability);
@@ -262,7 +246,7 @@ async function stageMetadata({ client, fixture, plan, sdk, artifacts, transport 
   assert.ok(typeof session.capability === "string" && session.capability.length > 0, "Actual API must issue the one-time session capability");
   assert.equal(session.chainId, Number(plan.chainId)); addressEqual(session.wallet, plan.creator, "Session wallet");
   assert.equal(session.status, "ready_to_launch"); assert.equal(session.metadata.name, plan.token.name); assert.equal(session.metadata.symbol, plan.token.symbol);
-  assert.equal(session.image, null, "This smoke stages metadata only");
+  assert.equal(session.image, null, "This example stages metadata only");
   artifacts.result.api.status = "session-ready";
   return { api, sessionId: session.sessionId, capability: session.capability };
 }
@@ -272,15 +256,15 @@ function limitSource(fixture, artifacts) {
   return async ({ block, chainId, account, orchestrator }) => {
     const limits = {
       chainId, account, orchestrator, observedBlockNumber: block.number, observedBlockHash: block.hash,
-      chainGasLimit: BigInt(policy.chainTransactionGasLimit), rpcGasLimit: BigInt(policy.rpcTransactionGasLimit),
+      chainGasLimit: BigInt(policy.chainTransactionGasLimit) < block.gasLimit ? BigInt(policy.chainTransactionGasLimit) : block.gasLimit, rpcGasLimit: BigInt(policy.rpcTransactionGasLimit),
       accountGasLimit: BigInt(policy.accountTransactionGasLimit), maxCalldataBytes: policy.maxCalldataBytes, headroomBps: policy.headroomBps,
     };
-    artifacts.event("local-execution-limits", { limits, provenance: policy.provenance });
+    artifacts.event("execution-limits", { limits, provenance: policy.provenance });
     return limits;
   };
 }
 
-async function executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, fork }) {
+async function executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, fork, wallet }) {
   const references = [];
   let activation;
   for (let step = 0; step < 64; step += 1) {
@@ -297,18 +281,18 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     assert.ok(functionName, "These native-wrap cases do not permit unrelated approval/cancellation writes");
     const args = next.kind === "begin" ? [planned.plan, sdk.LifecycleMode.Staged] : next.kind === "prepare" ? [planned.plan, next.marketStart, next.marketCount] : [planned.plan];
     assert.equal(next.data.toLowerCase(), encodeFunctionData({ abi: sdk.launchLifecycleAbi, functionName, args }).toLowerCase(), "Exact finalized-plan calldata");
-    assert.ok(next.gas !== undefined && next.gasPrice !== undefined && next.admission?.admitted === true, "Actual next transaction needs stateful gas/envelope admission");
+    assert.ok(next.gas !== undefined && (next.gasPrice !== undefined || next.maxFeePerGas !== undefined && next.maxPriorityFeePerGas !== undefined) && next.admission?.admitted === true, "Actual next transaction needs stateful gas/envelope admission");
     const head = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
     const ceiling = [BigInt(head.gasLimit), ...["chainTransactionGasLimit", "rpcTransactionGasLimit", "accountTransactionGasLimit"].map((key) => BigInt(fixture.executionLimits[key]))].reduce((left, right) => left < right ? left : right);
-    assert.ok(next.gas > 0n && next.gas <= ceiling, "Admitted gas must fit all explicit local caps");
+    assert.ok(next.gas > 0n && next.gas <= ceiling, "Admitted gas must fit all explicit caps");
     assert.ok((next.data.length - 2) / 2 <= fixture.executionLimits.maxCalldataBytes, "Exact calldata cap");
-    const nonce = await client.request({ method: "eth_getTransactionCount", params: [next.from, "pending"] });
-    const wire = { chainId: toHex(planned.chainId), from: next.from, to: next.to, data: next.data, value: toHex(next.value), gas: toHex(next.gas), gasPrice: toHex(next.gasPrice), nonce };
+    const envelope = transactionEnvelope(next);
+    const wire = { ...envelope };
+    for (const key of ["chainId", "value", "gas", "gasPrice", "maxFeePerGas", "maxPriorityFeePerGas", "nonce"]) if (wire[key] !== undefined) wire[key] = toHex(BigInt(wire[key]));
     artifacts.stage(`submit-${next.kind}`, { id: next.id });
     artifacts.result.execution = "running"; artifacts.result.chain.status = "executing";
-    const submitted = await submitRecorded({
-      transaction: { ...next, wire }, artifacts, signal,
-      send: (envelope) => client.request({ method: "eth_sendTransaction", params: [envelope] }),
+    const submitted = await submitSignedRecorded({
+      transaction: { ...next, wire }, artifacts, signal, wallet, client,
       wait: async (hash) => {
         const deadline = Date.now() + 30_000;
         while (Date.now() < deadline) {
@@ -316,7 +300,7 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
           if (receipt) return receipt;
           await pause(100, signal);
         }
-        throw smokeError("RECEIPT_TIMEOUT", `Submitted transaction was not included within 30 seconds: ${hash}`, { transactionHash: hash });
+        throw exampleError("RECEIPT_TIMEOUT", `Submitted transaction was not included within 30 seconds: ${hash}`, { transactionHash: hash });
       },
     });
     const { row, receipt } = submitted;
@@ -327,7 +311,7 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
       catch (error) { artifacts.event("revert-trace-unavailable", { transactionHash: row.transactionHash, error: errorEvidence(error) }); }
       if (trace) artifacts.event("transaction-revert-trace", { transactionHash: row.transactionHash, trace });
       row.status = "reverted"; artifacts.saveReceipts();
-      throw smokeError("TRANSACTION_REVERTED", `Actual source-chain transaction reverted: ${row.transactionHash}`, { transactionHash: row.transactionHash, revertData: findRevertData(trace), receipt });
+      throw exampleError("TRANSACTION_REVERTED", `Actual source-chain transaction reverted: ${row.transactionHash}`, { transactionHash: row.transactionHash, revertData: findRevertData(trace), receipt });
     }
     const includedBlock = await client.request({ method: "eth_getBlockByNumber", params: [receipt.blockNumber, false] });
     addressEqual(includedBlock?.hash, receipt.blockHash, "Canonical included block");
@@ -343,7 +327,7 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     }
     artifacts.event("transaction-confirmed", { reference, gasUsed: receipt.gasUsed, transactionKind: next.kind });
   }
-  throw smokeError("EXECUTION_STEP_LIMIT", "Lifecycle did not terminate within 64 exact SDK transactions; state/hashes are retained");
+  throw exampleError("EXECUTION_STEP_LIMIT", "Lifecycle did not terminate within 64 exact SDK transactions; state/hashes are retained");
 }
 
 async function verifyChain({ client, planned, references, activation, fixture, scenario, sdk, artifacts }) {
@@ -515,7 +499,7 @@ async function publishAndVerify({ fixture, planned, activation, session, sdk, ar
   artifacts.result.api.representation = representation;
   artifacts.save("published-token.json", representation);
   artifacts.event("actual-api-token", { status: response.status, representation });
-  if (!response.ok) throw smokeError(representation.code ?? "API_TOKEN_HTTP_ERROR", representation.error ?? `Actual token GET failed: HTTP ${response.status}`, { status: response.status, data: representation });
+  if (!response.ok) throw exampleError(representation.code ?? "API_TOKEN_HTTP_ERROR", representation.error ?? `Actual token GET failed: HTTP ${response.status}`, { status: response.status, data: representation });
   assert.equal(representation.chainId, Number(planned.chainId));
   const item = representation.item;
   assert.ok(item && typeof item === "object", "Actual API launch detail must contain item");
@@ -527,90 +511,79 @@ async function publishAndVerify({ fixture, planned, activation, session, sdk, ar
   artifacts.result.api.status = "passed";
 }
 
-async function runCase({ options, artifacts, signal }) {
-  artifacts.result.scope = options.execute ? options.chainOnly ? "chain-only" : "end-to-end" : "plan-only";
-  const fixture = readFixture(options.fixture, options);
-  const scenario = fixture.cases.find((row) => row.id === options.caseId);
-  if (!scenario) throw smokeError("UNKNOWN_CASE", `Unknown fixture case ${options.caseId}; use --fixture FILE --list`);
+async function executeExample({ fixture, scenario, sdk, artifacts, signal }) {
   validateCase(scenario);
+  artifacts.result.network = "chain-4663";
   artifacts.result.chain.chainId = fixture.chainId; artifacts.result.chain.rpcUrl = fixture.rpcUrl;
   artifacts.result.chain.orchestrator = fixture.orchestrator; artifacts.result.chain.creator = fixture.creator;
-  artifacts.result.api = options.execute && options.chainOnly ? { status: "skipped", reason: "--chain-only explicitly omits API metadata, publication and indexing" } : { status: "not-run", endpoint: fixture.apiUrl, reason: options.execute ? "Execution has not reached API staging" : "--execute is required for signing/API writes" };
-  artifacts.save("run-config.json", { fixture, options, case: scenario });
-  const sdk = await import("../dist/index.js");
+  artifacts.result.api = { status: "not-run", endpoint: fixture.apiUrl };
+  artifacts.save("run-config.json", { configuration: fixture, case: scenario });
   const client = rpcClient(fixture.rpcUrl, artifacts, signal, "execution");
-  artifacts.stage("fixture-provenance");
+  artifacts.stage("deployment-provenance");
   const chainId = BigInt(await client.request({ method: "eth_chainId" }));
-  assert.equal(chainId, BigInt(fixture.chainId));
-  const backend = await client.request({ method: "web3_clientVersion" });
-  assert.match(backend, /anvil/i, "Source writes are only authorized on the owned unlocked Anvil fixture");
-  const accounts = await client.request({ method: "eth_accounts" });
-  assert.ok(accounts.some((account) => same(account, fixture.creator)), "Fixture creator must be an owned unlocked Anvil account");
-  artifacts.event("fixture-verified", { chainId, backend, creator: fixture.creator });
+  assert.equal(chainId, 4663n, "Examples require Robinhood chain 4663");
+  assert.equal(await client.request({ method: "eth_getCode", params: [fixture.creator, "latest"] }), "0x", "Creator must be an EOA");
+  assert.notEqual(await client.request({ method: "eth_getCode", params: [fixture.orchestrator, "latest"] }), "0x", "Current orchestrator must be deployed");
+  const wallet = createLocalLaunchWallet({ privateKey: process.env.PRIVATE_KEY, creator: fixture.creator, chainId, orchestrator: fixture.orchestrator, client, redactor: artifacts.redactor });
+  artifacts.event("deployment-verified", { chainId, creator: fixture.creator, orchestrator: fixture.orchestrator });
   const { plan, predictedToken } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal });
-  if (!options.execute) {
-    artifacts.stage("plan-prepared");
-    artifacts.event("execution-not-run", { predictedToken, reason: "--execute is required for controlled-fork simulation, signing, source-chain transactions and API writes" });
-    return "Plan prepared; launch not executed";
-  }
   artifacts.stage("execution-planning");
   const limits = limitSource(fixture, artifacts);
-  const baseFork = sdk.createControlledLifecycleFork({ sourceRpcUrl: fixture.rpcUrl, forkRpcUrl: fixture.forkRpcUrl, allowTransactions: true, impersonation: "anvil", receiptTimeoutMs: 30_000 });
-  // Instrument the real controlled-fork transport too: simulation errors otherwise
-  // may be condensed by the SDK into a planning reason, losing raw revert bytes.
-  const fork = { ...baseFork, client: rpcClient(fixture.forkRpcUrl, artifacts, signal, "simulation") };
-  assert.match(await fork.client.request({ method: "web3_clientVersion" }), /anvil/i);
+  let fork;
+  if (fixture.forkRpcUrl !== undefined) {
+    const baseFork = sdk.createControlledLifecycleFork({ sourceRpcUrl: fixture.rpcUrl, forkRpcUrl: fixture.forkRpcUrl, allowTransactions: true, impersonation: "anvil", receiptTimeoutMs: 30_000 });
+    // Only the SDK's separate owned simulation fork is reset/impersonated/reverted.
+    fork = { ...baseFork, client: rpcClient(fixture.forkRpcUrl, artifacts, signal, "simulation") };
+    assert.match(await fork.client.request({ method: "web3_clientVersion" }), /anvil/i);
+  }
   const planned = await sdk.planLaunch({ client, account: fixture.creator, plan, mode: scenario.mode, limits, fork, confirmations: 1 });
   artifacts.save("planning.json", planned);
   artifacts.event("execution-plan", { mode: planned.mode, simulation: planned.simulation, atomicAttempt: planned.atomicAttempt, prerequisites: planned.prerequisites, transactions: planned.transactions });
   assert.equal(planned.mode, scenario.mode, "Never silently change requested mode"); addressEqual(planned.predictedToken, predictedToken, "Planner token prediction");
-  if (!planned.simulation.admitted) throw smokeError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The actual SDK did not admit this exact launch", { simulation: planned.simulation });
-  const transport = apiTransport({ artifacts, signal });
-  const session = options.chainOnly ? undefined : await stageMetadata({ client, fixture, plan, sdk, artifacts, transport });
-  const executed = await executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, fork });
+  if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The actual SDK did not admit this exact launch", { simulation: planned.simulation });
+  const transport = apiTransport({ artifacts, signal, apiUrl: fixture.apiUrl });
+  const session = await stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet });
+  const executed = await executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, fork, wallet });
   await verifyChain({ client, planned, ...executed, fixture, scenario, sdk, artifacts });
-  if (session) await publishAndVerify({ fixture, planned, activation: executed.activation, session, sdk, artifacts, transport, signal, timeoutSeconds: options.publishTimeoutSeconds });
+  await publishAndVerify({ fixture, planned, activation: executed.activation, session, sdk, artifacts, transport, signal, timeoutSeconds: 90 });
   artifacts.stage("completed");
-  return options.chainOnly ? "Chain-only launch passed; API skipped (not an end-to-end pass)" : "Actual chain launch and API publication/indexing passed";
 }
 
-const argv = process.argv.slice(2);
-const redactor = new Redactor();
-let artifacts;
-const controller = new AbortController();
-const interrupted = () => controller.abort(smokeError("INTERRUPTED", "Launch smoke interrupted; submitted hashes and local chain state are retained"));
-process.on("SIGINT", interrupted); process.on("SIGTERM", interrupted);
-try {
-  // Capture a writable output before strict option/fixture validation, so early
-  // configuration failures have the same journal/result protocol as chain failures.
-  const outputIndex = argv.indexOf("--output");
-  const caseIndex = argv.indexOf("--case");
-  if (!argv.includes("--help") && !argv.includes("--list") && outputIndex >= 0 && argv[outputIndex + 1] && !argv[outputIndex + 1].startsWith("--")) {
-    artifacts = new RunArtifacts(argv[outputIndex + 1], caseIndex >= 0 ? argv[caseIndex + 1] : null, redactor);
+export async function runLaunchExample(caseObject) {
+  const redactor = new Redactor();
+  let artifacts;
+  const controller = new AbortController();
+  const interrupted = () => controller.abort(exampleError("INTERRUPTED", "Launch example interrupted; submitted hashes and chain state are retained"));
+  process.on("SIGINT", interrupted); process.on("SIGTERM", interrupted);
+  try {
+    const caseId = caseObject.id;
+    assert.match(caseId, /^[a-z0-9-]+$/, "Example case ID must be a safe directory label");
+    mkdirSync("launch-results", { recursive: true, mode: 0o700 });
+    artifacts = new RunArtifacts(join("launch-results", `${new Date().toISOString().replaceAll(":", "-")}-${caseId}-${randomUUID()}`), caseId, redactor);
     artifacts.initialize();
-  }
-  const options = parseArguments(argv);
-  if (options.help) console.log(HELP);
-  else if (options.list) {
-    const fixture = readFixture(options.fixture, options);
-    console.log(fixture.cases.map((row) => `${row.id}\t${row.description ?? ""}`).join("\n"));
-  } else {
-    assert.ok(artifacts, "A fresh output directory is required");
-    const message = await runCase({ options, artifacts, signal: controller.signal });
+    loadExampleEnvironment();
+    redactor.addSecret(process.env.PRIVATE_KEY);
+    if (typeof process.env.PRIVATE_KEY === "string") redactor.addSecret(process.env.PRIVATE_KEY.slice(2));
+    // Import after .env loading: the public SDK resolves address overrides on import.
+    const sdk = await import("@black-market/sdk");
+    const fixture = readExampleConfiguration(sdk, redactor);
+    await executeExample({ fixture, scenario: caseObject, sdk, artifacts, signal: controller.signal });
     artifacts.finish("passed");
-    console.log(`${message}\nArtifacts: ${artifacts.directory}\nToken: ${artifacts.result.chain.token ?? artifacts.result.chain.predictedToken}`);
+    console.log(`Actual chain launch and API publication/indexing passed\nArtifacts: ${artifacts.directory}\nToken: ${artifacts.result.chain.token}`);
+    return artifacts.result;
+  } catch (failure) {
+    const error = controller.signal.aborted ? controller.signal.reason : failure;
+    if (error !== failure && error instanceof Error) error.cause = failure;
+    if (artifacts) {
+      if (artifacts.result.stage.startsWith("api-")) artifacts.result.api.status = "failed";
+      else if (artifacts.result.execution === "running") artifacts.result.chain.status = "failed";
+      try { artifacts.finish("failed", error); }
+      catch (storageError) { console.error(JSON.stringify(redactor.value({ artifactWriteError: errorEvidence(storageError), originalError: errorEvidence(error) }))); }
+    }
+    console.error(JSON.stringify(redactor.value({ sdk: "node", caseId: artifacts?.result.caseId, status: "failed", stage: artifacts?.result.stage ?? "configuration", error: errorEvidence(error), artifacts: artifacts?.directory }), null, 2));
+    process.exitCode = 1;
+    return artifacts?.result;
+  } finally {
+    process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted);
   }
-} catch (failure) {
-  const error = controller.signal.aborted ? controller.signal.reason : failure;
-  if (error !== failure && error instanceof Error) error.cause = failure;
-  if (artifacts) {
-    if (artifacts.result.stage.startsWith("api-")) artifacts.result.api.status = "failed";
-    else if (artifacts.result.execution === "running") artifacts.result.chain.status = "failed";
-    try { artifacts.finish("failed", error); }
-    catch (storageError) { console.error(JSON.stringify(redactor.value({ artifactWriteError: errorEvidence(storageError), originalError: errorEvidence(error) }))); }
-  }
-  console.error(JSON.stringify(redactor.value({ sdk: "node", caseId: artifacts?.result.caseId, status: "failed", stage: artifacts?.result.stage ?? "configuration", error: errorEvidence(error), artifacts: artifacts?.directory }), null, 2));
-  process.exitCode = 1;
-} finally {
-  process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted);
 }

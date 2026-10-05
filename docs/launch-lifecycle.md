@@ -286,93 +286,72 @@ real-graph refusals/reorg/cancellation with the same fixture environment. See
 [example instructions](../examples/README.md#actual-owned-fixture-proof) for the explicit
 local-execution opt-in and required files.
 
-## Individual token creation smoke
+## Individual token creation examples
 
-`pnpm smoke:launch` builds the SDK and runs `examples/smoke-launch.mjs` for **one**
-case from an explicit `black-market.launch-smoke-fixture.v1` file. The
-[shared local setup and eight case commands](../../black-market/docs/sdk-launch-smoke.md)
-create separate owned loopback execution/simulation Anvil instances on chain `4663`
-using the current deployed graph, not a replacement launcher. Use a real loopback
-API with application storage and an indexer configured for that same execution chain.
-No default live endpoint, private key, source-chain snapshot rollback or production
-write is used. The older whole-suite Solidity-exported proof remains separate.
+Eight independent `examples/launch-erc20-*.mjs` / `launch-erc404-*.mjs` files invoke
+the shared `runLaunchExample(caseObject)` using fixed economics and no parameters or
+fixture files. See the [example guide](../examples/README.md#individual-token-creation)
+for the eight one-line commands and setup-once working-directory `.env`.
+Node 24+ loads `.env` once, with existing process environment taking precedence.
+`PRIVATE_KEY` and `LAUNCH_API_URL` are required before RPC/signing/API work; there is
+no default key, guessed API or API-omission mode. Running a case deliberately authorizes
+real local signing, source-chain transactions and API publication; mainnet writes are
+irreversible. The official SDK chain-4663 RPC is the default.
 
-```sh
-pnpm smoke:launch --help
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json --list
+The implementation imports public `@black-market/sdk`, resolves `getAddresses(4663)`,
+derives the creator from the key and discovers the actual admitted profiles. V4 requires
+bound topology/config `5`; Abyss requires exact adapter `profileId(3)` QUOTE_ORACLE/config
+`1`. It verifies wrapped-native binding/decimals and registered P1 oracle `(1,4096)`.
+All eight original token/reward/venue/position/mode cases retain their exact economics:
+ERC20 `1_000_000e18` supply; ERC404 `10_000e18` supply / `100e18` NFT unit; selected
+staking/dividends and token-only burn; one through five permanent positions and ordered
+native-wrap opening buys. It saves identity/finalized salts/plans before execution and
+never changes mode, drops positions/buys or overrides failed admission.
+Optional `NFT_BASE_URI` provides an ERC404 base URI you actually host; its default is
+empty, with real NFT units/mirror behavior but no claim of hosted NFT metadata.
 
-# Default plan-only: registry/provenance reads, token prediction and offchain salt mining.
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json \
-  --case erc20-staking-v4 --output /tmp/node-staking-plan
-
-# Actual metadata signature/session, launch, custody/buy checks, publication and token GET.
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json \
-  --case erc20-staking-v4 --output /tmp/node-staking-launch \
-  --execute --api-url http://127.0.0.1:18763 --publish-timeout-seconds 90
-
-# API omitted by explicit choice, not a full end-to-end pass.
-pnpm smoke:launch --fixture /tmp/sdk-smoke/fixture.json \
-  --case erc404-abyss --output /tmp/node-erc404-chain --execute --chain-only
-```
-
-`--list` reads only the fixture catalogue, with no RPC, signature or write. A default
-run persists the finalized portable `plan.json` and reports **“Plan prepared; launch
-not executed”**, `scope: "plan-only"`, `execution: "not-run"` and API `not-run`.
-Only `--execute` permits SDK `planLaunch`/controlled-fork simulation, metadata signing,
-session creation and `eth_sendTransaction` from the fixture's unlocked Anvil creator.
-Every endpoint must be an explicit loopback root and the fixture must declare
-`fixtureOnly: true`; execution/simulation ports must differ. An API endpoint can come
-from `fixture.apiUrl` or `--api-url`, never the production SDK default.
-Local execution and instrumented simulation RPC HTTP calls have a bounded
-120-second per-request timeout to accommodate cold nested-fork state reads; they
-are not retried. API requests retain their separate timeout and publication deadline.
-
-All eight cases cover ERC20/ERC404, staking/dividends, token-only burn, atomic/staged
-execution, V4/Abyss/mixed markets and one through five permanent positions. Profiles
-are registry-discovered: V4 must be admitted bound topology/config `5`; Abyss must be
-the adapter's exact `profileId(3)` QUOTE_ORACLE/config `1`, not the first Abyss entry.
-The runner uses exact frozen V4 treasury/denominator/author terms, explicit developer
-rate `0`, measured local gas/calldata caps, current-block deadline and NativeWrap
-funding. ERC20 supply is `1_000_000e18`; ERC404 supply is `10_000e18` with `100e18`
-NFT units. It finalizes hook salts and saves the random identity before any write,
-never switching mode, dropping positions/buys or changing economics to obtain admission.
+Optional `SIMULATION_RPC_URL` uses the canonical SDK controlled fork on a separate
+owned disposable loopback Anvil. Otherwise real native sequential `eth_simulateV1` is
+required. Only the simulation fork is reset/impersonated/reverted. Source RPC requests
+have a 120-second bound and are not retried. Default gas `16000000`, calldata `131072`
+and headroom `1000` bps are explicitly **EXAMPLE ceilings, not verified provider/account
+limits**; the chain cap is bounded by observed block gas limits. Environment overrides
+are documented in the example guide and remain subject to full SDK admission.
 
 Execution rechecks chain/creator/destination and exact finalized calldata before each
-send. Submitted envelopes/hashes are persisted **before** receipt polling; included
-receipts are preserved **before** status/provenance assertions and require one canonical
-confirmation. Verification reads actual Active state, token runtime/name/symbol/factory
-kind/reward binding, ERC404 unit/URI/mirror, canonical opened markets, permanent V4 sealed
-custody/Abyss lock terms, fee policies and ordered activation buys.
+send. Exact admitted envelopes are signed locally; computed hashes and unsigned
+envelopes are saved **before** the single raw broadcast, and included receipts are
+saved before status/provenance assertions. One canonical confirmation is required.
+Actual verification covers Active state, factory/token runtime/name/symbol/kind/rewards,
+ERC404 unit/URI/mirror, opened markets, sealed V4 custody/permanent Abyss lock terms,
+fee policies and ordered activation buys.
 
-The API session uses the SDK attribution schema with full EIP-712 domain and the same
-name/symbol as the token, signed via owned Anvil `eth_signTypedData_v4`. Only the actual
-atomic/activate transaction hash is published. Genuine `LaunchPublishPending` HTTP `202`
-responses are polled within the configured deadline, respecting `Retry-After`; all other
-errors fail immediately. Success additionally requires an actual optimistic/final session
-matching that token/hash and an actual `/api/v1/launches/<token>?chainId=4663` representation
-with matching creator, provenance and metadata. An API that cannot index `LaunchActivated`
-must fail honestly; the runner does not manufacture projections or claim chain-only as
-end-to-end success.
+Actual SDK API metadata staging uses locally signed full-domain attribution. Only the
+real activation hash is published. Genuine pending-indexer HTTP `202` is polled within
+90 seconds respecting `Retry-After`; other failures are not retried. Success requires
+an optimistic/final session and real indexed `/api/v1/launches/<token>?chainId=4663`
+DTO with matching creator/token/hash/metadata. Missing/incompatible indexing fails
+honestly without manufacturing projections, skipping API or launching another token.
 
-Every run requires a fresh exclusive `--output` directory (its parent must exist):
+Every run automatically creates fresh `launch-results/<timestamp-case-random>/`:
 
 | Artifact | Evidence |
 | --- | --- |
-| `events.jsonl` | Timestamped SDK/case/stage events, RPC/API errors, simulation backend/steps/gas, timing and canonical observations. |
-| `plan.json` | Full finalized SDK portable economic plan, written before execution. |
-| `receipts.json` | Every submitted exact envelope/hash and subsequently observed receipt/reference, including failures. |
-| `result.json` | `black-market.launch-smoke-result.v1`, scope, terminal passed/failed stage, chain/API observations, causal stacks and revert data. |
-| `private-recovery.json` | Mode `0600`; the only file retaining API authorization signature and one-time capability. Do not share or commit it. |
+| `events.jsonl` | Timestamped case/stage events, RPC/API errors, admission/simulation and actual chain observations. |
+| `plan.json` | Full finalized portable SDK plan saved before execution. |
+| `receipts.json` | Exact signed-envelope hashes retained pre-broadcast, followed by real receipts/references. |
+| `result.json` | `black-market.launch-example-result.v1`, end-to-end status, failure stage and causal evidence. |
+| `published-token.json` | Actual indexed API representation. |
+| `private-recovery.json` | Mode `0600`; signed raw bytes, API signature and one-time capability. Never share/commit. |
 
-Public artifacts recursively redact signatures, keys, capability/auth values and URL
-credentials/query secrets while retaining public transaction calldata, hashes, selector
-and revert bytes. Profile/draft/identity/planning/progress files provide additional
-redacted context. Configuration, admission, transaction, publication and interruption
-failures exit nonzero and preserve available evidence. The source chain is **not**
-reverted, cancelled or relaunched after failure; only the SDK's separate simulation fork
-restores its isolated simulation snapshots. Recover from stored evidence before deciding
-to run a new case. Runner diagnostic unit tests are `test/smoke-launch.test.mjs`; they do
-not replace actual fixture/API execution.
+Public artifacts redact known keys/signatures/raw bytes/capabilities/auth values and
+endpoint secrets while retaining public calldata/hashes/revert bytes. Configuration,
+admission, broadcast, publication and interruption failures exit nonzero and preserve
+evidence. No source rollback, cancellation, broadcast retry or relaunch occurs.
+Inspect retained transaction hashes before deciding to run a new case after an
+ambiguous send. `test/launch-example.test.mjs` covers offline signing/retention/config
+boundaries only, not actual chain/API proof. The older independent whole-graph local
+Solidity-exported proof remains separate.
 
 ## Real HTTP API integration
 
