@@ -4,7 +4,7 @@ import test from "node:test";
 import { decodeFunctionResult, encodeFunctionData, encodeFunctionResult, toHex } from "viem";
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
 const { buildNextTransaction, createControlledLifecycleFork, decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig,
-  hasLifecycleV4HookPermissions, lifecycleErc20Abi, lifecycleRegistryAbi, LifecyclePhase, parseLaunchPlan, planLaunch,
+  hasLifecycleV4HookPermissions, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, LifecyclePhase, parseLaunchPlan, planLaunch,
   preparePoolBoundLifecyclePlan, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment } = await import(sdkPath);
 const enabled = Boolean(process.env.LAUNCH_LIFECYCLE_RPC_URL && process.env.LAUNCH_LIFECYCLE_FORK_RPC_URL && process.env.LAUNCH_LIFECYCLE_MANIFEST && process.env.LAUNCH_LIFECYCLE_FIXTURES && process.env.LAUNCH_LIFECYCLE_ALLOW_LOCAL_EXECUTION === "1");
 
@@ -57,13 +57,19 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
   }
 
   await t.test("registry enumeration admits multiple reviewed identities by schema/topology, not template ID", async () => {
-    const profiles = await readLifecycleProfiles({ client, orchestrator: manifest.addresses.orchestrator });
+    const oracleSelector = encodeFunctionData({ abi: lifecycleOracleFactoryAbi, functionName: "oracleConfigs", args: [toHex(1n, { size: 32 })] }).slice(0, 10);
+    const discovery = { request(args) {
+      if (args.method === "eth_call") assert.notEqual(args.params[0].data.slice(0, 10), oracleSelector, "Profile discovery must not query a profile-wide oracle selection");
+      return client.request(args);
+    } };
+    const profiles = await readLifecycleProfiles({ client: discovery, orchestrator: manifest.addresses.orchestrator });
     for (const row of exported.plans) for (const market of row.plan.markets) {
       const profile = profiles.find((item) => item.id.toLowerCase() === market.profileId.toLowerCase());
       assert.equal(profile?.admitted, true, profile?.reason);
       if (Number(market.configVersion) === 4 || Number(market.configVersion) === 5) {
         assert.equal(profile.developerTerms.beneficiary.toLowerCase(), profile.envelope.beneficiary.toLowerCase());
         assert.equal(profile.topology.configVersion, Number(market.configVersion));
+        assert.deepEqual(Object.keys(profile.envelope.bounds), ["minimumTickSpacing", "maximumTickSpacing", "maximumPositions", "maximumOracleCardinality", "feeModeFlags"]);
       }
     }
   });

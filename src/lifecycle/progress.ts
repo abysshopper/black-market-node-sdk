@@ -111,9 +111,19 @@ async function certifyLifecycleProfile(client: LifecycleRpcClient, orchestrator:
       await readLifecycleContract<bigint>(client, g.hookRoot, lifecycleV4HookAbi, "ALL_HOOK_MASK", [], block) !== 0x3fffn) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Shared hook callbacks differ from admission");
   } else if (g.hookRoot !== zeroAddress || g.hookRuntimeCodeHash !== zeroHash || g.sharedHookSalt !== zeroHash) throw new LifecyclePlanningError("PROFILE_DEPENDENCY", "Bound topology cannot reuse a shared root");
   if ([zeroAddress, orchestrator, registry, adapter.implementation, g.manager, g.hookRoot, g.locker, g.collectorFactory, g.collectorDeployer, g.hookDeployer].some((address) => address.toLowerCase() === envelope.beneficiary.toLowerCase())) throw new LifecyclePlanningError("PROFILE_TERMS", "Stable author identity is an excluded reviewed graph destination");
-  const [move, cardinality] = await readLifecycleContract<readonly [number, number]>(client, g.oracleFactory, lifecycleOracleFactoryAbi, "oracleConfigs", [b.oracleConfigId], block);
-  if (move === 0 || move > 887272 || cardinality < 2 || cardinality > b.maximumOracleCardinality) throw new LifecyclePlanningError("PROFILE_BOUNDS", "Reviewed oracle configuration exceeds the admitted bounds");
   return { topology, boundGraph: bound ? { manager: g.manager, oracleFactory: g.oracleFactory, locker: g.locker, collectorFactory: g.collectorFactory, deployer: g.hookDeployer, creationCode } : undefined };
+}
+
+/** Validate the market-selected registered oracle against the certified factory at the pinned block. */
+export async function validateV4LifecycleOracle(options: {
+  client: LifecycleRpcClient; envelope: LaunchEnvelopeV2; oracleConfigId: Hex; block: LifecycleBlock;
+}): Promise<void> {
+  const { client, envelope, oracleConfigId, block } = options;
+  if (oracleConfigId.toLowerCase() === zeroHash) throw new LifecyclePlanningError("INVALID_ORACLE_CONFIG", "Market oracle configuration must be nonzero");
+  const [move, cardinality] = await readLifecycleContract<readonly [number, number]>(client, envelope.graph.oracleFactory, lifecycleOracleFactoryAbi, "oracleConfigs", [oracleConfigId], block);
+  if (move <= 0 || move > 887272 || cardinality < 2 || cardinality > envelope.bounds.maximumOracleCardinality) {
+    throw new LifecyclePlanningError("INVALID_ORACLE_CONFIG", "Selected market oracle is unregistered or exceeds the admitted cardinality bounds");
+  }
 }
 
 export async function readLifecycleProfiles(options: { client: LifecycleRpcClient; orchestrator: Address; profileIds?: readonly Hex[]; offset?: bigint; limit?: bigint }, pinnedBlock?: LifecycleBlock): Promise<LifecycleProfile[]> {
@@ -180,6 +190,7 @@ async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRp
     developerTerms: { adapter: implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled },
     protocolMaximumDeveloperFeeBps, venueKind: "uniswap-v4", admitted: enabled,
   } });
+  await validateV4LifecycleOracle({ client, envelope, oracleConfigId: config.oracleConfigId, block });
   const expected: PoolBoundHookParametersV1 = {
     poolManager: boundGraph.manager, registrar: adapter.implementation, oracleFactory: boundGraph.oracleFactory, core: plan.orchestrator,
     liquidityLocker: boundGraph.locker, token, quoteCurrency: market.quoteAsset, lpFeePips: config.lpFeePips, tickSpacing: config.tickSpacing,

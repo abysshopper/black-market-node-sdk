@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { encodeAbiParameters, keccak256, parseAbiParameters, stringToHex, toHex, zeroAddress, zeroHash } from "viem";
+import { decodeFunctionData, encodeAbiParameters, encodeFunctionResult, keccak256, parseAbiParameters, stringToHex, toHex, zeroAddress, zeroHash } from "viem";
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
-const { decodeV4LifecycleMarketConfig, encodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, decodeLaunchBounds, encodeLaunchBounds, hashLifecycleProfile, hashLaunchBounds, validateV4LifecycleMarket, planLaunch, parseLaunchPlan } = await import(sdkPath);
+const { decodeV4LifecycleMarketConfig, encodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, decodeLaunchBounds, encodeLaunchBounds, hashLifecycleProfile, hashLaunchBounds, validateV4LifecycleMarket, validateV4LifecycleOracle, lifecycleOracleFactoryAbi, planLaunch, parseLaunchPlan } = await import(sdkPath);
 const fixture = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url), "utf8"));
 const original = decodeV4LifecycleMarketConfig(fixture.plan.markets[0].config);
 const address = (n) => toHex(BigInt(n), { size: 20 });
 const bounds = { minimumTickSpacing: 1, maximumTickSpacing: 200,
-  maximumPositions: 32, maximumOracleCardinality: 4096, feeModeFlags: 3, externalLiquidityDisabled: true, oracleConfigId: original.oracleConfigId };
+  maximumPositions: 32, maximumOracleCardinality: 4096, feeModeFlags: 3 };
 const graph = { manager: address(100), hookRoot: address(101), oracleFactory: address(102), locker: address(103), collectorFactory: address(104),
   collectorDeployer: address(105), hookDeployer: address(106), coreCodeHash: toHex(100n, { size: 32 }), managerCodeHash: toHex(101n, { size: 32 }),
   hookRuntimeCodeHash: toHex(102n, { size: 32 }), oracleFactoryCodeHash: toHex(103n, { size: 32 }), lockerCodeHash: toHex(104n, { size: 32 }),
@@ -28,14 +28,60 @@ const profile = { id: profileId, envelope, developerTerms: { adapter: address(1)
   topology: { hookTopology: 1, configVersion: 4 }, admitted: true, venueKind: "uniswap-v4" };
 const context = { market, config, profile, token: address(10) };
 
-test("launch bounds encode exactly the seven-field admitted tuple and digest", () => {
-  const expected = encodeAbiParameters(parseAbiParameters("(int24,int24,uint16,uint16,uint8,bool,bytes32)"), [[
+test("launch bounds encode exactly the five-field admitted tuple and digest", () => {
+  const expected = encodeAbiParameters(parseAbiParameters("(int24,int24,uint16,uint16,uint8)"), [[
     bounds.minimumTickSpacing, bounds.maximumTickSpacing, bounds.maximumPositions,
-    bounds.maximumOracleCardinality, bounds.feeModeFlags, bounds.externalLiquidityDisabled, bounds.oracleConfigId,
+    bounds.maximumOracleCardinality, bounds.feeModeFlags,
   ]]);
   assert.equal(encodeLaunchBounds(bounds), expected);
   assert.deepEqual(decodeLaunchBounds(expected), bounds);
   assert.equal(hashLaunchBounds(bounds), keccak256(expected));
+});
+
+const oracleId = (move, cardinality = 4096) => keccak256(encodeAbiParameters(parseAbiParameters("uint24,uint16"), [move, cardinality]));
+const oracleBlock = { number: 42n, hash: toHex(42n, { size: 32 }), timestamp: 100n, gasLimit: 30000000n };
+
+function oracleClient(configurations) {
+  return { async request({ method, params }) {
+    assert.equal(method, "eth_call", "Selected oracle validation must not force profile discovery or unsupported reads");
+    assert.equal(params[0].to.toLowerCase(), graph.oracleFactory.toLowerCase());
+    assert.equal(params[1], "0x2a", "Selected oracle reads must use the same pinned block");
+    const call = decodeFunctionData({ abi: lifecycleOracleFactoryAbi, data: params[0].data });
+    assert.equal(call.functionName, "oracleConfigs");
+    return encodeFunctionResult({ abi: lifecycleOracleFactoryAbi, functionName: "oracleConfigs",
+      result: configurations.get(call.args[0].toLowerCase()) ?? [0, 0] });
+  } };
+}
+
+test("one admitted profile accepts P1/P2/P3 and either external-liquidity choice independently of fees", async () => {
+  const client = oracleClient(new Map([1, 6, 17].map((move) => [oracleId(move), [move, 4096]])));
+  for (const version of [4, 5]) {
+    const topology = { hookTopology: version === 4 ? 1 : 2, configVersion: version };
+    const selectedEnvelope = { ...envelope, topology: topology.hookTopology, configVersion: version };
+    const id = hashLifecycleProfile(selectedEnvelope);
+    const selectedProfile = { ...profile, id, envelope: selectedEnvelope, topology, adapter: { ...profile.adapter, configVersion: version } };
+    const encode = version === 4 ? encodeV4LifecycleMarketConfig : encodePoolBoundV4LifecycleMarketConfig;
+    for (const move of [1, 6, 17]) for (const externalLiquidityDisabled of [false, true]) for (const feeMode of [0, 1]) {
+      const selected = { ...config, version, profileId: id, oracleConfigId: oracleId(move), externalLiquidityDisabled,
+        feeMode, lpFeePips: 150000, hookFeePips: 200000, ...(version === 5 ? { hookSalt: zeroHash } : {}) };
+      validateV4LifecycleMarket({ config: selected, profile: selectedProfile, token: context.token,
+        market: { ...market, profileId: id, configVersion: version, config: encode(selected) } });
+      await validateV4LifecycleOracle({ client, envelope: selectedEnvelope, oracleConfigId: selected.oracleConfigId, block: oracleBlock });
+    }
+  }
+});
+
+test("selected oracle must be nonzero, registered and within movement/cardinality bounds", async () => {
+  assert.throws(() => validateV4LifecycleMarket({ ...context, config: { ...config, oracleConfigId: zeroHash } }), { code: "INVALID_ORACLE_CONFIG" });
+  for (const [move, cardinality] of [[0, 0], [887273, 4096], [1, 1], [1, 4097]]) {
+    const id = oracleId(move, cardinality);
+    const client = oracleClient(new Map([[id, [move, cardinality]]]));
+    await assert.rejects(validateV4LifecycleOracle({ client, envelope, oracleConfigId: id, block: oracleBlock }), { code: "INVALID_ORACLE_CONFIG" });
+  }
+  await assert.rejects(validateV4LifecycleOracle({ client: oracleClient(new Map()), envelope, oracleConfigId: oracleId(99), block: oracleBlock }), { code: "INVALID_ORACLE_CONFIG" });
+  await assert.rejects(validateV4LifecycleOracle({ client: { request() { throw new Error("Zero ID must fail before RPC"); } }, envelope, oracleConfigId: zeroHash, block: oracleBlock }), { code: "INVALID_ORACLE_CONFIG" });
+  const id = oracleId(1);
+  await assert.rejects(validateV4LifecycleOracle({ client: oracleClient(new Map([[id, [1, 4096]]])), envelope: { ...envelope, bounds: { ...bounds, maximumOracleCardinality: 2048 } }, oracleConfigId: id, block: oracleBlock }), { code: "INVALID_ORACLE_CONFIG" });
 });
 
 test("creator-selected LP and hook rates are independent, including 15 percent with zero author royalty", () => {

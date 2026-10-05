@@ -17,10 +17,18 @@ version `2`; regenerate author consent after cutover. Market configuration tuple
 unchanged; bounds encoding changes below require fresh profile identities and consent.
 Old deployment evidence is not new-graph proof.
 
-`LaunchBoundsV2` has seven members beginning with `minimumTickSpacing`; both former LP/hook
-fee-ceiling fields are removed. Creators independently select valid market LP and hook rates
-below 1,000,000 pips, including 15%, without a profile-level trading-fee cap. Author royalty
-ceilings remain separate. Regenerate bounds digests, profile IDs and consent for the new tuple.
+`LaunchBoundsV2` has five members beginning with `minimumTickSpacing`: tick-spacing bounds,
+maximum positions, maximum oracle cardinality and fee-mode flags. Former LP/hook fee ceilings
+and profile-level oracle/external-liquidity pins are removed. Creators independently choose
+valid LP/hook rates below 1,000,000 pips, including 15%, their registered oracle configuration,
+and their per-pool external-liquidity policy. Author royalty ceilings remain separate.
+Regenerate bounds digests, profile IDs and consent for the new tuple.
+
+Robinhood P1 `(1,4096)`, P2 `(6,4096)` and P3 `(17,4096)` are usable on the same admitted profile.
+Planning/preparation validates each selected oracle on the pinned factory at the pinned block;
+unregistered/invalid oracle parameters and excessive cardinality still fail. With
+`externalLiquidityDisabled=false`, third-party LP add/remove is allowed after opening.
+Permanent launch custody and pre-opening protection remain unchanged.
 
 Shared contracts are `FixedFeeSharedHookV1`, `SharedHookDeployerV1` and
 `SharedMarketAdapterV1`. ABI exports are `sharedMarketAdapterV1Abi`,
@@ -109,8 +117,8 @@ const config = encodeV4LifecycleMarketConfig({
   version: 4, lpFeePips, tickSpacing, sqrtPriceX96, hookFeePips, feeMode,
   protocolFeeDenominator: profile.envelope.protocolFeeDenominator,
   treasury: profile.envelope.protocolTreasury,
-  externalLiquidityDisabled: profile.envelope.bounds.externalLiquidityDisabled,
-  oracleConfigId: profile.envelope.bounds.oracleConfigId,
+  externalLiquidityDisabled: creatorSelectedExternalLiquidityDisabled,
+  oracleConfigId: creatorSelectedOracleConfigId,
   profileId: profile.id, termsDigest: profile.developerTerms.termsDigest,
   developerBeneficiary: profile.developerTerms.beneficiary,
   developerFeeBps: creatorSelectedRate, positions,
@@ -118,6 +126,10 @@ const config = encodeV4LifecycleMarketConfig({
 ```
 
 `validateV4LifecycleMarket` checks profile/terms/topology/version, explicit author-rate ceilings and exact envelope bounds. Registry/adapter validation remains the execution authority. Positions must require **zero quote deposit** at the committed opening price in actual token orientation. Quotes fund ordered buys, not two-sided initial LP. At most one V4 market per quote is allowed across all templates/topologies/fees/salts; put that quote's positions into one market. Abyss may use the same quote.
+
+`validateV4LifecycleOracle({client,envelope,oracleConfigId,block})` checks the selected registered
+oracle against the certified factory and `maximumOracleCardinality`. Profile discovery does
+not choose an oracle or query a profile-pinned oracle ID.
 
 Abyss retains `encodeAbyssLifecycleMarketConfig` / `decodeAbyssLifecycleMarketConfig`: canonical pool profile, fee, oracle ID, opening price and ordered tick/liquidity/token-max positions. Quote/fee assets and direct ERC20/native-wrap funding are permissionless subject to actual code, transfers/balances/budgets and canonical bindings. Quote catalog metadata is not admission. Only swap-conversion inputs/targets use registry funding admission.
 

@@ -3,7 +3,7 @@ import { AUCTION_SUPPLY } from "./auction.js";
 
 export const LAUNCH_REWARD_DURATION = 7 * 24 * 60 * 60;
 
-/** Canonical Abyss oracle ID; reviewed V4 uses the selected envelope's exact ID. */
+/** Canonical P3 oracle default; reviewed V4 markets may select any valid registered oracle within their cardinality bounds. */
 export const LAUNCH_ORACLE_CONFIG_ID =
   "0xc0e9bed88d70a13fd3ab31451fefdd073b7266e838aee0ad1c236c8c9eff855d" as const;
 export const LAUNCH_DEADLINE_SECONDS = 20 * 60;

@@ -89,13 +89,13 @@ export function validateV4LifecycleMarket(options: {
     config.developerFeeBps > envelope.maximumDeveloperFeeBps || config.developerFeeBps > terms.maximumDeveloperFeeBps ||
     config.developerFeeBps > protocolCeiling) throw new LifecyclePlanningError("DEVELOPER_FEE_CEILING", "Explicit developer fee exceeds the reviewed or protocol ceiling");
   const b = envelope.bounds;
+  if (config.oracleConfigId.toLowerCase() === zeroHash) throw new LifecyclePlanningError("INVALID_ORACLE_CONFIG", "Market oracle configuration must be nonzero");
   if (config.treasury.toLowerCase() !== envelope.protocolTreasury.toLowerCase() ||
     config.protocolFeeDenominator !== envelope.protocolFeeDenominator || !Number.isInteger(config.hookFeePips) || config.hookFeePips < 0 || config.hookFeePips >= 1000000 ||
     !Number.isInteger(config.lpFeePips) || config.lpFeePips < 0 || config.lpFeePips >= 1000000 ||
     !Number.isInteger(config.feeMode) || config.feeMode < 0 || config.feeMode > 1 || (b.feeModeFlags & (1 << config.feeMode)) === 0 ||
     config.tickSpacing < b.minimumTickSpacing || config.tickSpacing > b.maximumTickSpacing ||
-    config.positions.length === 0 || config.positions.length > b.maximumPositions || config.externalLiquidityDisabled !== b.externalLiquidityDisabled ||
-    config.oracleConfigId.toLowerCase() !== b.oracleConfigId.toLowerCase()) {
+    config.positions.length === 0 || config.positions.length > b.maximumPositions) {
     throw new LifecyclePlanningError("PROFILE_BOUNDS_MISMATCH", "Market economics exceed or differ from the exact admitted envelope bounds");
   }
 }

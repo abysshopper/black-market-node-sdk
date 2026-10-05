@@ -73,7 +73,6 @@ export type MarketLiveStateV1 = {
 export type LaunchBoundsV2 = {
   minimumTickSpacing: number; maximumTickSpacing: number;
   maximumPositions: number; maximumOracleCardinality: number; feeModeFlags: number;
-  externalLiquidityDisabled: boolean; oracleConfigId: Hex;
 };
 export type LaunchGraphV2 = {
   manager: Address; hookRoot: Address; oracleFactory: Address; locker: Address; collectorFactory: Address;
@@ -98,8 +97,7 @@ export type SourceTermsV3 = {
 export const launchBoundsV2Components = [
   { name: "minimumTickSpacing", type: "int24" }, { name: "maximumTickSpacing", type: "int24" },
   { name: "maximumPositions", type: "uint16" }, { name: "maximumOracleCardinality", type: "uint16" },
-  { name: "feeModeFlags", type: "uint8" }, { name: "externalLiquidityDisabled", type: "bool" },
-  { name: "oracleConfigId", type: "bytes32" },
+  { name: "feeModeFlags", type: "uint8" },
 ] as const;
 export const launchGraphV2Components = [
   { name: "manager", type: "address" }, { name: "hookRoot", type: "address" },
