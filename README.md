@@ -134,7 +134,21 @@ pnpm test       # build + node:test suite
 pnpm typecheck
 ```
 
-## 0.3.1 migration
+## 0.4.0 migration
+
+- Clean hook ABI/export naming and identity-domain cutover; no old-name aliases.
+  See [the lifecycle guide](docs/launch-lifecycle.md) for current exports and domains.
+- `LaunchBoundsV2` has five geometry/cardinality/fee-mode members. Profile-level LP/hook
+  trading-fee ceilings and oracle/external-liquidity pins are removed.
+- Creators select per-market fees, registered oracle configurations and external-liquidity
+  policy. Robinhood P1 `(1,4096)`, P2 `(6,4096)` and P3 `(17,4096)` remain usable on one profile.
+- Per-market config 4/5 and immutable constructor commitments retain these choices.
+  Regenerate profile identities, bounds digests and author consent for the new bounds ABI
+  and identity domains. Historical deployments are not upgraded.
+- Canonical Abyss discovery recognizes its independently certified config-1 graph without
+  inventing a V4 author envelope.
+
+## 0.3.1 migration (historical)
 
 - Breaking cutover to explicit lifecycle plans and signed V2 registry profiles.
   Historical Atomic/Unified builders, template catalogs and old-name aliases are removed.
