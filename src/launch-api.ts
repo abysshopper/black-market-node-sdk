@@ -14,7 +14,7 @@ export type LaunchAttributionAuthorization = { nonce: Hex; deadline: string; sig
 export type LaunchSessionCreateRequest = { chainId: number; wallet: Address; metadata: LaunchSessionCreateMetadata; image?: LaunchSessionImageDescriptor; authorization: LaunchAttributionAuthorization };
 export type LaunchSessionPublishRequest = { chainId: number; transactionHash: Hash };
 export type LaunchSessionStatus = "awaiting_upload" | "verifying_image" | "ready_to_launch" | "transaction_submitted" | "awaiting_indexer" | "optimistic" | "final" | "reorged" | "expired" | "rejected";
-export type LaunchSessionDirectUpload = { url: string; headers: Record<string, string>; expiresAt: string };
+export type LaunchSessionDirectUpload = { url: string; method: "PUT"; headers: Record<string, string>; expiresInSeconds: number };
 export type LaunchSessionResponse = { sessionId: string; chainId: number; wallet: Address; status: LaunchSessionStatus; metadata: { name: string; symbol: string; description: string | null; websiteUrl: string | null; twitterUrl: string | null; telegramUrl: string | null; discordUrl: string | null }; image: { sha256: Hex; contentType: LaunchImageContentType; contentLength: number; width: number | null; height: number | null } | null; transactionHash?: Hash | null; token?: Address | null; canonicalStatus: "pending" | "optimistic" | "final" | "reorged"; metadataStatus: "queued" | "ready" | "needs_owner_action" | "none"; imageStatus: "none" | "upload_pending" | "verifying" | "ready" | "rejected"; retryable: boolean; createdAt: string; updatedAt: string; sessionExpiresAt: string; publishedAt?: string; upload?: LaunchSessionDirectUpload; capability?: string; imageUrl?: string };
 export type LaunchApiErrorCode = "INVALID_REQUEST" | "INVALID_ADDRESS" | "INVALID_IDEMPOTENCY_KEY" | "INVALID_CAPABILITY" | "UNSUPPORTED_CHAIN" | "NOT_FOUND" | "IMAGE_INVALID" | "SESSION_STATE_CONFLICT" | "SESSION_EXPIRED" | "IDEMPOTENCY_CONFLICT" | "UPLOAD_CONFLICT" | "RATE_LIMITED" | "OVERLOADED" | "RPC_UNAVAILABLE" | "RPC_TIMEOUT" | "INDEXER_UNAVAILABLE" | "APP_STORAGE_UNAVAILABLE" | "IMAGE_STORAGE_UNAVAILABLE" | "TX_REVERTED" | "TX_PROVENANCE_MISMATCH" | "TX_METADATA_MISMATCH" | (string & {});
 
@@ -102,7 +102,8 @@ export const launchAttributionTypes = { LaunchAttribution: [
   { name: "idempotencyKey", type: "string" }, { name: "nonce", type: "bytes32" }, { name: "deadline", type: "uint256" },
 ] } as const;
 export function canonicalLaunchMetadataHash(metadata: LaunchSessionMetadata): Hex {
-  return keccak256(stringToHex(JSON.stringify({ name: metadata.name.normalize("NFC").trim(), symbol: metadata.symbol.normalize("NFC").trim(), description: (metadata.description ?? "").normalize("NFC").trim(), websiteUrl: metadata.websiteUrl ?? null, twitterUrl: metadata.twitterUrl ?? null, telegramUrl: metadata.telegramUrl ?? null, discordUrl: metadata.discordUrl ?? null, imageKey: metadata.imageKey ?? null })));
+  const url = (value: string | undefined) => value === undefined ? null : new URL(value.normalize("NFC").trim()).toString();
+  return keccak256(stringToHex(JSON.stringify({ name: metadata.name.normalize("NFC").trim(), symbol: metadata.symbol.normalize("NFC").trim(), description: (metadata.description ?? "").normalize("NFC").trim(), websiteUrl: url(metadata.websiteUrl), twitterUrl: url(metadata.twitterUrl), telegramUrl: url(metadata.telegramUrl), discordUrl: url(metadata.discordUrl), imageKey: metadata.imageKey ?? null })));
 }
 export async function sha256Hex(bytes: ArrayBuffer): Promise<Hex> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);

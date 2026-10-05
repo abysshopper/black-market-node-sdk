@@ -1,6 +1,6 @@
 {
   "name": "@black-market/sdk",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Canonical TypeScript SDK for Black Market on Robinhood Chain (reviewed multi-market launches, Abyss DEX, lending).",
   "license": "MIT",
   "repository": {
@@ -23,7 +23,8 @@
   "files": [
     "dist",
     "src",
-    "docs"
+    "docs",
+    "assets"
   ],
   "sideEffects": false,
   "engines": {
@@ -39,8 +40,12 @@
     "dev": "tsc -p tsconfig.json --watch",
     "examples": "pnpm build && node examples/quickstart.mjs",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "smoke:launch": "pnpm build && node examples/smoke-launch.mjs",
     "prepublishOnly": "pnpm build",
-    "test": "pnpm build && node --test test/*.test.mjs",
+    "test": "pnpm test:unit",
+    "test:unit": "pnpm build && node --test test/*.test.mjs",
+    "test:api": "pnpm build && node --test test/integration/launch-api.read.test.mjs",
+    "test:api:write": "pnpm build && node --test test/integration/launch-api.sessions.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

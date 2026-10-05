@@ -33,7 +33,7 @@ test("V4 public config codec preserves every economic field in the independent c
   assert.deepEqual({ ...decoded, treasury: decoded.treasury.toLowerCase(), developerBeneficiary: decoded.developerBeneficiary.toLowerCase() }, v4);
 });
 
-test("V4 public config codecs reject retired or unsupported inner wire versions", () => {
+test("V4 public config codecs reject unsupported inner wire versions", () => {
   for (const version of [0, 1, 2, 3, 5]) {
     assert.throws(() => encodeV4LifecycleMarketConfig({ ...v4, version }));
     const encoded = encodeAbiParameters(

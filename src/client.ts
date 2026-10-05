@@ -20,7 +20,7 @@ export function createProtocolPublicClient(opts?: {
 }): PublicClient {
   const chainId = opts?.chainId ?? 31337;
   const chain = chains[chainId] ?? foundry;
-  const transport = http(opts?.rpcUrl ?? process.env.RPC_URL ?? "http://127.0.0.1:8545");
+  const transport = http(opts?.rpcUrl ?? process.env.RPC_URL ?? chain.rpcUrls.default.http[0]);
   return createPublicClient({ chain, transport });
 }
 
@@ -31,7 +31,7 @@ export function createProtocolWalletClient(opts: {
 }): WalletClient {
   const chainId = opts.chainId ?? 31337;
   const chain: Chain = chains[chainId] ?? foundry;
-  const transport: Transport = http(opts.rpcUrl ?? process.env.RPC_URL ?? "http://127.0.0.1:8545");
+  const transport: Transport = http(opts.rpcUrl ?? process.env.RPC_URL ?? chain.rpcUrls.default.http[0]);
   const account: Account = privateKeyToAccount(opts.privateKey);
   return createWalletClient({ account, chain, transport });
 }

@@ -119,7 +119,6 @@ const v4AdapterMetadataAbi = [
   { type: "function", name: "CONFIG_VERSION", stateMutability: "view", inputs: [], outputs: [{ type: "uint32" }] },
   { type: "function", name: "implementationRegistry", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "poolManager", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
-  { type: "function", name: "hookRoot", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "oracleFactory", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "locker", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "collectorFactory", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
@@ -127,6 +126,7 @@ const v4AdapterMetadataAbi = [
 ] as const;
 export const sharedMarketAdapterV1Abi = [
   ...v4AdapterMetadataAbi,
+  { type: "function", name: "hookRoot", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "constructor", stateMutability: "nonpayable", inputs: [
     { name: "core_", type: "address" }, { name: "manager_", type: "address" }, { name: "root_", type: "address" },
     { name: "locker_", type: "address" }, { name: "helper_", type: "address" }, { name: "registry_", type: "address" },
@@ -142,6 +142,7 @@ export const abyssLifecycleAdapterAbi = [
 ] as const;
 export const poolMarketAdapterV1Abi = [
   ...v4AdapterMetadataAbi,
+  { type: "function", name: "hookRoot", stateMutability: "pure", inputs: [], outputs: [{ type: "address" }] },
   { type: "constructor", stateMutability: "nonpayable", inputs: [
     { name: "core_", type: "address" }, { name: "manager_", type: "address" }, { name: "oracleFactory_", type: "address" },
     { name: "locker_", type: "address" }, { name: "deployer_", type: "address" }, { name: "helper_", type: "address" },
@@ -205,17 +206,78 @@ export const lifecycleV4HookAbi = [
   { type: "function", name: "pendingFees", stateMutability: "view", inputs: [{ type: "bytes32" }, { type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "settledFees", stateMutability: "view", inputs: [{ type: "bytes32" }, { type: "address" }], outputs: [{ type: "uint256" }] },
 ] as const;
-export const poolBoundLaunchFeeHookV1Abi = [
-  ...lifecycleV4HookAbi,
-  { type: "constructor", stateMutability: "nonpayable", inputs: [boundParametersInput] },
-  { type: "function", name: "boundPoolId", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
-  { type: "function", name: "deploymentConfigHash", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
-  { type: "function", name: "marketCommitment", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
-  { type: "function", name: "core", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
-  { type: "function", name: "liquidityLocker", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
-  { type: "function", name: "token", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
-  { type: "function", name: "openingSqrtPriceX96", stateMutability: "view", inputs: [], outputs: [{ type: "uint160" }] },
-  { type: "function", name: "expectedPositionCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint32" }] },
+/** Complete mined FixedFeePoolHookV1 ABI (pool-launch-v1, 20261005T053747Z-b5a7b88).
+ * Compiler-only internalType annotations are omitted; the constructor is one 18-field tuple. */
+export const fixedFeePoolHookV1Abi = [
+  { type: "constructor", inputs: [boundParametersInput], stateMutability: "nonpayable" },
+  { type: "function", name: "ALL_HOOK_MASK", inputs: [], outputs: [{ name: "", type: "uint160" }], stateMutability: "view" },
+  { type: "function", name: "MAX_ORACLE_CARDINALITY", inputs: [], outputs: [{ name: "", type: "uint16" }], stateMutability: "view" },
+  { type: "function", name: "PIPS_DENOMINATOR", inputs: [], outputs: [{ name: "", type: "uint24" }], stateMutability: "view" },
+  { type: "function", name: "REQUIRED_HOOK_FLAGS", inputs: [], outputs: [{ name: "", type: "uint160" }], stateMutability: "view" },
+  { type: "function", name: "afterDonate", inputs: [{ name: "", type: "address" }, { name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "", type: "uint256" }, { name: "", type: "uint256" }, { name: "", type: "bytes" }], outputs: [{ name: "", type: "bytes4" }], stateMutability: "nonpayable" },
+  { type: "function", name: "afterInitialize", inputs: [{ name: "sender", type: "address" }, { name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "sqrtPriceX96", type: "uint160" }, { name: "tick", type: "int24" }], outputs: [{ name: "", type: "bytes4" }], stateMutability: "nonpayable" },
+  { type: "function", name: "afterSwap", inputs: [{ name: "", type: "address" }, { name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "params", type: "tuple", components: [{ name: "zeroForOne", type: "bool" }, { name: "amountSpecified", type: "int256" }, { name: "sqrtPriceLimitX96", type: "uint160" }] }, { name: "delta", type: "int256" }, { name: "", type: "bytes" }], outputs: [{ name: "", type: "bytes4" }, { name: "", type: "int128" }], stateMutability: "nonpayable" },
+  { type: "function", name: "aggregateLiabilities", inputs: [{ name: "asset", type: "address" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "aggregateManagerClaims", inputs: [{ name: "asset", type: "address" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "beforeAddLiquidity", inputs: [{ name: "sender", type: "address" }, { name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "params", type: "tuple", components: [{ name: "tickLower", type: "int24" }, { name: "tickUpper", type: "int24" }, { name: "liquidityDelta", type: "int256" }, { name: "salt", type: "bytes32" }] }, { name: "", type: "bytes" }], outputs: [{ name: "", type: "bytes4" }], stateMutability: "nonpayable" },
+  { type: "function", name: "beforeDonate", inputs: [{ name: "", type: "address" }, { name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "amount0", type: "uint256" }, { name: "amount1", type: "uint256" }, { name: "", type: "bytes" }], outputs: [{ name: "", type: "bytes4" }], stateMutability: "nonpayable" },
+  { type: "function", name: "beforeRemoveLiquidity", inputs: [{ name: "sender", type: "address" }, { name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "params", type: "tuple", components: [{ name: "tickLower", type: "int24" }, { name: "tickUpper", type: "int24" }, { name: "liquidityDelta", type: "int256" }, { name: "salt", type: "bytes32" }] }, { name: "", type: "bytes" }], outputs: [{ name: "", type: "bytes4" }], stateMutability: "nonpayable" },
+  { type: "function", name: "beforeSwap", inputs: [{ name: "", type: "address" }, { name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "params", type: "tuple", components: [{ name: "zeroForOne", type: "bool" }, { name: "amountSpecified", type: "int256" }, { name: "sqrtPriceLimitX96", type: "uint160" }] }, { name: "", type: "bytes" }], outputs: [{ name: "", type: "bytes4" }, { name: "", type: "int256" }, { name: "", type: "uint24" }], stateMutability: "nonpayable" },
+  { type: "function", name: "boundPoolId", inputs: [], outputs: [{ name: "", type: "bytes32" }], stateMutability: "view" },
+  { type: "function", name: "collectFees", inputs: [{ name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }], outputs: [{ name: "amount0", type: "uint256" }, { name: "amount1", type: "uint256" }], stateMutability: "nonpayable" },
+  { type: "function", name: "completePoolOpening", inputs: [{ name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }], outputs: [], stateMutability: "nonpayable" },
+  { type: "function", name: "core", inputs: [], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "deploymentConfigHash", inputs: [], outputs: [{ name: "", type: "bytes32" }], stateMutability: "view" },
+  { type: "function", name: "expectedPositionCount", inputs: [], outputs: [{ name: "", type: "uint32" }], stateMutability: "view" },
+  { type: "function", name: "increaseObservationCardinalityNext", inputs: [{ name: "id", type: "bytes32" }, { name: "requested", type: "uint16" }], outputs: [], stateMutability: "nonpayable" },
+  { type: "function", name: "initialized", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ name: "", type: "bool" }], stateMutability: "view" },
+  { type: "function", name: "liquidityLocker", inputs: [], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "marketCommitment", inputs: [], outputs: [{ name: "", type: "bytes32" }], stateMutability: "view" },
+  { type: "function", name: "observations", inputs: [{ name: "id", type: "bytes32" }, { name: "index", type: "uint256" }], outputs: [{ name: "blockTimestamp", type: "uint32" }, { name: "tickCumulative", type: "int56" }, { name: "secondsPerLiquidityCumulativeX128", type: "uint160" }, { name: "observationInitialized", type: "bool" }], stateMutability: "view" },
+  { type: "function", name: "observeTruncated", inputs: [{ name: "id", type: "bytes32" }, { name: "secondsAgos", type: "uint32[]" }], outputs: [{ name: "tickCumulatives", type: "int56[]" }, { name: "secondsPerLiquidityCumulativeX128s", type: "uint160[]" }], stateMutability: "view" },
+  { type: "function", name: "openingCompletedAt", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "openingSqrtPriceX96", inputs: [], outputs: [{ name: "", type: "uint160" }], stateMutability: "view" },
+  { type: "function", name: "oracleFactory", inputs: [], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "oracleInitializedAt", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "oracleState", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ name: "index", type: "uint16" }, { name: "cardinality", type: "uint16" }, { name: "cardinalityNext", type: "uint16" }, { name: "tick", type: "int24" }, { name: "lastBlock", type: "uint64" }, { name: "initializedAt", type: "uint64" }, { name: "maxAbsTickMove", type: "int24" }, { name: "cardinalityCap", type: "uint16" }], stateMutability: "view" },
+  { type: "function", name: "pendingFees", inputs: [{ name: "id", type: "bytes32" }, { name: "asset", type: "address" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "pendingTreasurySweeps", inputs: [{ name: "id", type: "bytes32" }, { name: "asset", type: "address" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "poolConfig", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ name: "", type: "tuple", components: lifecycleV4HookPoolConfigComponents }], stateMutability: "view" },
+  { type: "function", name: "poolKey", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ name: "", type: "tuple", components: lifecycleV4PoolKeyComponents }], stateMutability: "view" },
+  { type: "function", name: "poolManager", inputs: [], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "pools", inputs: [], outputs: [{ name: "ids", type: "bytes32[]" }], stateMutability: "view" },
+  { type: "function", name: "registerPool", inputs: [{ name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "config", type: "tuple", components: lifecycleV4HookPoolConfigComponents }], outputs: [], stateMutability: "nonpayable" },
+  { type: "function", name: "registered", inputs: [{ name: "id", type: "bytes32" }], outputs: [{ name: "", type: "bool" }], stateMutability: "view" },
+  { type: "function", name: "registrar", inputs: [], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "settledFees", inputs: [{ name: "id", type: "bytes32" }, { name: "asset", type: "address" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "token", inputs: [], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "unlockCallback", inputs: [{ name: "data", type: "bytes" }], outputs: [{ name: "", type: "bytes" }], stateMutability: "nonpayable" },
+  { type: "function", name: "validateCollector", inputs: [{ name: "key", type: "tuple", components: lifecycleV4PoolKeyComponents }, { name: "collector", type: "address" }, { name: "locker", type: "address" }], outputs: [], stateMutability: "view" },
+  { type: "function", name: "validateOracleConfig", inputs: [{ name: "oracleConfigId", type: "bytes32" }], outputs: [{ name: "maxAbsTickMove", type: "uint24" }, { name: "cardinality", type: "uint16" }], stateMutability: "view" },
+  { type: "event", name: "FeeAccrued", inputs: [{ name: "poolId", type: "bytes32", indexed: true }, { name: "asset", type: "address", indexed: true }, { name: "gross", type: "uint256", indexed: false }, { name: "treasury", type: "uint256", indexed: false }], anonymous: false },
+  { type: "event", name: "FeesCollected", inputs: [{ name: "poolId", type: "bytes32", indexed: true }, { name: "collector", type: "address", indexed: true }, { name: "amount0", type: "uint256", indexed: false }, { name: "amount1", type: "uint256", indexed: false }], anonymous: false },
+  { type: "event", name: "IncreaseObservationCardinalityNext", inputs: [{ name: "poolId", type: "bytes32", indexed: true }, { name: "cardinalityNextOld", type: "uint16", indexed: false }, { name: "cardinalityNextNew", type: "uint16", indexed: false }], anonymous: false },
+  { type: "event", name: "LpFeesCheckpointed", inputs: [{ name: "poolId", type: "bytes32", indexed: true }, { name: "locker", type: "address", indexed: true }, { name: "amount0", type: "uint256", indexed: false }, { name: "amount1", type: "uint256", indexed: false }], anonymous: false },
+  { type: "event", name: "OpeningCompleted", inputs: [{ name: "poolId", type: "bytes32", indexed: true }, { name: "completedAt", type: "uint256", indexed: true }], anonymous: false },
+  { type: "event", name: "PoolInitialized", inputs: [{ name: "poolId", type: "bytes32", indexed: true }], anonymous: false },
+  { type: "event", name: "PoolRegistered", inputs: [{ name: "poolId", type: "bytes32", indexed: true }, { name: "collector", type: "address", indexed: true }, { name: "locker", type: "address", indexed: true }], anonymous: false },
+  { type: "error", name: "AlreadyRegistered", inputs: [] },
+  { type: "error", name: "ClaimMismatch", inputs: [] },
+  { type: "error", name: "ExternalLiquidityDisabled", inputs: [] },
+  { type: "error", name: "FeeSettlementRequired", inputs: [] },
+  { type: "error", name: "FeeTooLarge", inputs: [] },
+  { type: "error", name: "IncompleteFill", inputs: [] },
+  { type: "error", name: "InexactTransfer", inputs: [] },
+  { type: "error", name: "InvalidCallback", inputs: [] },
+  { type: "error", name: "InvalidConfiguration", inputs: [] },
+  { type: "error", name: "InvalidHookAddress", inputs: [] },
+  { type: "error", name: "InvalidObservationState", inputs: [] },
+  { type: "error", name: "InvalidPool", inputs: [] },
+  { type: "error", name: "ObservationTooOld", inputs: [] },
+  { type: "error", name: "OpeningAlreadyComplete", inputs: [] },
+  { type: "error", name: "OpeningNotComplete", inputs: [] },
+  { type: "error", name: "Reentrancy", inputs: [] },
+  { type: "error", name: "Unauthorized", inputs: [] },
 ] as const;
 export const lifecycleV4LockerAbi = [
   { type: "function", name: "poolManager", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
@@ -249,6 +311,39 @@ export const lifecycleErc20Abi = [
   { type: "function", name: "allowance", stateMutability: "view", inputs: [{ type: "address" }, { type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ type: "address" }, { type: "uint256" }], outputs: [{ type: "bool" }] },
 ] as const;
+/** Shared immutable bindings and terminal state of LaunchERC20V1 / LaunchERC404V1. */
+export const lifecycleTokenContextAbi = [
+  { type: "function", name: "authority", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "tokenFactory", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "launchId", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
+  { type: "function", name: "rewardMode", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] },
+  { type: "function", name: "initialSupply", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "burnOnCancel", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "active", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "cancelled", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "exclusionsFinalized", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "feeHub", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "rewardModule", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;
+export const lifecycleErc404Abi = [
+  ...lifecycleTokenContextAbi,
+  { type: "function", name: "unit", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "baseURI", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { type: "function", name: "mirrorERC721", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;
+export const lifecycleErc404MirrorAbi = [
+  { type: "function", name: "baseERC20", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;
+export const lifecycleTokenFactoryAbi = [
+  { type: "function", name: "core", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "tokenOfLaunch", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "address" }] },
+  { type: "function", name: "launchOfToken", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "bytes32" }] },
+  { type: "event", name: "TokenDeployed", anonymous: false, inputs: [
+    { name: "launchId", type: "bytes32", indexed: true }, { name: "token", type: "address", indexed: true },
+    { name: "kind", type: "uint8", indexed: false },
+  ] },
+] as const;
+
 export const lifecycleOracleFactoryAbi = [
   { type: "function", name: "oracleConfigs", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "uint24" }, { type: "uint16" }] },
 ] as const;

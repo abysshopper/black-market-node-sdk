@@ -20,7 +20,7 @@ export type AbyssInfrastructureAddresses = {
 };
 
 export type LaunchApplicationAddresses = {
-  /** No reviewed deployment is selected implicitly; set these from exact deployment evidence. */
+  /** Mined mainnet deployment; local chains require explicit environment configuration. */
   launchOrchestrator: Address;
   launchImplementationRegistry: Address;
   launchFeeOwnerRegistry: Address;
@@ -177,19 +177,26 @@ export const robinhoodAbyssInfrastructure: AbyssInfrastructureAddresses = {
   abyssFeeRouter: "0x2c3B1b6fe0EDa8e10C0445567b47e66E825B34cd",
 };
 
+/** Mined pool-launch-v1 deployment, 20261005T053747Z-b5a7b88 (manifest.json). */
+export const robinhoodLaunchApplication: LaunchApplicationAddresses = {
+  launchOrchestrator: "0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E",
+  launchImplementationRegistry: "0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
+  launchFeeOwnerRegistry: "0x15778Aad08e12D458B2848F035860e2a8c2a0725",
+};
 
-/** Workbench deployment snapshot — override via env when redeploying. */
+
+/** Robinhood-mainnet fork lending defaults; launch deployment remains explicit. */
 const workbenchDefaults: ProtocolAddresses = {
   ...robinhoodAbyssInfrastructure,
   ...launchApplicationFromEnv(zeroLaunchApplication),
-  lendingPool: "0xe1576c5CF12F670911BEd5Cc0AEDBcD4E5E9550c",
-  addressesProvider: "0x9Fcca440F19c62CDF7f973eB6DDF218B15d4C71D",
-  dataProvider: "0x79E8AB29Ff79805025c9462a2f2F12e9A496f81d",
+  lendingPool: "0x5D8878b145904425C598f12EB8eD550985369a82",
+  addressesProvider: "0x892faB533E8D04135D902F94974e45dB48C17697",
+  dataProvider: "0x1f3faA42C1D5cC330f6BD0242B9a56d611bdC78a",
   uiPoolDataProvider: zero,
   walletBalanceProvider: zero,
-  aaveOracle: "0x9c65f85425c619A6cB6D29fF8d57ef696323d188",
+  aaveOracle: "0x6837B3cF5d959d01e07bf6DaB53f562877BF7d53",
   liquidationExecutor: zero,
-  protocolVault: "0xAe120F0df055428E45b264E7794A18c54a2a3fAF",
+  protocolVault: "0x83Ec5DbFEd6d972be89df88d3654EA2c70Fa2FB3",
   ethUsdFeed: ROBINHOOD_ETH_USD,
   weth: ROBINHOOD_WETH,
   wethGateway: zero,
@@ -233,26 +240,26 @@ export const addresses: Record<SupportedChainId, ProtocolAddresses> = {
     tokenVesting: envAddr(["TOKEN_VESTING", "VITE_TOKEN_VESTING", "NEXT_PUBLIC_TOKEN_VESTING"]),
     faucet: envAddr(["FAUCET", "VITE_FAUCET", "NEXT_PUBLIC_FAUCET"]),
   },
-  /** Lending/DEX defaults remain canonical; reviewed launches require explicit evidence. */
+  /** Current mined launch, canonical Abyss, and replacement lending infrastructure. */
   4663: {
     ...robinhoodAbyssInfrastructure,
-    ...launchApplicationFromEnv(zeroLaunchApplication),
-    lendingPool: "0x5b8F732A4F7a62D642070bb49255d6C434A76766",
-    addressesProvider: "0xaaD329d0Da03C8c00E8460b5b208D0A21A48C9df",
-    dataProvider: "0x3B097A7899DF433552B8428E774964661b53C193",
-    uiPoolDataProvider: "0x2F35A64c7E7cBc0c05A1A1C3e2F3952E103fD5b8",
-    walletBalanceProvider: "0x833BB152212DD5d2d6C7b0501aB38efb9602AD8B",
-    aaveOracle: "0xb9441f8D3Eda65Ac7cbb6b542b5345c98067e5Fb",
+    ...launchApplicationFromEnv(robinhoodLaunchApplication),
+    lendingPool: "0x5D8878b145904425C598f12EB8eD550985369a82",
+    addressesProvider: "0x892faB533E8D04135D902F94974e45dB48C17697",
+    dataProvider: "0x1f3faA42C1D5cC330f6BD0242B9a56d611bdC78a",
+    uiPoolDataProvider: "0x02D2CA3bBbBaBD3C25bEDD4bE0eE6E5885C4D152",
+    walletBalanceProvider: "0xBbb5D81123C3d514456974e9Fe6C7C8d7a0E4E2A",
+    aaveOracle: "0x6837B3cF5d959d01e07bf6DaB53f562877BF7d53",
     liquidationExecutor: envAddr([
       "LIQUIDATION_EXECUTOR",
       "VITE_LIQUIDATION_EXECUTOR",
       "NEXT_PUBLIC_LIQUIDATION_EXECUTOR",
     ]),
-    protocolVault: "0x961981916AB6575C3af3eeCecbf6A3b7Fad7C9e1",
+    protocolVault: "0x83Ec5DbFEd6d972be89df88d3654EA2c70Fa2FB3",
     ethUsdFeed: ROBINHOOD_ETH_USD,
     weth: ROBINHOOD_WETH,
-    wethGateway: "0xAbc9E3B20e8773536BDCa5ba28C619762C8e0570",
-    lens: "0x82FA6e601F48d64b4f163Eb47D6001f2d5040f9B",
+    wethGateway: "0xa16aB7646267327cB26dD3533526309cDe676d9d",
+    lens: "0xB56079f966597CB9edaE27c589F8190f4dCD12df",
     tokenVesting: zero,
     faucet: zero,
   },

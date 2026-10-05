@@ -39,37 +39,21 @@ async function evaluateAddressesModule() {
 
 
 test("launch environment overrides retain bare, VITE, and NEXT_PUBLIC precedence", async () => {
-  const overrideCases = [
-    {
-      environment: {
-        LAUNCH_FEE_OWNER_REGISTRY: "0x0000000000000000000000000000000000000001",
-        VITE_LAUNCH_FEE_OWNER_REGISTRY: "0x0000000000000000000000000000000000000002",
-        NEXT_PUBLIC_LAUNCH_FEE_OWNER_REGISTRY: "0x0000000000000000000000000000000000000003",
-      },
-      expected: "0x0000000000000000000000000000000000000001",
-    },
-    {
-      environment: {
-        VITE_LAUNCH_FEE_OWNER_REGISTRY: "0x0000000000000000000000000000000000000002",
-        NEXT_PUBLIC_LAUNCH_FEE_OWNER_REGISTRY: "0x0000000000000000000000000000000000000003",
-      },
-      expected: "0x0000000000000000000000000000000000000002",
-    },
-    {
-      environment: {
-        NEXT_PUBLIC_LAUNCH_FEE_OWNER_REGISTRY: "0x0000000000000000000000000000000000000003",
-      },
-      expected: "0x0000000000000000000000000000000000000003",
-    },
-  ];
-
-  for (const { environment, expected } of overrideCases) {
-    await withAddressEnvironment(environment, async () => {
-      const { getAddresses } = await evaluateAddressesModule();
-      const mainnet = getAddresses(4663);
-
-      assert.equal(mainnet.launchFeeOwnerRegistry, expected);
-    });
+  for (const field of launchFields) {
+    const name = field.replace(/[A-Z]/g, (letter) => `_${letter}`).toUpperCase();
+    const keys = [name, `VITE_${name}`, `NEXT_PUBLIC_${name}`];
+    const values = [
+      "0x0000000000000000000000000000000000000001",
+      "0x0000000000000000000000000000000000000002",
+      "0x0000000000000000000000000000000000000003",
+    ];
+    for (let first = 0; first < keys.length; first += 1) {
+      const overrides = Object.fromEntries(keys.slice(first).map((key, index) => [key, values[first + index]]));
+      await withAddressEnvironment(overrides, async () => {
+        const { getAddresses } = await evaluateAddressesModule();
+        for (const chainId of [31337, 4663, 46631]) assert.equal(getAddresses(chainId)[field], values[first]);
+      });
+    }
   }
 });
 

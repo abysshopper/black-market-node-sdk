@@ -1,5 +1,5 @@
 import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData, keccak256, stringToHex, toHex, zeroAddress, zeroHash, type Address, type Hash, type Hex } from "viem";
-import { abyssLifecycleAdapterAbi, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, poolFeeCollectorFactoryV1Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, poolHookDeployerV1Abi, sharedHookDeployerV1Abi, poolBoundLaunchFeeHookV1Abi, poolMarketAdapterV1Abi, sharedMarketAdapterV1Abi } from "./abi.js";
+import { abyssLifecycleAdapterAbi, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, poolFeeCollectorFactoryV1Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, poolHookDeployerV1Abi, sharedHookDeployerV1Abi, fixedFeePoolHookV1Abi, poolMarketAdapterV1Abi, sharedMarketAdapterV1Abi } from "./abi.js";
 import { decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, hashPoolBoundV4MarketCommitment, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type PoolBoundHookParametersV1 } from "./markets.js";
 import { hashLaunchIdentity, hashLaunchPlan, hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, launchProgressV1Components, LifecycleMode, LifecyclePhase, LifecycleVenue, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MULTI_POSITION_CAPABILITY, type AdapterRegistrationV1, type LaunchPlanV1, type LaunchProgressV1, type MarketIdentityV1, type MarketLiveStateV1, type PreparedMarketV1, type ProfileRegistrationV1, type ProfileTopologyV1, type LaunchEnvelopeV2, type LifecycleDeveloperTerms } from "./schema.js";
 import { assertLifecycleBlock, lifecycleRpc, readLifecycleBlock, readLifecycleContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
@@ -214,18 +214,18 @@ async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRp
       ["poolManager", expected.poolManager], ["registrar", expected.registrar], ["oracleFactory", expected.oracleFactory],
       ["core", expected.core], ["liquidityLocker", expected.liquidityLocker], ["token", expected.token],
     ] as const) {
-      const actual = await readLifecycleContract<Address>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, getter, [], block);
+      const actual = await readLifecycleContract<Address>(client, predictedHook, fixedFeePoolHookV1Abi, getter, [], block);
       if (actual.toLowerCase() !== expectedAddress.toLowerCase()) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing hook immutable dependency graph differs from the committed constructor");
     }
-    if (await readLifecycleContract<bigint>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "REQUIRED_HOOK_FLAGS", [], block) !== 0x1afcn ||
-      await readLifecycleContract<bigint>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "ALL_HOOK_MASK", [], block) !== 0x3fffn) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing bound hook callback declarations differ from the reviewed envelope");
+    if (await readLifecycleContract<bigint>(client, predictedHook, fixedFeePoolHookV1Abi, "REQUIRED_HOOK_FLAGS", [], block) !== 0x1afcn ||
+      await readLifecycleContract<bigint>(client, predictedHook, fixedFeePoolHookV1Abi, "ALL_HOOK_MASK", [], block) !== 0x3fffn) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing bound hook callback declarations differ from the reviewed envelope");
     const [currency0, currency1] = BigInt(token) < BigInt(market.quoteAsset) ? [token, market.quoteAsset] : [market.quoteAsset, token];
     const expectedPoolId = keccak256(encodeAbiParameters([{ type: "address" }, { type: "address" }, { type: "uint24" }, { type: "int24" }, { type: "address" }], [currency0, currency1, config.lpFeePips, config.tickSpacing, predictedHook]));
-    const actualPoolId = await readLifecycleContract<Hex>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "boundPoolId", [], block);
-    const deploymentConfigHash = await readLifecycleContract<Hex>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "deploymentConfigHash", [], block);
-    const marketCommitment = await readLifecycleContract<Hex>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "marketCommitment", [], block);
-    const opening = await readLifecycleContract<bigint>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "openingSqrtPriceX96", [], block);
-    const positions = await readLifecycleContract<number>(client, predictedHook, poolBoundLaunchFeeHookV1Abi, "expectedPositionCount", [], block);
+    const actualPoolId = await readLifecycleContract<Hex>(client, predictedHook, fixedFeePoolHookV1Abi, "boundPoolId", [], block);
+    const deploymentConfigHash = await readLifecycleContract<Hex>(client, predictedHook, fixedFeePoolHookV1Abi, "deploymentConfigHash", [], block);
+    const marketCommitment = await readLifecycleContract<Hex>(client, predictedHook, fixedFeePoolHookV1Abi, "marketCommitment", [], block);
+    const opening = await readLifecycleContract<bigint>(client, predictedHook, fixedFeePoolHookV1Abi, "openingSqrtPriceX96", [], block);
+    const positions = await readLifecycleContract<number>(client, predictedHook, fixedFeePoolHookV1Abi, "expectedPositionCount", [], block);
     if (actualPoolId.toLowerCase() !== expectedPoolId.toLowerCase() || deploymentConfigHash.toLowerCase() !== keccak256(encodePoolBoundHookParameters(expected)).toLowerCase() || marketCommitment.toLowerCase() !== expected.marketCommitment.toLowerCase() || opening !== expected.sqrtPriceX96 || positions !== expected.expectedPositionCount) throw new LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing hook key, economic commitment or immutable opening geometry changed");
   }
   return { deployment: { deployer, initCodeHash, salt, predictedHook }, parameters: expected };

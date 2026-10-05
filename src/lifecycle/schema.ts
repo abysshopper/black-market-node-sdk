@@ -179,10 +179,9 @@ export const LIFECYCLE_PERMANENT_CUSTODY_CAPABILITY = 8n;
 export const LIFECYCLE_CANONICAL_FEES_CAPABILITY = 16n;
 export const LIFECYCLE_ERC404_CAPABILITY = 32n;
 export const LIFECYCLE_MULTI_POSITION_CAPABILITY = 64n;
-/** TOKEN_ONLY|EMPTY_PREPARE|PERMANENT_CUSTODY|CANONICAL_FEES. The retired POOL_GATE bit
- *  is never requested: preactivation safety is token transfer restrictions plus the
- *  activation-time canonical opening-state verification on both canonical venues. Atomic
- *  and staged share this mask; mode changes execution grouping, never venue eligibility. */
+/** TOKEN_ONLY|EMPTY_PREPARE|PERMANENT_CUSTODY|CANONICAL_FEES. Preactivation safety
+ *  uses token transfer restrictions and activation-time canonical opening-state
+ *  verification on both venues. Atomic and staged share this capability mask. */
 export const LIFECYCLE_REQUIRED_CAPABILITIES = LIFECYCLE_TOKEN_ONLY_CAPABILITY | LIFECYCLE_EMPTY_PREPARE_CAPABILITY | LIFECYCLE_PERMANENT_CUSTODY_CAPABILITY | LIFECYCLE_CANONICAL_FEES_CAPABILITY;
 export const LIFECYCLE_MAX_ERC20_SUPPLY = (1n << 256n) - 1n;
 export const LIFECYCLE_MAX_REWARD_ERC20_SUPPLY = 10n ** 77n;

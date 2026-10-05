@@ -142,8 +142,8 @@ test("market cannot rebind profile, topology, treasury policy or out-of-mask fee
   assert.throws(() => validateV4LifecycleMarket({ ...context, config: { ...config, feeMode: 32 } }), { code: "PROFILE_BOUNDS_MISMATCH" });
 });
 
-test("planner refuses retired V4 wire versions before any RPC or simulation", async () => {
-  const rpc = { request() { throw new Error("Retired economics must never reach a provider"); } };
+test("planner refuses unsupported V4 config versions before any RPC or simulation", async () => {
+  const rpc = { request() { throw new Error("Unsupported economics must never reach a provider"); } };
   for (const configVersion of [2, 3]) {
     const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
     plan.markets[0].configVersion = configVersion;
