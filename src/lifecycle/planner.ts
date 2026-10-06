@@ -209,7 +209,7 @@ function orderedTransactions(plan: LaunchPlanV1, mode: "atomic" | "staged", prog
 function attachEstimates(transactions: readonly LifecycleTransaction[], simulation: LifecycleSimulation): LifecycleTransaction[] {
   return transactions.map((transaction) => {
     const estimate = simulation.steps.find((step) => step.transactionId === transaction.id)?.estimate;
-    return { ...transaction, gas: estimate?.gasLimit, gasPrice: estimate?.gasPrice, estimate, admission: { admitted: simulation.admitted, confidence: simulation.confidence, reason: simulation.reason, limits: simulation.limits } };
+    return { ...transaction, gas: estimate?.gasLimit, gasPrice: estimate?.gasPrice, estimate, admission: { admitted: simulation.admitted, confidence: simulation.confidence, executionProof: simulation.executionProof, protocolFit: simulation.protocolFit, transportPreflight: simulation.transportPreflight, blockNumber: simulation.blockNumber, blockHash: simulation.blockHash, account: simulation.account, chainId: simulation.chainId, reason: simulation.reason, limits: simulation.limits } };
   });
 }
 
@@ -301,7 +301,7 @@ export async function planLaunch(options: PlanLaunchOptions): Promise<PlannedLau
   const predictedToken = await readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], block);
   const { tokenFactory, tokenFactoryCodeHash } = await readTokenFactoryBinding(client, plan.orchestrator, block);
   const { limits } = await resolveLifecycleLimits({ client, account, orchestrator: plan.orchestrator, block, chainId: plan.chainId }, options.limits);
-  const placeholder: LifecycleSimulation = { backend: "unavailable", confidence: "provisional", admitted: false, blockNumber: block.number, blockHash: block.hash, account, chainId: plan.chainId, limits, steps: [] };
+  const placeholder: LifecycleSimulation = { backend: "unavailable", confidence: "provisional", admitted: false, executionProof: "unavailable", protocolFit: "unknown", transportPreflight: "not-requested", blockNumber: block.number, blockHash: block.hash, account, chainId: plan.chainId, limits, steps: [] };
   const identity = { plan, planHash, launchId, predictedToken, account, mode, confirmations: options.confirmations ?? 1 };
   const progress = await readLaunchProgress({ client, planned: identity, receipts: options.receipts }, block);
   let planned: PlannedLaunch = { ...identity, tokenFactory, tokenFactoryCodeHash, chainId: plan.chainId, transactions: [], prerequisites: [], profiles: [], hookDeployments: [], progress, simulation: placeholder, atomicAttempt: placeholder, preparationBatchSize: plan.markets.length, limits: options.limits };
@@ -318,7 +318,7 @@ export async function planLaunch(options: PlanLaunchOptions): Promise<PlannedLau
   }
   if (progress.canonical.phase === LifecyclePhase.Active || progress.canonical.phase === LifecyclePhase.Cancelled) {
     await assertLifecycleBlock(client, block);
-    return { ...planned, simulation: { ...placeholder, confidence: "stateful", admitted: true, reason: "Canonical launch is terminal; no transaction remains" } };
+    return { ...planned, simulation: { ...placeholder, confidence: "stateful", executionProof: "proved", protocolFit: "proved", admitted: true, reason: "Canonical launch is terminal; no transaction remains" } };
   }
   const prerequisites = progress.canonical.phase === LifecyclePhase.None ? await readFunding(client, plan, block) : { prerequisites: [], approvals: [], nativeValue: 0n, reasons: [] };
   const validation = await validatePendingInputs(client, planned, progress, block);
@@ -351,6 +351,33 @@ export async function planLaunch(options: PlanLaunchOptions): Promise<PlannedLau
   return { ...planned, atomicAttempt, simulation, preparationBatchSize, transactions: attachEstimates(transactions, simulation) };
 }
 
+async function preflightNextTransaction(options: BuildNextTransactionOptions, next: LifecycleTransaction, simulation: LifecycleSimulation): Promise<LifecycleTransaction> {
+  if (next.gas === undefined || next.gas <= 0n || next.gas >= 1n << 64n || next.gasPrice === undefined || next.gasPrice < 0n ||
+    simulation.executionProof !== "proved" || simulation.protocolFit !== "proved" || !simulation.admitted ||
+    next.estimate === undefined || next.estimate.gasLimit !== next.gas || next.estimate.gasPrice !== next.gasPrice ||
+    simulation.limits.transactionGasCeiling !== undefined && next.gas > simulation.limits.transactionGasCeiling) {
+    throw new LifecyclePlanningError("MISSING_GAS_PROOF", "Next transaction has no current-state exact gas/headroom/fee-envelope proof", simulation);
+  }
+  const submissionClient = options.submissionClient;
+  if (submissionClient === undefined) return { ...next, dependencies: [] };
+  try {
+    if (rpcQuantity(await lifecycleRpc(submissionClient, "eth_chainId"), "submission chain ID") !== simulation.chainId) throw new Error("Active submission RPC chain differs from the reviewed transaction");
+    const estimated = rpcQuantity(await lifecycleRpc(submissionClient, "eth_estimateGas", [{
+      from: next.from, to: next.to, data: next.data, value: toHex(next.value), gas: toHex(next.gas), gasPrice: toHex(next.gasPrice),
+    }, "latest"]), "submission gas estimate");
+    if (estimated <= 0n || estimated > next.gas) throw new Error("Submission RPC gas estimate exceeds the exact reviewed envelope or is zero");
+    if (rpcQuantity(await lifecycleRpc(submissionClient, "eth_chainId"), "submission chain ID") !== simulation.chainId) throw new Error("Active submission RPC chain changed during preflight");
+  } catch (failure) {
+    const reason = `Exact next-transaction submission preflight failed: ${failure instanceof Error ? failure.message : String(failure)}`;
+    throw new LifecyclePlanningError("SUBMISSION_PREFLIGHT_FAILED", reason, { ...simulation, transportPreflight: "failed", reason });
+  }
+  const canonical = await readLifecycleBlock(options.client, toHex(simulation.blockNumber));
+  if (canonical.hash.toLowerCase() !== simulation.blockHash.toLowerCase()) throw new LifecyclePlanningError("STATE_REORGED", "Pinned launch proof changed during submission preflight; rebuild from canonical progress");
+  if (rpcQuantity(await lifecycleRpc(options.client, "eth_chainId"), "chain ID") !== simulation.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "Source RPC chain changed during submission preflight");
+  if (next.admission === undefined) throw new LifecyclePlanningError("MISSING_GAS_PROOF", "Next transaction omitted its exact simulation admission", simulation);
+  return { ...next, dependencies: [], admission: { ...next.admission, transportPreflight: "passed" } };
+}
+
 /** Re-reads canonical state, revalidates all prerequisites, and proves the remaining sequence afresh. */
 export async function buildNextTransaction(options: BuildNextTransactionOptions): Promise<LifecycleTransaction | undefined> {
   const block = await readLifecycleBlock(options.client);
@@ -368,17 +395,18 @@ export async function buildNextTransaction(options: BuildNextTransactionOptions)
     if (progress.canonical.phase === LifecyclePhase.None) throw new LifecyclePlanningError("NOT_STARTED", "An unstarted plan has no launch escrow to cancel");
     const { planned } = options;
     const transaction: LifecycleTransaction = { id: "cancel", kind: "cancel", chainId: Number(planned.chainId), from: planned.account, to: planned.plan.orchestrator, data: encodeFunctionData({ abi: launchLifecycleAbi, functionName: "cancelLaunch", args: [planned.plan] }), value: 0n, dependencies: [], postconditions: [{ kind: "launch", phase: "Cancelled", preparedMarkets: progress.canonical.preparedMarkets }] };
-    const simulation = await simulateLaunchTransactions({ client: options.client, planned, limits: options.limits ?? planned.limits, fork: options.fork }, [transaction], block);
+    const simulation = await simulateLaunchTransactions({ client: options.client, planned, limits: options.limits === undefined ? planned.limits : options.limits, fork: options.fork }, [transaction], block);
     if (!simulation.admitted) throw new LifecyclePlanningError("CANCEL_NOT_ADMITTED", simulation.reason ?? "Cancellation could not be proved against current canonical state", simulation);
-    return attachEstimates([transaction], simulation)[0];
+    const next = attachEstimates([transaction], simulation)[0];
+    if (next === undefined) throw new LifecyclePlanningError("MISSING_GAS_PROOF", "Cancellation omitted its exact simulation admission", simulation);
+    return preflightNextTransaction(options, next, simulation);
   }
-  const refreshed = await planLaunch({ client: options.client, plan: options.planned.plan, account: options.planned.account, mode: options.planned.mode, limits: options.limits ?? options.planned.limits, fork: options.fork, receipts: options.receipts, confirmations: options.confirmations ?? options.planned.confirmations });
+  const refreshed = await planLaunch({ client: options.client, plan: options.planned.plan, account: options.planned.account, mode: options.planned.mode, limits: options.limits === undefined ? options.planned.limits : options.limits, fork: options.fork, receipts: options.receipts, confirmations: options.confirmations ?? options.planned.confirmations });
   if (!refreshed.simulation.admitted) throw new LifecyclePlanningError("PLAN_NOT_ADMITTED", refreshed.simulation.reason ?? "Remaining exact launch sequence is not admitted", refreshed.simulation);
   assertPlannedDeploymentBindings(options.planned, refreshed);
   const next = refreshed.transactions[0];
   if (next === undefined) return undefined;
-  if (next.gas === undefined || next.gasPrice === undefined || next.gas > refreshed.simulation.limits.executionGasCeiling) throw new LifecyclePlanningError("MISSING_GAS_PROOF", "Next transaction has no current-state exact gas/headroom/fee-envelope proof");
-  return { ...next, dependencies: [] };
+  return preflightNextTransaction(options, next, refreshed.simulation);
 }
 
 /** Re-simulates only canonical unfinished work with the same submitted receipt
@@ -388,7 +416,7 @@ export async function simulateLaunchPlan(options: SimulateLaunchPlanOptions): Pr
   if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored economic plan no longer matches its commitment");
   const current = await planLaunch({
     client, plan: planned.plan, account: planned.account, mode: planned.mode,
-    limits: options.limits ?? planned.limits, fork: options.fork,
+    limits: options.limits === undefined ? planned.limits : options.limits, fork: options.fork,
     receipts: options.receipts, confirmations: options.confirmations ?? planned.confirmations,
   });
   assertPlannedDeploymentBindings(planned, current);

@@ -42,12 +42,15 @@ commitment before begin. `--receipts receipts.json` and `--confirmations N` rest
 canonical recovery context. The CLI never signs, submits source-chain transactions,
 uploads metadata, or publishes a launch. Modes never fall back silently.
 
-Executable admission additionally requires current matching execution-limit evidence
-(`--limits current-limits.json`) and sequential `eth_simulateV1`, or an explicitly
-supplied **separate disposable loopback fork** (`--fork-rpc URL`). Limits must include
-chain/account/core/observed-block/hash provenance and actual chain/RPC/account/calldata
-caps; encode bigint values as decimal strings. Missing facts produce provisional/refused
-admission, not invented provider/account policy. See the
+Executable admission requires actual stateful measurement and exact validated replay.
+`--limits current-limits.json` is optional tightening policy, not a required backend:
+missing caps stay explicit uncertainty, while supplied malformed/stale/mismatched
+provenance rejects. Encode bigint values as decimal strings. Robinhood `4663` reads
+pinned native Nitro compute/poster evidence and requires native `eth_simulateV1`.
+A **separate disposable loopback fork** (`--fork-rpc URL`) remains available for
+generic EVM, not as a Nitro metering substitute. Unsigned review reports
+`transportPreflight: "not-requested"` unless a consumer supplies its active submission
+RPC to build-next. See the
 [lifecycle guide](../docs/launch-lifecycle.md#execution-constraints-and-stateful-simulation).
 
 ## Real HTTP metadata sessions
@@ -91,7 +94,6 @@ Edit `.env` once:
 PRIVATE_KEY=
 LAUNCH_API_URL=
 RPC_URL=
-SIMULATION_RPC_URL=
 ```
 
 Set `PRIVATE_KEY` to **your funded EOA's** 32-byte hex key and `LAUNCH_API_URL` to
@@ -111,11 +113,13 @@ Optional `NFT_BASE_URI` supplies your actually hosted ERC404 NFT metadata base U
 Blank uses an empty base URI: NFT units/mirror behavior remain real, but the example
 does not claim hosted NFT metadata exists.
 
-Blank `SIMULATION_RPC_URL` selects the actual SDK native sequential `eth_simulateV1`
-backend. Set it only to a **separate owned disposable loopback Anvil** for the canonical
-SDK controlled fork; only this simulation environment is reset/impersonated/reverted.
+The fixed Robinhood examples require native sequential Nitro `eth_simulateV1`, including
+an isolated pinned ArbOS capability probe and exact fee-bearing replay. Generic
+Anvil/Hardhat forks cannot certify Nitro compute/poster metering and are not a fallback.
 Unsupported native simulation, insufficient funds or failed admission stop before API
-staging/broadcast. There is no mode fallback, admission override or reduced case.
+staging/broadcast. Each immediate next envelope is additionally preflighted read-only
+through the same execution RPC before signing. There is no mode fallback, admission
+override, automatic submission replay or reduced case.
 
 ### Commands and fixed cases
 
@@ -148,14 +152,16 @@ selected; token-only burn is 3000 bps in the burn case. V4 uses frozen registere
 treasury/author terms with developer rate `0`; executor fee is 275 bps.
 Hook salts/random identities are finalized and saved before execution.
 
-### Example execution ceilings
+### Optional execution restrictions
 
-Defaults are **EXAMPLE ceilings, not verified provider or account limits**:
-chain/RPC/account gas `16000000`, calldata `131072` bytes, headroom `1000` bps.
-The chain cap is additionally bounded by every observed block gas limit. If your
-provider/account policy differs, configure decimal environment values:
-`EXAMPLE_CHAIN_GAS_CAP`, `EXAMPLE_RPC_GAS_CAP`, `EXAMPLE_ACCOUNT_GAS_CAP`,
-`EXAMPLE_MAX_CALLDATA_BYTES`, `EXAMPLE_HEADROOM_BPS`. These do not bypass SDK admission.
+There are no default chain/RPC/account gas or calldata caps. The SDK reads current
+Nitro protocol compute ceilings and exact-calldata poster budgets itself. Default
+headroom is **1500 bps (15%)**. Set explicit decimal restrictions only when you intend
+to tighten the complete transaction envelope: `EXAMPLE_CHAIN_GAS_CAP`,
+`EXAMPLE_RPC_GAS_CAP`, `EXAMPLE_ACCOUNT_GAS_CAP`, `EXAMPLE_MAX_CALLDATA_BYTES`.
+`EXAMPLE_HEADROOM_BPS` preserves your explicit 0–10000 policy. These are local
+restrictions, not invented provider/account assurances or admission bypasses.
+Poster allocation is already inside Nitro gas/affordability and is not charged twice.
 
 ### Evidence and failure recovery
 

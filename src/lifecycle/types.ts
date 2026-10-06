@@ -11,17 +11,22 @@ export type LifecycleRpcClient = {
 export type LifecycleBlock = { number: bigint; hash: Hash; timestamp: bigint; gasLimit: bigint; baseFeePerGas?: bigint };
 export type LifecycleLimitContext = { client: LifecycleRpcClient; account: Address; orchestrator: Address; block: LifecycleBlock; chainId: bigint };
 export type LifecycleLimits = {
+  /** Optional tightening caps on the complete transaction gas envelope, including Nitro poster gas. */
   headroomBps?: number; chainGasLimit?: bigint; rpcGasLimit?: bigint; accountGasLimit?: bigint;
   maxCalldataBytes?: number; maxSimulationGas?: bigint;
   chainId?: bigint; orchestrator?: Address; account?: Address; observedBlockNumber?: bigint; observedBlockHash?: Hash;
-  /** Chain-specific L1/data-fee oracle, called with exact calldata and the pinned block. */
+  /** External data fee not already charged in gas, called with exact calldata and the pinned block.
+   * Nitro poster fees are included in gas and use the native NodeInterface instead. */
   estimateDataFee?: (transaction: LifecycleTransaction, context: LifecycleLimitContext) => Promise<bigint>;
 };
 export type LifecycleLimitSource = LifecycleLimits | ((context: LifecycleLimitContext) => Promise<LifecycleLimits>);
 export type ResolvedLifecycleLimits = {
-  executionGasCeiling: bigint; headroomBps: number; maxCalldataBytes?: number; maxSimulationGas?: bigint;
+  /** Generic EVM gas ceiling; on Nitro this is the pinned compute ceiling, not total gas. */
+  executionGasCeiling: bigint; transactionGasCeiling?: bigint; protocol: "evm" | "nitro";
+  arbOSVersion?: bigint; maxTxComputeGas?: bigint; maxBlockComputeGas?: bigint;
+  headroomBps: number; maxCalldataBytes?: number; maxSimulationGas?: bigint;
   blockGasLimit: bigint; chainGasLimit?: bigint; rpcGasLimit?: bigint; accountGasLimit?: bigint;
-  admissionKnown: boolean; unknownExecutionConstraints: readonly string[]; unknownConstraints: readonly string[];
+  unknownExecutionConstraints: readonly string[]; unknownConstraints: readonly string[];
 };
 /** Only explicitly disposable RPCs may execute snapshot-isolated simulation transactions. */
 export type ControlledLifecycleFork = {
@@ -44,17 +49,26 @@ export type LifecycleTransaction = {
 };
 export type LifecycleTransactionEstimate = {
   gasUsed: bigint; gasLimit: bigint; gasPrice: bigint; executionFee: bigint; dataFee?: bigint; totalFee?: bigint;
+  /** Estimated poster allocation within gasLimit, never an exact compute measurement or an extra fee. */
+  posterGas?: bigint; posterFee?: bigint; dataFeeIncludedInGas: boolean;
   feeConfidence: "execution-and-data" | "execution-only";
 };
-export type LifecycleAdmission = {
+/** Proof scopes are independent: current execution is not guaranteed wallet submission. */
+export type LifecycleProofOutcomes = {
+  executionProof: "proved" | "failed" | "unavailable";
+  protocolFit: "proved" | "failed" | "unknown";
+  transportPreflight: "not-requested" | "passed" | "failed";
+};
+export type LifecycleAdmission = LifecycleProofOutcomes & {
   admitted: boolean; confidence: "stateful" | "provisional";
+  blockNumber: bigint; blockHash: Hash; account: Address; chainId: bigint;
   reason?: string; limits: ResolvedLifecycleLimits;
 };
 export type LifecycleSimulationStep = {
   transactionId: string; success: boolean; gasUsed?: bigint; gasLimit?: bigint; gasRequired?: bigint;
   returnData?: Hex; error?: string; estimate?: LifecycleTransactionEstimate;
 };
-export type LifecycleSimulation = {
+export type LifecycleSimulation = LifecycleProofOutcomes & {
   backend: "eth_simulateV1" | "controlled-fork" | "unavailable";
   confidence: "stateful" | "provisional"; admitted: boolean;
   blockNumber: bigint; blockHash: Hash; account: Address; chainId: bigint;
@@ -122,6 +136,8 @@ export type ReadLaunchProgressOptions = {
 };
 export type BuildNextTransactionOptions = ReadLaunchProgressOptions & {
   planned: PlannedLaunch; action?: "continue" | "cancel"; limits?: LifecycleLimitSource; fork?: ControlledLifecycleFork;
+  /** Optional active submission RPC. Only the immediate next exact transaction is estimated, read-only. */
+  submissionClient?: LifecycleRpcClient;
 };
 export class LifecyclePlanningError extends Error {
   readonly code: string;

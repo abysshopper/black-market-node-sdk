@@ -40,6 +40,11 @@ Launch examples spend real funds and publish to your configured API.
 Plans, transaction hashes, receipts, and errors are saved in `launch-results/`.
 Keep `.env` and private recovery files out of Git.
 
+Lifecycle planning proves exact stateful execution without requiring a policy service.
+Robinhood admission reads native Nitro compute/poster evidence; optional caller caps
+only tighten it. Build-next can separately preflight the immediate unsigned envelope
+with an active `submissionClient`. Execution proof is not guaranteed wallet submission.
+
 [Example setup](https://github.com/abysshopper/black-market-node-sdk/tree/main/examples)
 · [API guide](https://github.com/abysshopper/black-market-node-sdk/blob/main/docs/launch-lifecycle.md)
 · [MIT license](https://github.com/abysshopper/black-market-node-sdk/blob/main/LICENSE)

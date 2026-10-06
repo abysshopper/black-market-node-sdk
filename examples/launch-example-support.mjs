@@ -70,7 +70,7 @@ export function loadExampleEnvironment() {
 export function readExampleConfiguration(sdk, redactor, env = process.env) {
   redactor.addSecret(env.PRIVATE_KEY);
   if (typeof env.PRIVATE_KEY === "string") redactor.addSecret(env.PRIVATE_KEY.slice(2));
-  for (const value of [env.RPC_URL, env.LAUNCH_API_URL, env.SIMULATION_RPC_URL, env.NFT_BASE_URI]) registerEndpointSecrets(redactor, value);
+  for (const value of [env.RPC_URL, env.LAUNCH_API_URL, env.NFT_BASE_URI]) registerEndpointSecrets(redactor, value);
   if (!env.PRIVATE_KEY?.trim()) throw exampleError("MISSING_CONFIGURATION", "PRIVATE_KEY is required in the environment or working-directory .env");
   if (!env.LAUNCH_API_URL?.trim()) throw exampleError("MISSING_CONFIGURATION", "LAUNCH_API_URL is required in the environment or working-directory .env");
   if (!/^0x[\da-f]{64}$/i.test(env.PRIVATE_KEY)) throw exampleError("INVALID_PRIVATE_KEY", "PRIVATE_KEY must be a 32-byte hex private key");
@@ -79,24 +79,20 @@ export function readExampleConfiguration(sdk, redactor, env = process.env) {
   catch { throw exampleError("INVALID_PRIVATE_KEY", "PRIVATE_KEY must be a valid 32-byte secp256k1 hex private key"); }
   const addresses = sdk.getAddresses(4663);
   const rpcUrl = executionRpcUrl(env.RPC_URL || sdk.robinhoodMainnet.rpcUrls.default.http[0]);
-  const forkRpcUrl = env.SIMULATION_RPC_URL ? loopbackUrl(env.SIMULATION_RPC_URL, "Simulation RPC") : undefined;
-  if (forkRpcUrl) {
-    const source = new URL(rpcUrl); const fork = new URL(forkRpcUrl);
-    const port = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
-    if (["127.0.0.1", "localhost", "[::1]"].includes(source.hostname) && port(source) === port(fork)) throw exampleError("UNSAFE_ENDPOINT", "Execution and disposable simulation RPCs must use distinct loopback ports");
-  }
   const gasCap = (key) => {
-    const value = env[key] || "16000000";
+    const value = env[key];
+    if (value === undefined || value === "") return undefined;
     if (!/^[1-9]\d*$/.test(value)) throw exampleError("INVALID_CONFIGURATION", `${key} must be a positive decimal integer`);
     return value;
   };
   const integer = (key, fallback, minimum, maximum) => {
+    if (fallback === undefined && (env[key] === undefined || env[key] === "")) return undefined;
     const value = env[key] || String(fallback);
     if (!/^(?:0|[1-9]\d*)$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < minimum || Number(value) > maximum) throw exampleError("INVALID_CONFIGURATION", `${key} is outside its allowed integer range`);
     return Number(value);
   };
   return {
-    chainId: "4663", rpcUrl, forkRpcUrl, apiUrl: launchApiUrl(env.LAUNCH_API_URL),
+    chainId: "4663", rpcUrl, apiUrl: launchApiUrl(env.LAUNCH_API_URL),
     orchestrator: addresses.launchOrchestrator, creator: account.address,
     quoteAsset: addresses.weth, quoteDecimals: 18, oracleFactory: addresses.abyssFactory,
     nftBaseUri: env.NFT_BASE_URI || "",
@@ -104,9 +100,9 @@ export function readExampleConfiguration(sdk, redactor, env = process.env) {
       chainTransactionGasLimit: gasCap("EXAMPLE_CHAIN_GAS_CAP"),
       rpcTransactionGasLimit: gasCap("EXAMPLE_RPC_GAS_CAP"),
       accountTransactionGasLimit: gasCap("EXAMPLE_ACCOUNT_GAS_CAP"),
-      maxCalldataBytes: integer("EXAMPLE_MAX_CALLDATA_BYTES", 131072, 1, Number.MAX_SAFE_INTEGER),
-      headroomBps: integer("EXAMPLE_HEADROOM_BPS", 1000, 0, 10000),
-      provenance: { scope: "example-ceilings", note: "EXAMPLE ceilings, not verified provider or account limits; bounded by each observed block gas limit" },
+      maxCalldataBytes: integer("EXAMPLE_MAX_CALLDATA_BYTES", undefined, 1, Number.MAX_SAFE_INTEGER),
+      headroomBps: integer("EXAMPLE_HEADROOM_BPS", 1500, 0, 10000),
+      provenance: { scope: "user-ceilings", note: "Optional local tightening restrictions, not verified provider or account limits" },
     },
   };
 }

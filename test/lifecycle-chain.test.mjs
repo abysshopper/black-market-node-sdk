@@ -110,11 +110,17 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
     await assert.rejects(preparePoolBoundLifecyclePlan({ client, plan: changed }), { code: "PROFILE_TERMS_MISMATCH" });
   });
 
-  await t.test("unknown execution limits never authorize a wallet envelope or implicit staged fallback", async () => {
+  await t.test("missing optional policy stays explicit without an implicit staged fallback", async () => {
     const plan = await currentPlan();
     const planned = await planLaunch({ client, account: plan.creator, plan, mode: "atomic", fork });
-    assert.equal(planned.mode, "atomic"); assert.equal(planned.simulation.admitted, false);
-    await assert.rejects(buildNextTransaction({ client, planned, fork }), { code: "PLAN_NOT_ADMITTED" });
+    assert.equal(planned.mode, "atomic");
+    assert.ok(planned.simulation.limits.unknownExecutionConstraints.length > 0);
+    assert.doesNotMatch(planned.simulation.reason ?? "", /admission constraints are incomplete/);
+    if (planned.simulation.admitted) {
+      const next = await buildNextTransaction({ client, planned, fork });
+      assert.equal(next?.admission.executionProof, "proved");
+      assert.equal(next?.admission.transportPreflight, "not-requested");
+    } else await assert.rejects(buildNextTransaction({ client, planned, fork }), { code: "PLAN_NOT_ADMITTED" });
   });
 
   await t.test("pending launch cancellation does not require fresh profile admission and refunds committed external funding", async () => isolated(async () => {

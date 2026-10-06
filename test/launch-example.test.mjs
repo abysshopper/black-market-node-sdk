@@ -8,7 +8,7 @@ import { keccak256, parseTransaction, recoverTransactionAddress, recoverTypedDat
 import { privateKeyToAccount } from "viem/accounts";
 import {
   createLocalLaunchWallet, errorEvidence, executionRpcUrl, launchApiUrl,
-  publishUntilIndexed, Redactor, registerEndpointSecrets,
+  publishUntilIndexed, readExampleConfiguration, Redactor, registerEndpointSecrets,
   rpcRequestSignal, RunArtifacts, exampleError, submitSignedRecorded,
 } from "../examples/launch-example-support.mjs";
 
@@ -314,4 +314,20 @@ test("signed broadcast interruption and reverted receipts retain durable evidenc
   next.finish("failed", exampleError("TRANSACTION_REVERTED", "Launch reverted", { revertData }));
   assert.equal(submitted.receipt.status, "0x0");
   assert.equal(json(next, "result.json").chain.transactions[0].receipt.status, "0x0");
+});
+
+test("fixed example configuration never invents optional execution caps and defaults to fifteen percent headroom", () => {
+  const sdk = {
+    getAddresses(chainId) { assert.equal(chainId, 4663); return { launchOrchestrator: transaction.wire.to, weth: transaction.wire.to, abyssFactory: transaction.wire.to }; },
+    robinhoodMainnet: { rpcUrls: { default: { http: ["https://rpc.example.invalid/"] } } },
+  };
+  const env = { PRIVATE_KEY: signingKey, LAUNCH_API_URL: "https://api.example.invalid/" };
+  const configuration = readExampleConfiguration(sdk, new Redactor(), env);
+  const policy = configuration.executionLimits;
+  assert.equal(policy.headroomBps, 1500);
+  for (const field of ["chainTransactionGasLimit", "rpcTransactionGasLimit", "accountTransactionGasLimit", "maxCalldataBytes"]) assert.equal(policy[field], undefined);
+  assert.equal("forkRpcUrl" in configuration, false);
+  const restricted = readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: "12000000", EXAMPLE_MAX_CALLDATA_BYTES: "120000", EXAMPLE_HEADROOM_BPS: "0" }).executionLimits;
+  assert.equal(restricted.rpcTransactionGasLimit, "12000000"); assert.equal(restricted.maxCalldataBytes, 120000); assert.equal(restricted.headroomBps, 0);
+  for (const value of ["-1", "0", "1.5", "unknown"]) assert.throws(() => readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: value }), { code: "INVALID_CONFIGURATION" });
 });

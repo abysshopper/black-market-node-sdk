@@ -176,7 +176,7 @@ function canonicalType(input) {
 }
 
 function minimalPlanned(plan) {
-  const simulation = { backend: "unavailable", confidence: "provisional", admitted: false, blockNumber: HEAD_NUMBER, blockHash: HEAD_HASH, account: plan.creator, chainId: plan.chainId, limits: { executionGasCeiling: 30_000_000n, headroomBps: HEADROOM, blockGasLimit: 30_000_000n, admissionKnown: true, unknownExecutionConstraints: [], unknownConstraints: [] }, steps: [] };
+  const simulation = { backend: "unavailable", confidence: "provisional", admitted: false, executionProof: "unavailable", protocolFit: "unknown", transportPreflight: "not-requested", blockNumber: HEAD_NUMBER, blockHash: HEAD_HASH, account: plan.creator, chainId: plan.chainId, limits: { protocol: "evm", executionGasCeiling: 30_000_000n, transactionGasCeiling: 30_000_000n, headroomBps: HEADROOM, blockGasLimit: 30_000_000n, unknownExecutionConstraints: [], unknownConstraints: [] }, steps: [] };
   return {
     plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN, tokenFactory: ADAPTER, tokenFactoryCodeHash: keccak256(CODE), hookDeployments: [],
     account: plan.creator, chainId: plan.chainId, mode: "staged", confirmations: 1,

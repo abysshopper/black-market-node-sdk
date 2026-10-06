@@ -60,7 +60,7 @@ function rpcClient(url, artifacts, signal, label) {
       const body = await response.json();
       if (body.error) throw exampleError(body.error.code ?? "RPC_ERROR", `${label} ${method}: ${body.error.message}`, { data: body.error.data, cause: body.error });
       if (!("result" in body)) throw exampleError("INVALID_RPC_RESPONSE", `${label} ${method}: result was omitted`, { data: body });
-      if (method === "eth_simulateV1" || label === "simulation" && ["eth_sendTransaction", "anvil_reset", "evm_snapshot", "evm_revert"].includes(method)) artifacts.event("rpc-observation", { backend: label, method, params, result: body.result, elapsedMs: Date.now() - started });
+      if (method === "eth_simulateV1") artifacts.event("rpc-observation", { backend: label, method, params, result: body.result, elapsedMs: Date.now() - started });
       return body.result;
     } catch (error) {
       artifacts.event("rpc-error", { backend: label, method, params, elapsedMs: Date.now() - started, error: errorEvidence(error) });
@@ -256,20 +256,22 @@ function limitSource(fixture, artifacts) {
   return async ({ block, chainId, account, orchestrator }) => {
     const limits = {
       chainId, account, orchestrator, observedBlockNumber: block.number, observedBlockHash: block.hash,
-      chainGasLimit: BigInt(policy.chainTransactionGasLimit) < block.gasLimit ? BigInt(policy.chainTransactionGasLimit) : block.gasLimit, rpcGasLimit: BigInt(policy.rpcTransactionGasLimit),
-      accountGasLimit: BigInt(policy.accountTransactionGasLimit), maxCalldataBytes: policy.maxCalldataBytes, headroomBps: policy.headroomBps,
+      chainGasLimit: policy.chainTransactionGasLimit === undefined ? undefined : BigInt(policy.chainTransactionGasLimit),
+      rpcGasLimit: policy.rpcTransactionGasLimit === undefined ? undefined : BigInt(policy.rpcTransactionGasLimit),
+      accountGasLimit: policy.accountTransactionGasLimit === undefined ? undefined : BigInt(policy.accountTransactionGasLimit),
+      maxCalldataBytes: policy.maxCalldataBytes, headroomBps: policy.headroomBps,
     };
     artifacts.event("execution-limits", { limits, provenance: policy.provenance });
     return limits;
   };
 }
 
-async function executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, fork, wallet }) {
+async function executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, wallet }) {
   const references = [];
   let activation;
   for (let step = 0; step < 64; step += 1) {
     artifacts.stage("build-next", { step });
-    const next = await sdk.buildNextTransaction({ client, planned, receipts: references, limits, fork });
+    const next = await sdk.buildNextTransaction({ client, planned, receipts: references, limits, submissionClient: client });
     if (!next) return { references, activation };
     artifacts.event("next-admitted", { transaction: next });
     assert.equal(next.chainId, Number(planned.chainId));
@@ -282,10 +284,12 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     const args = next.kind === "begin" ? [planned.plan, sdk.LifecycleMode.Staged] : next.kind === "prepare" ? [planned.plan, next.marketStart, next.marketCount] : [planned.plan];
     assert.equal(next.data.toLowerCase(), encodeFunctionData({ abi: sdk.launchLifecycleAbi, functionName, args }).toLowerCase(), "Exact finalized-plan calldata");
     assert.ok(next.gas !== undefined && (next.gasPrice !== undefined || next.maxFeePerGas !== undefined && next.maxPriorityFeePerGas !== undefined) && next.admission?.admitted === true, "Actual next transaction needs stateful gas/envelope admission");
-    const head = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
-    const ceiling = [BigInt(head.gasLimit), ...["chainTransactionGasLimit", "rpcTransactionGasLimit", "accountTransactionGasLimit"].map((key) => BigInt(fixture.executionLimits[key]))].reduce((left, right) => left < right ? left : right);
-    assert.ok(next.gas > 0n && next.gas <= ceiling, "Admitted gas must fit all explicit caps");
-    assert.ok((next.data.length - 2) / 2 <= fixture.executionLimits.maxCalldataBytes, "Exact calldata cap");
+    assert.equal(next.admission.executionProof, "proved"); assert.equal(next.admission.protocolFit, "proved");
+    assert.equal(next.admission.transportPreflight, "passed", "Exact immediate-next submission RPC preflight is required before signing");
+    const ceiling = next.admission.limits.transactionGasCeiling;
+    assert.ok(next.gas > 0n && (ceiling === undefined || next.gas <= ceiling), "Complete gas envelope must fit supplied restrictions; Nitro compute is separately proved");
+    const calldataCap = next.admission.limits.maxCalldataBytes;
+    assert.ok(calldataCap === undefined || (next.data.length - 2) / 2 <= calldataCap, "Exact calldata must fit any supplied cap");
     const envelope = transactionEnvelope(next);
     const wire = { ...envelope };
     for (const key of ["chainId", "value", "gas", "gasPrice", "maxFeePerGas", "maxPriorityFeePerGas", "nonce"]) if (wire[key] !== undefined) wire[key] = toHex(BigInt(wire[key]));
@@ -529,21 +533,14 @@ async function executeExample({ fixture, scenario, sdk, artifacts, signal }) {
   const { plan, predictedToken } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal });
   artifacts.stage("execution-planning");
   const limits = limitSource(fixture, artifacts);
-  let fork;
-  if (fixture.forkRpcUrl !== undefined) {
-    const baseFork = sdk.createControlledLifecycleFork({ sourceRpcUrl: fixture.rpcUrl, forkRpcUrl: fixture.forkRpcUrl, allowTransactions: true, impersonation: "anvil", receiptTimeoutMs: 30_000 });
-    // Only the SDK's separate owned simulation fork is reset/impersonated/reverted.
-    fork = { ...baseFork, client: rpcClient(fixture.forkRpcUrl, artifacts, signal, "simulation") };
-    assert.match(await fork.client.request({ method: "web3_clientVersion" }), /anvil/i);
-  }
-  const planned = await sdk.planLaunch({ client, account: fixture.creator, plan, mode: scenario.mode, limits, fork, confirmations: 1 });
+  const planned = await sdk.planLaunch({ client, account: fixture.creator, plan, mode: scenario.mode, limits, confirmations: 1 });
   artifacts.save("planning.json", planned);
   artifacts.event("execution-plan", { mode: planned.mode, simulation: planned.simulation, atomicAttempt: planned.atomicAttempt, prerequisites: planned.prerequisites, transactions: planned.transactions });
   assert.equal(planned.mode, scenario.mode, "Never silently change requested mode"); addressEqual(planned.predictedToken, predictedToken, "Planner token prediction");
   if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The actual SDK did not admit this exact launch", { simulation: planned.simulation });
   const transport = apiTransport({ artifacts, signal, apiUrl: fixture.apiUrl });
   const session = await stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet });
-  const executed = await executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, fork, wallet });
+  const executed = await executePlan({ client, fixture, planned, sdk, artifacts, signal, limits, wallet });
   await verifyChain({ client, planned, ...executed, fixture, scenario, sdk, artifacts });
   await publishAndVerify({ fixture, planned, activation: executed.activation, session, sdk, artifacts, transport, signal, timeoutSeconds: 90 });
   artifacts.stage("completed");

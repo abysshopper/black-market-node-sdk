@@ -7,6 +7,16 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 5**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## 0.6.0 admission changes
+
+Optional caller policy no longer substitutes for, or gates, actual sequential execution proof.
+Results distinguish `executionProof`, `protocolFit`, and `transportPreflight`. Robinhood
+admission reads pinned Nitro compute limits and poster budgets, then requires native exact
+validated replay. `buildNextTransaction` optionally preflights the immediate next envelope
+through `submissionClient`. Deployment addresses, lifecycle plan/schema domains, profile
+capabilities and explicit atomic/staged behavior are unchanged.
+
+
 ## Deployed infrastructure
 
 Robinhood mainnet (`4663`) selects the mined `pool-launch-v1` deployment captured at block
@@ -72,7 +82,7 @@ Validation uses `validateV4LifecycleMarket`; the collector factory getter is
 | `planLaunch({client, account, plan, mode, limits?, fork?, receipts?, confirmations?})` | Validates domain/funding/admission and canonical progress, records the exact atomic attempt, and reviews only the explicitly selected mode. |
 | `simulateLaunchPlan({client, planned, limits?, fork?, receipts?, confirmations?})` | Rereads canonical state and proves remaining work. Preserves receipt evidence, economics and selected mode. |
 | `readLaunchProgress({client, planned, receipts?, confirmations?})` | Confirmation-bound canonical state, latest head, receipt/replacement/reorg status, account-nonce safety and actual prepared market/live state. |
-| `buildNextTransaction({client, planned, limits?, fork?, receipts?, confirmations?, action?})` | Rereads progress, constraints and stateful proof before returning one admitted transaction. `action: "cancel"` uses the stored commitment without requiring fresh adapter/profile admission. Terminal launches return `undefined`. |
+| `buildNextTransaction({client, planned, submissionClient?, limits?, fork?, receipts?, confirmations?, action?})` | Rereads progress, constraints and stateful proof before returning one admitted transaction. Optional `submissionClient` adds read-only exact immediate envelope preflight. `action: "cancel"` uses the stored commitment without requiring fresh adapter/profile admission. Terminal launches return `undefined`. |
 
 Clients may be viem public clients or raw `request({method,params})` RPC clients. Transport, wallet, signing and durable storage are application-owned. `PlannedLaunch` contains bigint values and live limit callbacks: persist `serializeLaunchPlan(plan)`, explicit execution mode, confirmation policy and receipt references, not the entire object.
 
@@ -186,15 +196,80 @@ No automatic atomic-to-staged fallback exists. Obtain separate consent to review
 
 ## Execution constraints and stateful simulation
 
-Admission requires current `chainGasLimit`, `rpcGasLimit`, `accountGasLimit` and `maxCalldataBytes`; block gas limit alone cannot fill missing transaction/RPC/account policy. Use a `LifecycleLimitSource` callback whose returned chain/account/core/observed block/hash match the requested pinned context and actual provider-owned policy. Static supplied facts are only current at that exact context; relabeling stale limits is not proof.
+Optional `chainGasLimit`, `rpcGasLimit`, `accountGasLimit`, `maxCalldataBytes` and
+`maxSimulationGas` tighten admission when supplied. Missing policy remains explicit in
+`limits.unknownExecutionConstraints`/`unknownConstraints`; it does not reject an otherwise
+proved exact sequence or invent a provider/account cap. No policy service is required.
+A `LifecycleLimitSource` callback receives the canonical chain/account/core/block context.
+Any supplied provenance must match it; stale/mismatched/malformed facts or a failed supplied
+resolver reject rather than disappearing into optional uncertainty. Gas caps are positive
+exact uint64 `bigint`; calldata is a positive safe integer byte count.
+Reviewed gas envelopes are positive uint64 too; zero-metering observations cannot admit
+a zero-gas transaction. Headroom calculations retain wide exact bigint intermediates.
 
-The ceiling is the minimum of block and explicit transaction caps. Headroom defaults to 1,500 bps, bounded 0–10,000. The measurement pass is followed by execution at exact returned gas/fee limits. Fork execution uses gross sequential estimates rather than refund-reduced receipt gas as an executable minimum. Transactions expose `estimate.executionFee`, optional `dataFee/totalFee` and `feeConfidence: "execution-and-data" | "execution-only"`; missing rollup/data fee is not an invented all-in estimate. Limits are refreshed before every next transaction.
+Headroom defaults to 1,500 bps, bounded 0–10,000. Generic EVM admission uses the pinned
+bounded header and supplied total-envelope restrictions plus actual validated RPC proof.
+It reports an absent independent per-transaction cutoff honestly, without importing a
+universal Ethereum cutoff. `executionGasCeiling` and `transactionGasCeiling` are equal on
+generic EVM. The permissive measurement pass never admits a launch: replay must execute
+the exact returned gas/fee envelope, every postcondition and all ordered buy bounds.
+Fork discovery uses gross sequential estimates, not refund-reduced receipt gas as an
+executable minimum. Explicit ceiling recovery preserves gasleft/EIP-150 validation and
+carries that successfully replayed ceiling, never a smaller unproved envelope.
 
 Sequential backends:
 
-1. `eth_simulateV1`: actual ordered transactions, state carried between synthetic blocks, exact gas-envelope verification, core returns/events and ordered buy bounds.
-2. Explicit separate disposable loopback fork: snapshot-isolated real transactions, exact pinned chain/header identity, canonical poststate/allowances and cleanup. Source RPC stays read-only.
-3. Neither: unavailable/provisional/unadmitted; no executable next transaction.
+1. `eth_simulateV1`: ordered transactions with state carried between synthetic blocks, followed by exact validated replay.
+2. Generic EVM only: explicitly separate disposable loopback fork, with snapshot-isolated real transactions, pinned chain/header identity, canonical poststate/allowances and mandatory cleanup. Source RPC stays read-only.
+3. Neither: unavailable/provisional/unadmitted; disconnected dependent `eth_call` estimates cannot create an executable next transaction.
+
+Every proof completion rechecks the planned source chain ID and pinned block hash. A
+changed source transport cannot retain admission merely by returning the same fork hash.
+
+### Nitro compute and poster accounting
+
+For Robinhood `4663`, each pinned context reads ArbSys (`0x64`).`arbOSVersion` and ArbGasInfo
+(`0x6c`).`getMaxTxGasLimit`/`getMaxBlockGasLimit`. ArbSys returns **55 + logical ArbOS version**;
+the raw value must be at least 105, and `limits.arbOSVersion` reports logical version 50+.
+The positive validated getter values establish `maxTxComputeGas`, `maxBlockComputeGas`
+and their minimum `executionGasCeiling`. Failed reads never fall back to the huge Nitro
+header or a hard-coded 32M. `limits.protocol` identifies `"nitro"` or `"evm"`.
+
+Nitro `transactionGasCeiling`, when present, is the minimum of supplied **complete**
+chain/RPC/account gas-envelope restrictions. It is independent of the compute ceiling:
+an admitted transaction's `gas` may exceed `executionGasCeiling` because poster gas is
+not compute. NodeInterface (`0xc8`).`gasEstimateL1Component` is read at the same pinned
+block with the exact sender, destination, calldata and value, including future dependent
+steps whose execution cannot yet be independently estimated. It budgets poster gas only.
+The buffered compute-discovery envelope plus buffered poster budget is carried into
+exact validated replay; an approximate poster quote is never subtracted from total
+gas use to certify exact compute fit.
+
+A separate pinned validated simulation probes all three ArbOS/version/getter values
+against the canonical observations. Only that isolated capability probe temporarily
+overrides the probe account's balance, so probe-only fees cannot reject an exactly-funded
+launch. Probe funding/nonce changes, steps and fees never enter real plan measurement,
+replay, postconditions or affordability, which use actual payer state. The native Nitro
+`eth_simulateV1` commit-mode ArbOS charging hook removes the **actual** poster charge and
+holds excess compute gas before execution. Successful exact replay and postconditions,
+not the quote or permissive pass, prove fit. Missing native metering or a mismatched
+probe fails closed. Generic Anvil/Hardhat forks cannot certify Nitro execution.
+
+Transactions expose `estimate.executionFee`, optional external `dataFee`/`totalFee` and
+`feeConfidence: "execution-and-data" | "execution-only"`. On Nitro, `posterGas`/`posterFee`
+are the estimated buffered allocation **inside** `gasLimit`, `dataFeeIncludedInGas` is
+true, `dataFee` is zero and `totalFee` equals `gasLimit * gasPrice`. Affordability counts
+this complete envelope once; adding `posterFee` again would double-charge. A caller
+`estimateDataFee` is therefore rejected on Nitro. On generic EVM it retains its original
+semantics as a validated external fee added outside execution gas. Missing external fee
+does not manufacture an all-in estimate. All observations and limits refresh for build-next.
+
+Source references: [ArbSys version encoding](https://github.com/OffchainLabs/nitro-precompile-interfaces/blob/main/ArbSys.sol),
+[ArbGasInfo compute getters](https://github.com/OffchainLabs/nitro-precompile-interfaces/blob/main/ArbGasInfo.sol),
+[native simulate commit mode](https://github.com/OffchainLabs/go-ethereum/blob/51d716ccf8293072077feb9764d63d73f5e4ff20/internal/ethapi/simulate.go),
+[ArbOS actual poster/compute charging](https://github.com/OffchainLabs/nitro/blob/ccc5c828d9ea22f161efc784bac4d4a6559b7e59/arbos/tx_processor.go),
+and [NodeInterface poster estimate](https://github.com/OffchainLabs/nitro-contracts/blob/main/src/node-interface/NodeInterface.sol).
+These describe backend semantics, not evidence of a live launch executed by this SDK release.
 
 Atomic/activation simulation `steps[].returnData` encodes the actual `LaunchReceiptV1` tuple. Controlled-fork output is reconstructed from matching real activation/buy receipt logs and canonical state, never geometric estimates or echoed request minima. `tokenOut` and `quoteSpent` are parallel arrays indexed by ordered buys.
 
@@ -206,11 +281,47 @@ const fork = createControlledLifecycleFork({
 const planned = await planLaunch({client, account: plan.creator, plan, mode: "staged", limits, fork});
 ```
 
-The fork endpoint must be distinct/loopback, including localhost/IP aliases and effective port. Anvil reset/impersonation is default; disposable Hardhat may explicitly use its reset method/impersonation. Never pass the source client as a fork or use a live unlocked wallet as a disposable backend. Operators own exclusive fork access during proof. Controlled-local policy does not prove live provider/account admission or imply bound topology is a gas optimization.
+The fork endpoint must be distinct/loopback, including localhost/IP aliases and effective port. Anvil reset/impersonation is default; disposable Hardhat may explicitly use its reset method/impersonation. Never pass the source client as a fork or use a live unlocked wallet as a disposable backend. Operators own exclusive fork access during generic EVM proof. Controlled-local execution does not prove wallet submission acceptance and cannot certify Nitro metering or imply bound topology is a gas optimization.
 
 ## Wallet submission and canonical recovery
 
 The SDK never signs. Before **every** approval/reset/core/predeploy/cancel signature, compare the wallet's configured chain (if any) and fresh connected `getChainId()` with the returned `next.chainId`. Failure/invalid identity is a refusal. Supply a matching explicit viem Chain descriptor; do not pass `chain: null` or disable wallet chain checks. Send exact `from/to/data/value/gas/gasPrice`, not a cached estimate or wallet batch.
+
+Simulation and `next.admission` carry flat, independent proof outcomes:
+
+| Field | Values | Scope |
+| --- | --- | --- |
+| `executionProof` | `"proved"`, `"failed"`, `"unavailable"` | Complete stateful exact-envelope execution and postconditions, never permissive measurement alone. |
+| `protocolFit` | `"proved"`, `"failed"`, `"unknown"` | Applicable proven protocol and known tightening restrictions. Missing optional policy remains separately disclosed. |
+| `transportPreflight` | `"not-requested"`, `"passed"`, `"failed"` | Immediate exact next-transaction acceptance estimate on the supplied submission RPC. |
+
+`admitted` means the current exact sequence is proved to fit and affordable; it is
+not guaranteed wallet submission or future execution. Admission reuses simulation
+`blockNumber`, `blockHash`, `account`, `chainId` and `limits`. Plans never preflight
+future dependent transactions against state that does not exist.
+
+```ts
+const planned = await planLaunch({ client, account: plan.creator, plan, mode: "atomic" });
+const submissionClient = {
+  request: ({ method, params }) => activeProvider.request({ method, params }),
+};
+const next = await buildNextTransaction({ client, planned, receipts, submissionClient });
+// Freshly verify the active wallet account/connector/chain again, then review/sign next.
+```
+
+When supplied, `submissionClient` receives only read-only `eth_chainId` and
+`eth_estimateGas` for the immediate next `from/to/data/value/gas/gasPrice` at `latest`.
+Its positive estimate must fit the reviewed gas exactly; gas is never silently enlarged.
+Chain identity is checked before and after estimation, and the source pinned hash/chain
+is rechecked before returning. Success sets `next.admission.transportPreflight` to
+`"passed"`. Refusal, unsupported RPC, malformed estimate, over-envelope estimate or
+chain drift raises `SUBMISSION_PREFLIGHT_FAILED` without returning a transaction.
+The error's `simulation` retains execution admission and its canonical context, changing
+only transport outcome/reason to `"failed"`. Cancellation uses the same preflight.
+Without a submission client, `"not-requested"` remains honest and no wallet RPC is implied.
+Applications still own fresh active account/provider guards around asynchronous work;
+a read-only preflight does not authenticate an active wallet or authorize a signature.
+
 
 Persist transaction hashes immediately. After receipt, retain `observedBlockNumber`, `observedBlockHash`, confirmation policy and, for replacements, original `transactionHash` plus effective `replacementHash`. A same-nonce self-transfer is replacement-cancelled, not launch completion. Removed observed blocks are reorged; status zero is reverted; a missing receipt at the unchanged observed block remains pending. Unknown hashes do not invent reorgs.
 
@@ -310,13 +421,13 @@ never changes mode, drops positions/buys or overrides failed admission.
 Optional `NFT_BASE_URI` provides an ERC404 base URI you actually host; its default is
 empty, with real NFT units/mirror behavior but no claim of hosted NFT metadata.
 
-Optional `SIMULATION_RPC_URL` uses the canonical SDK controlled fork on a separate
-owned disposable loopback Anvil. Otherwise real native sequential `eth_simulateV1` is
-required. Only the simulation fork is reset/impersonated/reverted. Source RPC requests
-have a 120-second bound and are not retried. Default gas `16000000`, calldata `131072`
-and headroom `1000` bps are explicitly **EXAMPLE ceilings, not verified provider/account
-limits**; the chain cap is bounded by observed block gas limits. Environment overrides
-are documented in the example guide and remain subject to full SDK admission.
+The chain-4663 examples require native sequential Nitro `eth_simulateV1`; generic
+Anvil/Hardhat simulation is not an ArbOS compute/poster proof. Source RPC requests
+have a 120-second bound and are not retried. There are no invented default gas or
+calldata caps. Explicit environment restrictions only tighten the complete envelope;
+headroom defaults to 1,500 bps. SDK native pinned compute/poster reads and exact replay
+remain mandatory, and build-next uses the same source RPC as the read-only submission
+preflight before each local signature. Environment options are documented in the example guide.
 
 Execution rechecks chain/creator/destination and exact finalized calldata before each
 send. Exact admitted envelopes are signed locally; computed hashes and unsigned
