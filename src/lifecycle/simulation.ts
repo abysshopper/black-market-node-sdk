@@ -55,7 +55,8 @@ async function proveNitroBackend(client: LifecycleRpcClient, planned: PlannedLau
       throw new LifecyclePlanningError("NITRO_METERING_UNAVAILABLE", "Simulated ArbOS version/compute getters differ from the exact pinned chain context");
     }
   }
-  await assertLifecycleBlock(client, block, planned.chainId);
+  // The enclosing simulation rechecks chain and canonical hash after its proofs
+  // (including every refusal path); a separate probe-only recheck is redundant.
 }
 
 async function simulateRpcPass(client: LifecycleRpcClient, planned: PlannedLaunch, block: LifecycleBlock, transactions: readonly LifecycleTransaction[], gasLimits: readonly bigint[], limits: ResolvedLifecycleLimits, gasPrice: bigint, validation: boolean): Promise<LifecycleSimulationStep[]> {
@@ -256,21 +257,31 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
   const gasPrice = rpcQuantity(gasPriceValue, "gas price");
   if (gasPrice >= 1n << 256n) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Gas price must be a uint256 quantity");
   const buffer = (gas: bigint) => (gas * BigInt(10000 + limits.headroomBps) + 9999n) / 10000n;
+  const computeCeiling = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < limits.executionGasCeiling ? limits.transactionGasCeiling : limits.executionGasCeiling;
+  const capGas = transactions.map(() => computeCeiling);
+  let parallelMeasurement: Promise<{ steps: LifecycleSimulationStep[] } | { failure: unknown }> | undefined;
   const posterGas: bigint[] = [];
   if (limits.protocol === "nitro") {
+    // The isolated capability probe, poster quote and permissive cap measurement
+    // have no data dependency. Only an actually batching source overlaps all three.
+    const nitroEvidence = Promise.all([
+      lifecycleStage(client, "simulation.nitro", () => proveNitroBackend(client, planned, block, limits, gasPrice)),
+      lifecycleStage(client, "simulation.poster", () => Promise.all(transactions.map(async (transaction) => buffer((await readNitroPosterGas(transaction, context)).posterGas)))),
+    ]);
+    if (sourceClient.supportsReadBatching === true) {
+      // Handle settlement immediately so a failed measurement cannot escape while
+      // the independent metering evidence is still pending. It is never admission.
+      parallelMeasurement = lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, capGas, limits, gasPrice, false))
+        .then((steps) => ({ steps }), (failure: unknown) => ({ failure }));
+    }
     try {
-      const [, estimates] = await Promise.all([
-        lifecycleStage(client, "simulation.nitro", () => proveNitroBackend(client, planned, block, limits, gasPrice)),
-        lifecycleStage(client, "simulation.poster", () => Promise.all(transactions.map(async (transaction) => buffer((await readNitroPosterGas(transaction, context)).posterGas)))),
-      ]);
+      const [, estimates] = await nitroEvidence;
       posterGas.push(...estimates);
     } catch (failure) {
       await assertLifecycleBlock(client, block, planned.chainId);
       return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], reason: `Native Nitro compute/poster proof unavailable: ${failure instanceof Error ? failure.message : String(failure)}. Generic Anvil/Hardhat forks cannot prove ArbOS metering.` };
     }
   }
-  const computeCeiling = limits.transactionGasCeiling !== undefined && limits.transactionGasCeiling < limits.executionGasCeiling ? limits.transactionGasCeiling : limits.executionGasCeiling;
-  const capGas = transactions.map(() => computeCeiling);
   // The poster quote allocates gas only. The native exact replay enforces actual
   // compute hold; subtracting this approximate budget from gasUsed would not.
   const discoveryGas = transactions.map((_, index) => {
@@ -282,7 +293,14 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
   let backend: "eth_simulateV1" | "controlled-fork" = "eth_simulateV1";
   let measured: LifecycleSimulationStep[];
   // Permissive cap measurement is not proof; only the exact-gas validated replay admits a plan.
-  try { measured = await lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, capGas, limits, gasPrice, false)); }
+  try {
+    if (parallelMeasurement === undefined) measured = await lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, capGas, limits, gasPrice, false));
+    else {
+      const observation = await parallelMeasurement;
+      if ("failure" in observation) throw observation.failure;
+      measured = observation.steps;
+    }
+  }
   catch (failure) {
     if (options.fork === undefined || limits.protocol === "nitro") {
       await assertLifecycleBlock(client, block, planned.chainId);

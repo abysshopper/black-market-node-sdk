@@ -34,6 +34,7 @@ function boundProfileClient() {
   const digest = hashLaunchDependencies({ chainId: 4663n, core: CORE, registry: REGISTRY, registrar: ADAPTER, graph });
   const registration = { adapterId, configSchema: V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, dependencyDigest: digest, venue: graph.manager,
     factory: zeroAddress, hook: zeroAddress, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, enabled: true };
+  const adapterRegistration = { implementation: ADAPTER, codeHash, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, configVersion: 5, enabled: true };
   const state = { codes: {}, values: {}, failures: {}, reorg: false, chainDrift: false };
   const captured = [];
   const client = { state, captured, id, graph, envelope, async request({ method, params = [] }) {
@@ -53,15 +54,30 @@ function boundProfileClient() {
     assert.ok(call, "Unexpected graph read");
     const key = `${target}:${call.functionName}`;
     if (state.failures[key]) throw state.failures[key];
+    if (target === REGISTRY && call.functionName === "requireEligible") {
+      // Model the registry's own live checks (LaunchImplementationRegistryV2.sol:285-296).
+      const approvedAdapter = state.values[`${REGISTRY}:adapter`] ?? adapterRegistration;
+      const approvedProfile = state.values[`${REGISTRY}:profile`] ?? registration;
+      const implementation = approvedAdapter.implementation.toLowerCase();
+      const internalFailure = state.failures[`${implementation}:core`] ?? state.failures[`${implementation}:dependencyDigest`];
+      if (internalFailure !== undefined) throw internalFailure;
+      const implementationCode = state.codes[implementation] ?? CODE;
+      if (!approvedAdapter.enabled || !approvedProfile.enabled || approvedProfile.adapterId.toLowerCase() !== call.args[0].toLowerCase() ||
+        call.args[1].toLowerCase() !== id.toLowerCase() || approvedAdapter.configVersion !== call.args[2] ||
+        implementationCode === "0x" || keccak256(implementationCode).toLowerCase() !== approvedAdapter.codeHash.toLowerCase() ||
+        (approvedAdapter.capabilities & call.args[3]) !== call.args[3] || (approvedProfile.capabilities & call.args[3]) !== call.args[3] ||
+        (state.values[`${implementation}:core`] ?? CORE).toLowerCase() !== CORE ||
+        (state.values[`${implementation}:dependencyDigest`] ?? digest).toLowerCase() !== approvedProfile.dependencyDigest.toLowerCase()) throw new Error("IneligibleImplementation");
+    }
     let result;
     if (Object.hasOwn(state.values, key)) result = state.values[key];
     else if (target === CORE) result = { registry: REGISTRY }[call.functionName];
     else if (target === REGISTRY) result = { core: CORE, profileIds: [id], profile: registration,
-      adapter: { implementation: ADAPTER, codeHash, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, configVersion: 5, enabled: true },
+      adapter: adapterRegistration,
       profileTopology: { hookTopology: 2, configVersion: 5, hookDeployer: graph.hookDeployer, hookCreationCodeHash: graph.hookCreationCodeHash },
       profileEnvelope: envelope, developerTerms: [ADAPTER, envelope.beneficiary, 500, envelope.termsDigest, true], protocolMaximumDeveloperFeeBps: 1000,
       requireEligible: ADAPTER }[call.functionName];
-    else if (target === ADAPTER) result = { core: CORE, dependencyDigest: digest, PROFILE_ID: id, CONFIG_SCHEMA: registration.configSchema,
+    else if (target === ADAPTER) result = { PROFILE_ID: id, CONFIG_SCHEMA: registration.configSchema,
       CONFIG_VERSION: 5, implementationRegistry: REGISTRY, poolManager: graph.manager, hookRoot: graph.hookRoot, oracleFactory: graph.oracleFactory,
       locker: graph.locker, collectorFactory: graph.collectorFactory, hookDeployer: graph.hookDeployer }[call.functionName];
     else if (target === graph.locker) result = { launcher: ADAPTER, poolManager: graph.manager }[call.functionName];
@@ -89,7 +105,7 @@ test("reviewed graph rounds remain fully certified and duplicate profile IDs pre
   assert.equal(rows.length, 16);
   assert.ok(rows.every((row) => row.admitted), rows[0].reason);
   assert.ok(peak > 1 && peak <= 8, `Observed read concurrency ${peak}`);
-  for (const target of [CORE, ADAPTER, source.graph.manager, source.graph.oracleFactory, source.graph.locker,
+  for (const target of [CORE, source.graph.manager, source.graph.oracleFactory, source.graph.locker,
     source.graph.collectorFactory, source.graph.collectorDeployer, source.graph.hookDeployer, source.graph.codeChunk0]) {
     assert.equal(source.captured.filter((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === target).length, 1);
   }
@@ -113,17 +129,43 @@ test("standalone clients without read batching retain serial transport compatibi
   assert.equal(profile.admitted, true, profile.reason);
 });
 
+test("frozen graph evidence and eligibility do not wait for unrelated adapter metadata", async () => {
+  const source = boundProfileClient();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const client = { supportsReadBatching: true, async request(args) {
+    if (args.method === "eth_call" && args.params[0].to === ADAPTER &&
+      decodeFunctionData({ abi: poolMarketAdapterV1Abi, data: args.params[0].data }).functionName === "PROFILE_ID") await gate;
+    return source.request(args);
+  } };
+  const pending = readLifecycleProfiles({ client, orchestrator: CORE, profileIds: [source.id] });
+  await nextTurn();
+  const chunkBeforeMetadata = source.captured.some((row) => row.method === "eth_getCode" && row.params[0] === source.graph.codeChunk0);
+  const eligibilityBeforeMetadata = source.captured.some((row) => row.method === "eth_call" && row.params[0].to === REGISTRY &&
+    decodeFunctionData({ abi: lifecycleRegistryAbi, data: row.params[0].data }).functionName === "requireEligible");
+  release();
+  const [profile] = await pending;
+  assert.equal(chunkBeforeMetadata, true, "Frozen chunk evidence has no dependency on the adapter PROFILE_ID response");
+  assert.equal(eligibilityBeforeMetadata, true, "Eligibility and graph certification both remain required, but are independent reads");
+  assert.equal(profile.admitted, true, profile.reason);
+});
+
 test("changed reviewed runtime, authority, terms, eligibility and creation chunks fail actual profile admission", async () => {
   const source = boundProfileClient();
   const read = async () => (await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }))[0];
   assert.equal((await read()).admitted, true);
   const mutations = [
     { apply: () => { source.state.codes[source.graph.manager] = "0x600260005560026000f3"; }, reason: /runtime.*graph hash/ },
-    { apply: () => { source.state.values[`${ADAPTER}:core`] = address(0xff); }, reason: /authority or dependency digest/ },
+    { apply: () => { source.state.values[`${ADAPTER}:core`] = address(0xff); }, reason: /IneligibleImplementation/ },
+    { apply: () => { source.state.codes[ADAPTER] = "0x"; }, reason: /IneligibleImplementation/ },
+    { apply: () => { source.state.codes[ADAPTER] = "0x600260005560026000f3"; }, reason: /IneligibleImplementation/ },
+    { apply: () => { source.state.values[`${ADAPTER}:dependencyDigest`] = hash(0xff); }, reason: /IneligibleImplementation/ },
+    { apply: () => { source.state.values[`${REGISTRY}:adapter`] = { implementation: ADAPTER, codeHash: keccak256(CODE), capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, configVersion: 5, enabled: false }; }, reason: /IneligibleImplementation/ },
     { apply: () => { source.state.values[`${source.graph.locker}:launcher`] = address(0xff); }, reason: /locker authority/ },
     { apply: () => { source.state.values[`${REGISTRY}:developerTerms`] = [ADAPTER, source.envelope.beneficiary, 499, source.envelope.termsDigest, true]; }, reason: /developer terms/ },
     { apply: () => { source.state.values[`${REGISTRY}:requireEligible`] = address(0xff); }, reason: /refuses this profile/ },
     { apply: () => { source.state.codes[source.graph.codeChunk0] = CODE; }, reason: /STOP-prefixed bytecode/ },
+    { apply: () => { source.state.values[`${source.graph.hookDeployer}:codeChunk0`] = address(0xfe); }, reason: /STOP-prefixed bytecode/ },
   ];
   for (const mutation of mutations) {
     source.state.codes = {}; source.state.values = {};
