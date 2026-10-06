@@ -1,7 +1,7 @@
 import { decodeEventLog, decodeFunctionResult, encodeFunctionData, encodeFunctionResult, toHex, type Hex } from "viem";
 import { launchLifecycleAbi, lifecycleErc20Abi } from "./abi.js";
 import { LifecyclePhase, type LaunchProgressV1, type LaunchReceiptV1 } from "./schema.js";
-import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, lifecycleSourceClient, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readNitroPosterGas, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
+import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, lifecycleSourceClient, lifecycleStage, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readNitroPosterGas, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
 import { LifecyclePlanningError, type ControlledLifecycleFork, type LifecycleBlock, type LifecyclePostcondition, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleSimulationStep, type LifecycleTransaction, type PlannedLaunch, type ResolvedLifecycleLimits, type SimulateLaunchPlanOptions } from "./types.js";
 
 function conditionRequest(condition: LifecyclePostcondition, planned: PlannedLaunch): { to: Hex; data: Hex } {
@@ -238,24 +238,32 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
   if (options.fork !== undefined && lifecycleSourceClient(options.fork.client) === sourceClient) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
   const block = pinnedBlock ?? await readLifecycleBlock(client);
   const context = { client, account: planned.account, orchestrator: planned.plan.orchestrator, block, chainId: planned.chainId };
-  const { limits, configuration } = await resolveLifecycleLimits(context, options.limits === undefined ? planned.limits : options.limits);
+  const [{ limits, configuration }, chainId, accountCodeValue, gasPriceValue] = await lifecycleStage(client, "simulation.context", () => Promise.all([
+    resolveLifecycleLimits(context, options.limits === undefined ? planned.limits : options.limits),
+    lifecycleRpc(client, "eth_chainId"),
+    lifecyclePinnedRpc(client, "eth_getCode", [planned.account, toHex(block.number)], block),
+    transactions.length === 0 ? undefined : lifecycleRpc(client, "eth_gasPrice"),
+  ]));
   const base = { confidence: "stateful" as const, executionProof: "failed" as const, protocolFit: "unknown" as const, transportPreflight: "not-requested" as const, blockNumber: block.number, blockHash: block.hash, account: planned.account, chainId: planned.chainId, limits };
-  if (rpcQuantity(await lifecycleRpc(client, "eth_chainId"), "chain ID") !== planned.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain changed before sequential simulation");
-  const accountCode = rpcHex(await lifecyclePinnedRpc(client, "eth_getCode", [planned.account, toHex(block.number)], block), "account code");
+  if (rpcQuantity(chainId, "chain ID") !== planned.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain changed before sequential simulation");
+  const accountCode = rpcHex(accountCodeValue, "account code");
   if (accountCode !== "0x") return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], reason: "Direct EOA transaction simulation cannot prove smart-account signature/execution behavior" };
   for (const transaction of transactions) {
     if (transaction.from.toLowerCase() !== planned.account.toLowerCase() || BigInt(transaction.chainId) !== planned.chainId) throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Simulation transaction differs from the committed chain/account");
     if (limits.maxCalldataBytes !== undefined && (transaction.data.length - 2) / 2 > limits.maxCalldataBytes) return { ...base, executionProof: "unavailable", protocolFit: "failed", backend: "unavailable", admitted: false, steps: [], failedTransactionId: transaction.id, reason: "Exact calldata exceeds the supplied chain/account/RPC byte cap" };
   }
   if (transactions.length === 0) { await assertLifecycleBlock(client, block, planned.chainId); return { ...base, executionProof: "proved", protocolFit: "proved", backend: "unavailable", admitted: true, steps: [] }; }
-  const gasPrice = rpcQuantity(await lifecycleRpc(client, "eth_gasPrice"), "gas price");
+  const gasPrice = rpcQuantity(gasPriceValue, "gas price");
   if (gasPrice >= 1n << 256n) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Gas price must be a uint256 quantity");
   const buffer = (gas: bigint) => (gas * BigInt(10000 + limits.headroomBps) + 9999n) / 10000n;
   const posterGas: bigint[] = [];
   if (limits.protocol === "nitro") {
     try {
-      await proveNitroBackend(client, planned, block, limits, gasPrice);
-      posterGas.push(...await Promise.all(transactions.map(async (transaction) => buffer((await readNitroPosterGas(transaction, context)).posterGas))));
+      const [, estimates] = await Promise.all([
+        lifecycleStage(client, "simulation.nitro", () => proveNitroBackend(client, planned, block, limits, gasPrice)),
+        lifecycleStage(client, "simulation.poster", () => Promise.all(transactions.map(async (transaction) => buffer((await readNitroPosterGas(transaction, context)).posterGas)))),
+      ]);
+      posterGas.push(...estimates);
     } catch (failure) {
       await assertLifecycleBlock(client, block, planned.chainId);
       return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], reason: `Native Nitro compute/poster proof unavailable: ${failure instanceof Error ? failure.message : String(failure)}. Generic Anvil/Hardhat forks cannot prove ArbOS metering.` };
@@ -274,7 +282,7 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
   let backend: "eth_simulateV1" | "controlled-fork" = "eth_simulateV1";
   let measured: LifecycleSimulationStep[];
   // Permissive cap measurement is not proof; only the exact-gas validated replay admits a plan.
-  try { measured = await simulateRpcPass(client, planned, block, transactions, capGas, limits, gasPrice, false); }
+  try { measured = await lifecycleStage(client, "simulation.measure", () => simulateRpcPass(client, planned, block, transactions, capGas, limits, gasPrice, false)); }
   catch (failure) {
     if (options.fork === undefined || limits.protocol === "nitro") {
       await assertLifecycleBlock(client, block, planned.chainId);
@@ -301,7 +309,7 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
   let verified: LifecycleSimulationStep[];
   let validatedReplayError: string | undefined;
   try {
-    if (backend === "eth_simulateV1") verified = await simulateRpcPass(client, planned, block, transactions, gasLimits, limits, gasPrice, true);
+    if (backend === "eth_simulateV1") verified = await lifecycleStage(client, "simulation.replay", () => simulateRpcPass(client, planned, block, transactions, gasLimits, limits, gasPrice, true));
     else {
       if (options.fork === undefined) throw new LifecyclePlanningError("INVALID_SIMULATION", "Controlled fork is missing for the exact-gas replay");
       verified = await simulateForkPass(options.fork, planned, block, transactions, gasLimits, gasPrice, false, limits.headroomBps);
@@ -326,7 +334,7 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
     try {
       const ceilingLimits = discoveryGas;
       const retried = backend === "eth_simulateV1"
-        ? await simulateRpcPass(client, planned, block, transactions, ceilingLimits, limits, gasPrice, true)
+        ? await lifecycleStage(client, "simulation.envelope", () => simulateRpcPass(client, planned, block, transactions, ceilingLimits, limits, gasPrice, true))
         : options.fork === undefined ? undefined : await simulateForkPass(options.fork, planned, block, transactions, ceilingLimits, gasPrice, false, limits.headroomBps);
       if (retried === undefined || retried.some((step) => !step.success)) {
         await assertLifecycleBlock(client, block, planned.chainId);

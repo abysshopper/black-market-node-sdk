@@ -283,3 +283,49 @@ test("required V4 fee-limit read failure still rejects profile certification", a
     (error) => error === failure,
   );
 });
+
+test("opt-in timing exposes pending profile/RPC work without leaking source data or changing admission", async () => {
+  const source = boundProfileClient();
+  const events = [];
+  source.onDiagnostic = (event) => events.push(event);
+  const [profile] = await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] });
+  assert.equal(profile.admitted, true);
+  assert.equal(events[0].stage, "profile.certification");
+  assert.equal(events[0].phase, "start");
+  const completion = events.find((event) => event.stage === "profile.certification" && event.phase === "success");
+  assert.ok(Number.isFinite(completion.durationMs) && completion.durationMs >= 0);
+  const starts = events.filter((event) => event.stage === "rpc" && event.phase === "start");
+  for (const start of starts) {
+    assert.ok(Number.isFinite(start.queueMs) && start.queueMs >= 0);
+    assert.ok(events.some((event) => event.phase === "success" && event.requestId === start.requestId));
+  }
+  const allowed = ["stage", "phase", "durationMs", "queueMs", "requestId", "method"];
+  assert.ok(events.every((event) => Object.keys(event).every((key) => allowed.includes(key))));
+  const serialized = JSON.stringify(events);
+  for (const privateValue of [CORE, ADAPTER, source.id, CODE]) assert.equal(serialized.includes(privateValue), false);
+});
+
+test("throwing or asynchronously rejecting diagnostic observers cannot reject a valid plan profile", async () => {
+  for (const onDiagnostic of [
+    () => { throw new Error("Observer failed"); },
+    async () => { throw new Error("Observer failed asynchronously"); },
+  ]) {
+    const source = boundProfileClient();
+    source.onDiagnostic = onDiagnostic;
+    const [profile] = await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] });
+    assert.equal(profile.admitted, true);
+    await nextTurn();
+  }
+});
+
+test("diagnostics report failures but do not serialize rejected RPC payloads", async () => {
+  const source = boundProfileClient();
+  const events = [];
+  source.onDiagnostic = (event) => events.push(event);
+  const privateFailure = "credential-bearing provider payload";
+  source.state.failures[`${ADAPTER}:oracleFactory`] = new Error(privateFailure);
+  const [profile] = await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] });
+  assert.equal(profile.admitted, false);
+  assert.ok(events.some((event) => event.stage === "rpc" && event.phase === "failure"));
+  assert.equal(JSON.stringify(events).includes(privateFailure), false);
+});

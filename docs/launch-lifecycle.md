@@ -7,6 +7,41 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 5**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## 0.6.2 opt-in internal timing
+
+Initialize a lifecycle read client with optional `onDiagnostic(event)` to observe internal
+planning, profile certification, simulation context, Nitro probe, poster estimate, measurement,
+exact replay and envelope-discovery stages. Each stage reports start and completion/failure.
+RPC events distinguish queue admission, actual request start, settlement and invocation-local
+read reuse; `queueMs` is separate from request `durationMs`. `requestId` is a local numeric
+sequence, not a network or wallet identifier. Associate each client with your own local operation
+label when several reviews run concurrently.
+
+```ts
+const client = {
+  supportsReadBatching: true, // Only with an actually batching transport.
+  request: (args) => publicClient.request(args),
+  onDiagnostic: (event) => { console.debug("[launch-sdk]", event); },
+};
+```
+
+The SDK never enables console output or telemetry itself. Without a listener there are no
+diagnostic clocks or event allocations. Events omit RPC URLs, parameters/results, accounts,
+addresses, signatures, calldata and raw errors; RPC method names are allowlisted. Synchronous
+listener throws and asynchronous listener rejections are isolated from financial behavior.
+Successful timing settlement means the function returned, not that the returned plan/profile
+was admitted: inspect its normal typed admission result.
+
+Independent domain/progress reads now overlap after token prediction. Simulation context
+reads, Nitro/poster work and final chain/canonical observations also overlap where their inputs
+are independent, still within the existing transport-opted-in read bound. Serial transports,
+exact state/identity guards and both measurement and validated execution are retained.
+No total-launch latency claim is made from these scheduling changes.
+
+Verification: typecheck and the built offline suite passed **126 tests: 125 passing and one
+opt-in real-AMM skip**. Diagnostics regressions cover timing events, payload omission and
+throwing/rejecting observers without changing valid profile admission.
+
 ## 0.6.1 read-pipeline changes
 
 Existing standalone calls, deployment targets, economic commitments and admission
