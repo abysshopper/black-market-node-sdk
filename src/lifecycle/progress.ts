@@ -141,63 +141,69 @@ export async function validateV4LifecycleOracle(options: {
 
 export async function readLifecycleProfiles(options: { client: LifecycleRpcClient; orchestrator: Address; profileIds?: readonly Hex[]; offset?: bigint; limit?: bigint }, pinnedBlock?: LifecycleBlock): Promise<LifecycleProfile[]> {
   return withLifecycleReadClient(options.client, (client) => lifecycleStage(client, "profile.certification", async () => {
-    const [block, chainIdValue] = await Promise.all([
-      pinnedBlock ?? readLifecycleBlock(client),
-      lifecycleRpc(client, "eth_chainId"),
+    const chainIdPromise = lifecycleRpc(client, "eth_chainId").then((value) => rpcQuantity(value, "chain ID"));
+    // Block-bound discovery does not depend on chain identity. Join both branches
+    // immediately so a failed chain read cannot become detached or a profile refusal.
+    const [chainId, { block, profiles }] = await Promise.all([
+      chainIdPromise,
+      (async () => {
+        const block = pinnedBlock ?? await readLifecycleBlock(client);
+        const registry = await readLifecycleContract<Address>(client, options.orchestrator, launchLifecycleAbi, "registry", [], block);
+        const offset = options.offset ?? 0n; const limit = options.limit ?? 100n;
+        if (offset < 0n || limit < 0n || limit > 100n) throw new LifecyclePlanningError("INVALID_PROFILE_PAGE", "Registry profile pages require unsigned offset and limit at most 100");
+        let protocolMaximumDeveloperFeeBpsPromise: Promise<number> | undefined;
+        const readProtocolMaximumDeveloperFeeBps = () => protocolMaximumDeveloperFeeBpsPromise ??=
+          readLifecycleContract<number>(client, registry, lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps", [], block);
+        const readProfile = async (id: Hex): Promise<LifecycleProfile> => {
+          const registration = await readLifecycleContract<ProfileRegistrationV1>(client, registry, lifecycleRegistryAbi, "profile", [id], block);
+          const schema = registration.configSchema.toLowerCase();
+          const venueKind = schema === V4_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() || schema === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? "uniswap-v4" : schema === ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? "abyss" : "unknown";
+          const [adapter, certification] = await Promise.all([
+            readLifecycleContract<AdapterRegistrationV1>(client, registry, lifecycleRegistryAbi, "adapter", [registration.adapterId], block),
+            venueKind === "unknown" ? undefined : Promise.all([
+              readLifecycleProfileTopology(client, registry, id, block),
+              venueKind === "uniswap-v4" ? Promise.all([
+                readLifecycleContract<LaunchEnvelopeV2>(client, registry, lifecycleRegistryAbi, "profileEnvelope", [id], block),
+                readLifecycleContract<readonly [Address, Address, number, Hex, boolean]>(client, registry, lifecycleRegistryAbi, "developerTerms", [id], block),
+                readProtocolMaximumDeveloperFeeBps(),
+              ]) : undefined,
+            ]).then((values) => ({ values }), (failure: unknown) => ({ failure })),
+          ]);
+          const chainId = await chainIdPromise;
+          let topology: ProfileTopologyV1 = { hookTopology: 0, configVersion: adapter.configVersion, hookDeployer: zeroAddress, hookCreationCodeHash: zeroHash };
+          let envelope: LaunchEnvelopeV2 | undefined; let developerTerms: LifecycleDeveloperTerms | undefined;
+          let protocolMaximumDeveloperFeeBps: number | undefined;
+          let admitted = false; let reason: string | undefined;
+          try {
+            if (certification === undefined) throw new LifecyclePlanningError("UNSUPPORTED_SCHEMA", `Unsupported lifecycle config schema ${registration.configSchema}`);
+            if ("failure" in certification) throw certification.failure;
+            const [recordedTopology, reviewed] = certification.values;
+            topology = recordedTopology;
+            if (reviewed !== undefined) {
+              envelope = reviewed[0];
+              protocolMaximumDeveloperFeeBps = reviewed[2];
+              const [implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled] = reviewed[1];
+              developerTerms = { adapter: implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled };
+              if (implementation.toLowerCase() !== adapter.implementation.toLowerCase() || beneficiary.toLowerCase() !== envelope.beneficiary.toLowerCase() ||
+                termsDigest.toLowerCase() !== envelope.termsDigest.toLowerCase() || maximumDeveloperFeeBps !== envelope.maximumDeveloperFeeBps ||
+                maximumDeveloperFeeBps > reviewed[2]) throw new LifecyclePlanningError("PROFILE_TERMS", "Registry developer terms differ from the frozen reviewed envelope");
+            }
+            await certifyLifecycleProfile(client, options.orchestrator, registry, id, registration, adapter, topology, envelope, block, chainId);
+            if (developerTerms !== undefined && !developerTerms.enabled) throw new LifecyclePlanningError("INELIGIBLE_PROFILE", "Registry refuses this profile for pending source admission");
+            admitted = true;
+          } catch (failure) { reason = failure instanceof Error ? failure.message : String(failure); }
+          return { id, registration, adapter, topology, envelope, developerTerms, protocolMaximumDeveloperFeeBps: venueKind === "uniswap-v4" ? protocolMaximumDeveloperFeeBps : undefined, admitted, reason, venueKind };
+        };
+        const [authority, profiles] = await Promise.all([
+          readLifecycleContract<Address>(client, registry, lifecycleRegistryAbi, "core", [], block),
+          Promise.resolve(options.profileIds ?? readLifecycleContract<readonly Hex[]>(client, registry, lifecycleRegistryAbi, "profileIds", [offset, limit], block)).then((ids) => Promise.all(ids.map(readProfile))),
+        ]);
+        if (authority.toLowerCase() !== options.orchestrator.toLowerCase()) throw new LifecyclePlanningError("REGISTRY_BINDING", "Registry is not bound to the selected lifecycle orchestrator");
+        // A required V4 cap read still rejects the invocation on failure; Abyss has no developer-fee terms.
+        if (protocolMaximumDeveloperFeeBpsPromise !== undefined) await protocolMaximumDeveloperFeeBpsPromise;
+        return { block, profiles };
+      })(),
     ]);
-    const chainId = rpcQuantity(chainIdValue, "chain ID");
-    const registry = await readLifecycleContract<Address>(client, options.orchestrator, launchLifecycleAbi, "registry", [], block);
-    const offset = options.offset ?? 0n; const limit = options.limit ?? 100n;
-    if (offset < 0n || limit < 0n || limit > 100n) throw new LifecyclePlanningError("INVALID_PROFILE_PAGE", "Registry profile pages require unsigned offset and limit at most 100");
-    let protocolMaximumDeveloperFeeBpsPromise: Promise<number> | undefined;
-    const readProtocolMaximumDeveloperFeeBps = () => protocolMaximumDeveloperFeeBpsPromise ??=
-      readLifecycleContract<number>(client, registry, lifecycleRegistryAbi, "protocolMaximumDeveloperFeeBps", [], block);
-    const readProfile = async (id: Hex): Promise<LifecycleProfile> => {
-      const registration = await readLifecycleContract<ProfileRegistrationV1>(client, registry, lifecycleRegistryAbi, "profile", [id], block);
-      const schema = registration.configSchema.toLowerCase();
-      const venueKind = schema === V4_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() || schema === V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? "uniswap-v4" : schema === ABYSS_LIFECYCLE_CONFIG_SCHEMA.toLowerCase() ? "abyss" : "unknown";
-      const [adapter, certification] = await Promise.all([
-        readLifecycleContract<AdapterRegistrationV1>(client, registry, lifecycleRegistryAbi, "adapter", [registration.adapterId], block),
-        venueKind === "unknown" ? undefined : Promise.all([
-          readLifecycleProfileTopology(client, registry, id, block),
-          venueKind === "uniswap-v4" ? Promise.all([
-            readLifecycleContract<LaunchEnvelopeV2>(client, registry, lifecycleRegistryAbi, "profileEnvelope", [id], block),
-            readLifecycleContract<readonly [Address, Address, number, Hex, boolean]>(client, registry, lifecycleRegistryAbi, "developerTerms", [id], block),
-            readProtocolMaximumDeveloperFeeBps(),
-          ]) : undefined,
-        ]).then((values) => ({ values }), (failure: unknown) => ({ failure })),
-      ]);
-      let topology: ProfileTopologyV1 = { hookTopology: 0, configVersion: adapter.configVersion, hookDeployer: zeroAddress, hookCreationCodeHash: zeroHash };
-      let envelope: LaunchEnvelopeV2 | undefined; let developerTerms: LifecycleDeveloperTerms | undefined;
-      let protocolMaximumDeveloperFeeBps: number | undefined;
-      let admitted = false; let reason: string | undefined;
-      try {
-        if (certification === undefined) throw new LifecyclePlanningError("UNSUPPORTED_SCHEMA", `Unsupported lifecycle config schema ${registration.configSchema}`);
-        if ("failure" in certification) throw certification.failure;
-        const [recordedTopology, reviewed] = certification.values;
-        topology = recordedTopology;
-        if (reviewed !== undefined) {
-          envelope = reviewed[0];
-          protocolMaximumDeveloperFeeBps = reviewed[2];
-          const [implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled] = reviewed[1];
-          developerTerms = { adapter: implementation, beneficiary, maximumDeveloperFeeBps, termsDigest, enabled };
-          if (implementation.toLowerCase() !== adapter.implementation.toLowerCase() || beneficiary.toLowerCase() !== envelope.beneficiary.toLowerCase() ||
-            termsDigest.toLowerCase() !== envelope.termsDigest.toLowerCase() || maximumDeveloperFeeBps !== envelope.maximumDeveloperFeeBps ||
-            maximumDeveloperFeeBps > reviewed[2]) throw new LifecyclePlanningError("PROFILE_TERMS", "Registry developer terms differ from the frozen reviewed envelope");
-        }
-        await certifyLifecycleProfile(client, options.orchestrator, registry, id, registration, adapter, topology, envelope, block, chainId);
-        if (developerTerms !== undefined && !developerTerms.enabled) throw new LifecyclePlanningError("INELIGIBLE_PROFILE", "Registry refuses this profile for pending source admission");
-        admitted = true;
-      } catch (failure) { reason = failure instanceof Error ? failure.message : String(failure); }
-      return { id, registration, adapter, topology, envelope, developerTerms, protocolMaximumDeveloperFeeBps: venueKind === "uniswap-v4" ? protocolMaximumDeveloperFeeBps : undefined, admitted, reason, venueKind };
-    };
-    const [authority, profiles] = await Promise.all([
-      readLifecycleContract<Address>(client, registry, lifecycleRegistryAbi, "core", [], block),
-      Promise.resolve(options.profileIds ?? readLifecycleContract<readonly Hex[]>(client, registry, lifecycleRegistryAbi, "profileIds", [offset, limit], block)).then((ids) => Promise.all(ids.map(readProfile))),
-    ]);
-    if (authority.toLowerCase() !== options.orchestrator.toLowerCase()) throw new LifecyclePlanningError("REGISTRY_BINDING", "Registry is not bound to the selected lifecycle orchestrator");
-    // A required V4 cap read still rejects the invocation on failure; Abyss has no developer-fee terms.
-    if (protocolMaximumDeveloperFeeBpsPromise !== undefined) await protocolMaximumDeveloperFeeBpsPromise;
     if (pinnedBlock === undefined) await assertLifecycleBlock(client, block, chainId);
     return profiles;
   }));
@@ -391,8 +397,11 @@ async function readLaunchProgressAtBlock(options: ReadLaunchProgressOptions, cli
   const confirmationDepth = options.confirmations ?? planned.confirmations;
   if (!Number.isSafeInteger(confirmationDepth) || confirmationDepth < 1) throw new LifecyclePlanningError("INVALID_CONFIRMATIONS", "Confirmation depth must be a positive integer");
   const confirmedNumber = block.number >= BigInt(confirmationDepth - 1) ? block.number - BigInt(confirmationDepth - 1) : 0n;
-  const confirmedBlock = confirmedNumber === block.number ? block : await readLifecycleBlock(client, toHex(confirmedNumber));
-  const chainId = rpcQuantity(await lifecycleRpc(client, "eth_chainId"), "chain ID");
+  const [confirmedBlock, chainIdValue] = await Promise.all([
+    confirmedNumber === block.number ? block : readLifecycleBlock(client, toHex(confirmedNumber)),
+    lifecycleRpc(client, "eth_chainId"),
+  ]);
+  const chainId = rpcQuantity(chainIdValue, "chain ID");
   if (chainId !== planned.plan.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain differs from the committed launch");
   if (planned.account.toLowerCase() !== planned.plan.creator.toLowerCase()) throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account must be the committed creator/payer/refund account");
   if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored economic plan no longer matches its commitment");

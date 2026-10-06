@@ -3,8 +3,8 @@ import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi, lifecycleFu
 import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecycleMode, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LifecycleVenue, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, LIFECYCLE_MULTI_POSITION_CAPABILITY, LIFECYCLE_REQUIRED_CAPABILITIES, marketIdentityV1Components, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1, type MarketIdentityV1 } from "./schema.js";
 import { ABYSS_LIFECYCLE_CONFIG_SCHEMA, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment, validateLifecycleMarketIdentity, validateV4LifecycleOracle } from "./progress.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, hasLifecycleV4HookPermissions, minePoolBoundHookSalt, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
-import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
-import { simulateLaunchTransactions } from "./simulation.js";
+import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, lifecycleSourceClient, lifecycleStage, readLifecycleBlock, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
+import { prepareLaunchSimulation, simulateLaunchTransactions } from "./simulation.js";
 import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PoolBoundLifecyclePreparationProgress, type SimulateLaunchPlanOptions } from "./types.js";
 
 function validatePlanShape(plan: LaunchPlanV1): void {
@@ -373,6 +373,11 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
     await assertLifecycleBlock(client, block, plan.chainId);
     return { ...planned, simulation: { ...placeholder, confidence: "stateful", executionProof: "proved", protocolFit: "proved", admitted: true, reason: "Canonical launch is terminal; no transaction remains" } };
   }
+  // Only batching-capable sources overlap the first simulation's read-only
+  // context with independent input admission. Waiting/terminal plans skip it.
+  const preparedSimulation = lifecycleSourceClient(client).supportsReadBatching === true
+    ? prepareLaunchSimulation({ client, planned, limits: options.limits, fork: options.fork }, block)
+    : undefined;
   const [prerequisites, validation] = await lifecycleStage(client, "plan.inputs", () => Promise.all([
     progress.canonical.phase === LifecyclePhase.None ? readFunding(client, plan, block) : { prerequisites: [], approvals: [], nativeValue: 0n, reasons: [] },
     validatePendingInputs(client, planned, progress, block),
@@ -387,7 +392,9 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
   let atomicAttempt: LifecycleSimulation = { ...placeholder, reason: "Atomic execution cannot be evaluated from an already begun staged launch" };
   if (progress.canonical.phase === LifecyclePhase.None) {
     const atomicTransactions = orderedTransactions(plan, "atomic", progress, prerequisites.approvals, prerequisites.nativeValue, plan.markets.length);
-    atomicAttempt = await simulateLaunchTransactions({ client, planned, limits: options.limits, fork: options.fork }, atomicTransactions, block);
+    atomicAttempt = await (preparedSimulation === undefined
+      ? simulateLaunchTransactions({ client, planned, limits: options.limits, fork: options.fork }, atomicTransactions, block)
+      : preparedSimulation(atomicTransactions));
     if (mode === "atomic") {
       const reason = atomicAttempt.admitted ? undefined : `${atomicAttempt.reason ?? "Exact atomic plan is not admitted"}; choose staged explicitly only if empty preparation can be partitioned and complete activation fits`;
       const simulation = { ...atomicAttempt, reason };
@@ -396,7 +403,9 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
   }
   let preparationBatchSize = plan.markets.length;
   let transactions = orderedTransactions(plan, "staged", progress, prerequisites.approvals, prerequisites.nativeValue, preparationBatchSize);
-  let simulation = await simulateLaunchTransactions({ client, planned, limits: options.limits, fork: options.fork }, transactions, block);
+  let simulation = await (preparedSimulation === undefined || progress.canonical.phase === LifecyclePhase.None
+    ? simulateLaunchTransactions({ client, planned, limits: options.limits, fork: options.fork }, transactions, block)
+    : preparedSimulation(transactions));
   while (!simulation.admitted && simulation.confidence === "stateful" && simulation.failedTransactionId?.startsWith("prepare:") && preparationBatchSize > 1) {
     preparationBatchSize = Math.ceil(preparationBatchSize / 2);
     transactions = orderedTransactions(plan, "staged", progress, prerequisites.approvals, prerequisites.nativeValue, preparationBatchSize);

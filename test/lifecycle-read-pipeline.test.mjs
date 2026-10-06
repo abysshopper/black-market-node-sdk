@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { decodeFunctionData, encodeFunctionData, encodeFunctionResult, keccak256, parseAbi, toHex, zeroAddress, zeroHash } from "viem";
@@ -6,8 +7,8 @@ import { decodeFunctionData, encodeFunctionData, encodeFunctionResult, keccak256
 const sourceTests = process.env.SDK_SOURCE_TEST === "1";
 const sdkPath = sourceTests ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
 const rpcPath = sourceTests ? "../src/lifecycle/rpc.ts" : "../dist/lifecycle/rpc.js";
-const { hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleRegistryAbi,
-  lifecycleV4LockerAbi, poolFeeCollectorFactoryV1Abi, poolHookDeployerV1Abi, poolMarketAdapterV1Abi,
+const { hashLaunchBounds, hashLaunchDependencies, hashLaunchIdentity, hashLaunchPlan, hashLifecycleProfile, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleRegistryAbi,
+  lifecycleV4LockerAbi, poolFeeCollectorFactoryV1Abi, poolHookDeployerV1Abi, poolMarketAdapterV1Abi, parseLaunchPlan, readLaunchProgress,
   LIFECYCLE_REQUIRED_CAPABILITIES, readLifecycleProfiles, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA } = await import(sdkPath);
 const { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, readLifecycleContract, withLifecycleReadClient } = await import(rpcPath);
 const address = (value) => toHex(BigInt(value), { size: 20 });
@@ -109,8 +110,6 @@ test("reviewed graph rounds remain fully certified and duplicate profile IDs pre
     source.graph.collectorFactory, source.graph.collectorDeployer, source.graph.hookDeployer, source.graph.codeChunk0]) {
     assert.equal(source.captured.filter((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === target).length, 1);
   }
-  assert.equal(source.captured.filter((row) => row.method === "eth_chainId").length, 2);
-  assert.equal(source.captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 1);
 });
 
 test("standalone clients without read batching retain serial transport compatibility", async () => {
@@ -148,6 +147,55 @@ test("frozen graph evidence and eligibility do not wait for unrelated adapter me
   assert.equal(chunkBeforeMetadata, true, "Frozen chunk evidence has no dependency on the adapter PROFILE_ID response");
   assert.equal(eligibilityBeforeMetadata, true, "Eligibility and graph certification both remain required, but are independent reads");
   assert.equal(profile.admitted, true, profile.reason);
+});
+
+test("pinned profile metadata overlaps chain identity, but malformed chain evidence rejects the invocation", async () => {
+  for (const chainValue of ["0x1237", "not-a-chain"]) {
+    const source = boundProfileClient();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const client = { supportsReadBatching: true, async request(args) {
+      if (args.method === "eth_chainId") { await gate; return chainValue; }
+      return source.request(args);
+    } };
+    const pending = readLifecycleProfiles({ client, orchestrator: CORE, profileIds: [source.id] }, block);
+    const result = pending.then((profiles) => ({ profiles }), (error) => ({ error }));
+    await nextTurn();
+    const callsBeforeChain = source.captured.filter((row) => row.method === "eth_call").map((row) =>
+      decodeFunctionData({ abi: row.params[0].to === CORE ? launchLifecycleAbi : lifecycleRegistryAbi, data: row.params[0].data }).functionName);
+    release();
+    const settled = await result;
+    assert.ok(callsBeforeChain.includes("profileEnvelope"), "Pinned profile observations have no chain-response dependency");
+    assert.equal(callsBeforeChain.includes("requireEligible"), false, "Chain-dependent certification cannot authorize from missing chain evidence");
+    if (chainValue === "0x1237") assert.equal(settled.profiles[0].admitted, true, settled.profiles[0].reason);
+    else assert.equal(settled.error.code, "INVALID_RPC_RESPONSE", "Provider chain failures are not swallowed into an individual profile reason");
+  }
+});
+
+test("chain failures and registry authority failures remain invocation errors during overlapped discovery", async () => {
+  for (const supportsReadBatching of [false, true]) {
+    for (const failedRead of ["chain", "registry"]) {
+      const source = boundProfileClient();
+      const failure = new Error(`Required ${failedRead} source read failed`);
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const client = { supportsReadBatching, async request(args) {
+        if (args.method === "eth_chainId") {
+          if (failedRead === "chain") throw failure;
+          if (supportsReadBatching) await gate;
+        }
+        if (failedRead === "registry" && args.method === "eth_call" && args.params[0].to === CORE) throw failure;
+        return source.request(args);
+      } };
+      const pending = readLifecycleProfiles({ client, orchestrator: CORE, profileIds: [source.id] }, block);
+      const rejection = assert.rejects(pending, (error) => error === failure);
+      await nextTurn();
+      release();
+      await rejection;
+      await nextTurn();
+      assert.equal((await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }, block))[0].admitted, true);
+    }
+  }
 });
 
 test("changed reviewed runtime, authority, terms, eligibility and creation chunks fail actual profile admission", async () => {
@@ -188,10 +236,17 @@ test("partial reviewed-graph read failures remain refusal evidence and do not po
 });
 
 test("standalone profile certification never reuses final chain or canonical block checks", async () => {
-  for (const [flag, code] of [["reorgAfterEligibility", "STATE_REORGED"], ["driftAfterEligibility", "CHAIN_MISMATCH"]]) {
+  for (const supportsReadBatching of [false, true]) {
+    for (const [flag, code] of [["reorgAfterEligibility", "STATE_REORGED"], ["driftAfterEligibility", "CHAIN_MISMATCH"]]) {
+      const source = boundProfileClient();
+      source.supportsReadBatching = supportsReadBatching;
+      source.state[flag] = true;
+      await assert.rejects(readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }), { code });
+    }
     const source = boundProfileClient();
-    source.state[flag] = true;
-    await assert.rejects(readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }), { code });
+    source.supportsReadBatching = supportsReadBatching;
+    source.state.values[`${REGISTRY}:core`] = address(0xff);
+    await assert.rejects(readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }), { code: "REGISTRY_BINDING" });
   }
 });
 
@@ -370,4 +425,108 @@ test("diagnostics report failures but do not serialize rejected RPC payloads", a
   assert.equal(profile.admitted, false);
   assert.ok(events.some((event) => event.stage === "rpc" && event.phase === "failure"));
   assert.equal(JSON.stringify(events).includes(privateFailure), false);
+});
+
+async function progressClient() {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url), "utf8"));
+  const plan = parseLaunchPlan(JSON.stringify(fixture.plan)), token = address(0xfa);
+  const planned = { plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: token,
+    account: plan.creator, mode: "staged", confirmations: 2 };
+  const empty = { launchId: zeroHash, planHash: zeroHash, creator: zeroAddress, nonce: 0n, mode: 0, phase: 0,
+    token: zeroAddress, feeHub: zeroAddress, rewards: zeroAddress, preparedMarkets: 0, marketCount: 0, buyCount: 0,
+    positionCount: 0, deadline: 0n };
+  const state = { pendingNonce: 7n, reorg: false, chainDrift: false };
+  const captured = [];
+  return { planned, state, captured, async request({ method, params = [] }) {
+    captured.push({ method, params });
+    if (method === "eth_chainId") return toHex(state.chainDrift ? plan.chainId + 1n : plan.chainId);
+    if (method === "eth_getBlockByNumber") {
+      const number = params[0] === "latest" ? block.number : BigInt(params[0]);
+      return { number: toHex(number), hash: hash(state.reorg ? number + 100n : number), timestamp: "0x64", gasLimit: toHex(block.gasLimit) };
+    }
+    if (method === "eth_getTransactionCount") {
+      if (params[1] === "pending") {
+        if (state.reorgAfterNonce) state.reorg = true;
+        if (state.driftAfterNonce) state.chainDrift = true;
+        return toHex(state.pendingNonce);
+      }
+      return "0x7";
+    }
+    assert.equal(method, "eth_call", "Canonical progress uses only read-only source methods");
+    const call = decodeFunctionData({ abi: launchLifecycleAbi, data: params[0].data });
+    assert.ok(["readLaunchProgress", "predictToken"].includes(call.functionName));
+    return encodeFunctionResult({ abi: launchLifecycleAbi, functionName: call.functionName,
+      result: call.functionName === "predictToken" ? token : empty });
+  } };
+}
+
+test("confirmed block acquisition overlaps live chain identity without advancing progress before validation", async () => {
+  for (const wrongChain of [false, true]) {
+    const source = await progressClient();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const client = { supportsReadBatching: true, async request(args) {
+      if (args.method === "eth_getBlockByNumber" && args.params[0] === "0x29") await gate;
+      if (wrongChain && args.method === "eth_chainId") {
+        source.captured.push(args);
+        return toHex(source.planned.plan.chainId + 1n);
+      }
+      return source.request(args);
+    } };
+    const pending = readLaunchProgress({ client, planned: source.planned }, block);
+    const result = pending.then((progress) => ({ progress }), (error) => ({ error }));
+    await nextTurn();
+    const chainBeforeBlock = source.captured.some((row) => row.method === "eth_chainId");
+    const progressBeforeBlock = source.captured.some((row) => row.method === "eth_call" || row.method === "eth_getTransactionCount");
+    release();
+    const settled = await result;
+    assert.equal(chainBeforeBlock, true);
+    assert.equal(progressBeforeBlock, false, "Unvalidated chain/block observations cannot authorize canonical progress or nonce reads");
+    if (wrongChain) assert.equal(settled.error.code, "CHAIN_MISMATCH");
+    else {
+      assert.equal(settled.progress.confirmedBlockNumber, 41n);
+      assert.equal(settled.progress.confirmedBlockHash, hash(41));
+      assert.equal(settled.progress.confirmationSafe, true);
+    }
+  }
+});
+
+test("overlapped confirmed-block and chain failures preserve source errors and cannot leak late rejections", async () => {
+  for (const supportsReadBatching of [false, true]) {
+    for (const failedMethod of ["eth_getBlockByNumber", "eth_chainId"]) {
+      const source = await progressClient();
+      const failure = new Error(`Required ${failedMethod} evidence unavailable`);
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const client = { supportsReadBatching, async request(args) {
+        if (args.method === failedMethod) throw failure;
+        if (supportsReadBatching) await gate;
+        return source.request(args);
+      } };
+      const rejection = assert.rejects(readLaunchProgress({ client, planned: source.planned }, block), (error) => error === failure);
+      await nextTurn();
+      release();
+      await rejection;
+      await nextTurn();
+    }
+  }
+});
+
+test("serial and batching progress retain pending-nonce uncertainty and final chain/canonical refusal", async () => {
+  for (const supportsReadBatching of [false, true]) {
+    const source = await progressClient();
+    source.supportsReadBatching = supportsReadBatching;
+    source.state.pendingNonce = 8n;
+    const progress = await readLaunchProgress({ client: source, planned: source.planned });
+    assert.equal(progress.confirmedAccountNonce, 7n);
+    assert.equal(progress.headAccountNonce, 7n);
+    assert.equal(progress.pendingAccountNonce, 8n);
+    assert.equal(progress.confirmationSafe, false, "No receipt reference is required to detect pending account activity");
+    for (const [flag, code] of [["reorgAfterNonce", "STATE_REORGED"], ["driftAfterNonce", "CHAIN_MISMATCH"]]) {
+      const changed = await progressClient();
+      changed.supportsReadBatching = supportsReadBatching;
+      changed.state[flag] = true;
+      await assert.rejects(readLaunchProgress({ client: changed, planned: changed.planned }), { code });
+    }
+  }
 });

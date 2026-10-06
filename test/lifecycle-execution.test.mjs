@@ -230,6 +230,104 @@ test("malformed supplied policy and supplied context failures never become unkno
   assert.equal((await review(clientFor(plan), plan, { limits: current })).simulation.admitted, true);
 });
 
+test("batched review prepares fresh fees while funding is outstanding without starting economic execution", async () => {
+  const plan = makePlan({ chainId: 4663n }), source = clientFor(plan, { allowance: 1n, gasPrice: 7n, poster: 200_000n });
+  let releaseFunding;
+  const fundingGate = new Promise((resolve) => { releaseFunding = resolve; });
+  let fundingPending = false, feesPrepared = false;
+  const client = { supportsReadBatching: true, async request(args) {
+    if (args.method === "eth_simulateV1") assert.equal(fundingPending, false, "No native proof or economic execution may precede input admission");
+    const response = await source.request(args);
+    if (args.method === "eth_gasPrice") feesPrepared = true;
+    if (args.method === "eth_call" && args.params[0].to === plan.funding[0].inputAsset &&
+      decodeFunctionData({ abi: lifecycleErc20Abi, data: args.params[0].data }).functionName === "allowance") {
+      fundingPending = true;
+      await fundingGate;
+      fundingPending = false;
+    }
+    return response;
+  } };
+  const pending = review(client, plan);
+  await nextTurn();
+  const overlapped = fundingPending && feesPrepared;
+  releaseFunding();
+  const planned = await pending;
+  assert.equal(overlapped, true, "Fresh fee context must settle without waiting for independent funding");
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  const serial = await review(clientFor(plan, { allowance: 1n, gasPrice: 7n, poster: 200_000n }), plan);
+  assert.deepEqual(planned, serial, "Overlap preserves the exact plan, zero-first approvals, native proof and gas/fee replay");
+});
+
+test("input refusal or failure discards a late rejected context without economic execution", async () => {
+  for (const throwInput of [false, true]) {
+    const plan = makePlan(), source = clientFor(plan, { tokenBalance: 0n });
+    const inputFailure = new Error("Pinned funding allowance unavailable");
+    let rejectFees, feesStarted = false;
+    const feeGate = new Promise((_, reject) => { rejectFees = reject; });
+    const client = { supportsReadBatching: true, request(args) {
+      if (args.method === "eth_simulateV1") assert.fail("Refused inputs must never reach simulation");
+      if (args.method === "eth_gasPrice") { feesStarted = true; return feeGate; }
+      if (throwInput && args.method === "eth_call" && args.params[0].to === plan.funding[0].inputAsset &&
+        decodeFunctionData({ abi: lifecycleErc20Abi, data: args.params[0].data }).functionName === "allowance") return Promise.reject(inputFailure);
+      return source.request(args);
+    } };
+    try {
+      if (throwInput) await assert.rejects(review(client, plan), (failure) => failure === inputFailure);
+      else {
+        const planned = await review(client, plan);
+        assert.equal(planned.simulation.admitted, false);
+        assert.match(planned.simulation.reason, /combined funding requirements/);
+      }
+      assert.equal(feesStarted, true);
+    } finally {
+      rejectFees(new Error("Late gas-price source failure"));
+      await nextTurn();
+    }
+  }
+});
+
+test("prepared simulation refuses refreshed policy provenance and preserves the original source context", async () => {
+  const plan = makePlan();
+  for (const changed of [{ chainId: 1n }, { account: address(1) }, { orchestrator: address(1) }, { observedBlockNumber: 41n }, { observedBlockHash: FOREIGN_HASH }]) {
+    const source = clientFor(plan);
+    const client = { supportsReadBatching: true, request(args) {
+      if (args.method === "eth_simulateV1") assert.fail("Mismatched policy cannot authorize native or economic execution");
+      return source.request(args);
+    } };
+    let domainPolicy = true;
+    const limits = async (context) => {
+      assert.equal(context.client, client);
+      assert.equal(context.account, ACCOUNT);
+      assert.equal(context.orchestrator, CORE);
+      assert.equal(context.chainId, plan.chainId);
+      assert.equal(context.block.number, 42n);
+      assert.equal(context.block.hash, HASH);
+      const policy = domainPolicy ? {} : changed;
+      domainPolicy = false;
+      return policy;
+    };
+    await assert.rejects(review(client, plan, { limits }), { code: "LIMIT_CONTEXT_MISMATCH" });
+  }
+});
+
+test("batch-prepared context retains smart-account refusal and final chain/reorg protection", async () => {
+  for (const chainId of [31337n, 4663n]) {
+    const plan = makePlan({ chainId });
+    for (const [settings, code] of [[{ sourceChainDrift: true }, "CHAIN_MISMATCH"], [{ reorg: true }, "STATE_REORGED"]]) {
+      const client = clientFor(plan, settings);
+      client.supportsReadBatching = true;
+      await assert.rejects(review(client, plan), { code });
+    }
+    const client = clientFor(plan, { accountCode: CODE });
+    client.supportsReadBatching = true;
+    const planned = await review(client, plan);
+    assert.equal(planned.simulation.admitted, false);
+    assert.equal(planned.simulation.confidence, "provisional");
+    assert.equal(planned.simulation.executionProof, "unavailable");
+    assert.match(planned.simulation.reason, /smart-account/);
+  }
+});
+
 test("Nitro huge header never replaces changing pinned compute getters or ArbOS50 detection", async () => {
   const plan = makePlan({ chainId: 4663n });
   const client = clientFor(plan, { computeUsed: 10_000_001n });
@@ -406,6 +504,27 @@ test("cancellation retains canonical recovery and optional exact submission pref
   const nitroCommitted = { ...committed, plan: nitroPlan, planHash: hashLaunchPlan(nitroPlan), launchId: hashLaunchIdentity(nitroPlan), chainId: nitroPlan.chainId };
   const nitro = clientFor(nitroPlan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n, balance: 92_000n });
   assert.equal((await buildNextTransaction({ client: nitro, planned: nitroCommitted, action: "cancel" })).gas, 46_000n, "Probe-only funding cannot reject an exactly-funded real cancellation");
+});
+
+test("standalone cancellation simulation re-observes fees and account code for every invocation", async () => {
+  for (const supportsReadBatching of [false, true]) {
+    const plan = makePlan(), client = clientFor(plan, { phase: LifecyclePhase.Preparing, computeUsed: 40_000n });
+    client.supportsReadBatching = supportsReadBatching;
+    const committed = { plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN, account: ACCOUNT, chainId: plan.chainId, mode: "staged", confirmations: 1 };
+    const first = await buildNextTransaction({ client, planned: committed, action: "cancel" });
+    assert.equal(first.gasPrice, 2n);
+    client.state.gasPrice = 7n;
+    const refreshed = await buildNextTransaction({ client, planned: committed, action: "cancel" });
+    assert.equal(refreshed.gasPrice, 7n);
+    assert.equal(refreshed.estimate.executionFee, refreshed.gas * 7n);
+    client.state.accountCode = CODE;
+    await assert.rejects(buildNextTransaction({ client, planned: committed, action: "cancel" }), (failure) => {
+      assert.equal(failure.code, "CANCEL_NOT_ADMITTED");
+      assert.equal(failure.simulation.confidence, "provisional");
+      assert.match(failure.simulation.reason, /smart-account/);
+      return true;
+    });
+  }
 });
 
 test("atomic remains explicit and staged partitions only empty preparations, never complete activation", async () => {

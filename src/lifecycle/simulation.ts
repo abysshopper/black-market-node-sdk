@@ -2,7 +2,7 @@ import { decodeEventLog, decodeFunctionResult, encodeFunctionData, encodeFunctio
 import { launchLifecycleAbi, lifecycleErc20Abi } from "./abi.js";
 import { LifecyclePhase, type LaunchProgressV1, type LaunchReceiptV1 } from "./schema.js";
 import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, lifecycleSourceClient, lifecycleStage, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readNitroPosterGas, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
-import { LifecyclePlanningError, type ControlledLifecycleFork, type LifecycleBlock, type LifecyclePostcondition, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleSimulationStep, type LifecycleTransaction, type PlannedLaunch, type ResolvedLifecycleLimits, type SimulateLaunchPlanOptions } from "./types.js";
+import { LifecyclePlanningError, type ControlledLifecycleFork, type LifecycleBlock, type LifecycleLimitContext, type LifecycleLimits, type LifecyclePostcondition, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleSimulationStep, type LifecycleTransaction, type PlannedLaunch, type ResolvedLifecycleLimits, type SimulateLaunchPlanOptions } from "./types.js";
 
 function conditionRequest(condition: LifecyclePostcondition, planned: PlannedLaunch): { to: Hex; data: Hex } {
   if (condition.kind === "allowance") return {
@@ -233,18 +233,54 @@ async function simulateForkPass(fork: ControlledLifecycleFork, planned: PlannedL
   }
 }
 
-export async function simulateLaunchTransactions(options: SimulateLaunchPlanOptions, transactions: readonly LifecycleTransaction[], pinnedBlock?: LifecycleBlock): Promise<LifecycleSimulation> {
+/** Internal one-shot continuation. Only SDK reads can produce its context; callers
+ * cannot supply resolved policy or account/chain observations as authority. */
+export function prepareLaunchSimulation(options: SimulateLaunchPlanOptions, block: LifecycleBlock, hasTransactions = true): (transactions: readonly LifecycleTransaction[]) => Promise<LifecycleSimulation> {
   const { client, planned } = options;
   const sourceClient = lifecycleSourceClient(client);
-  if (options.fork !== undefined && lifecycleSourceClient(options.fork.client) === sourceClient) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
-  const block = pinnedBlock ?? await readLifecycleBlock(client);
+  const blockNumber = block.number, blockHash = block.hash;
   const context = { client, account: planned.account, orchestrator: planned.plan.orchestrator, block, chainId: planned.chainId };
-  const [{ limits, configuration }, chainId, accountCodeValue, gasPriceValue] = await lifecycleStage(client, "simulation.context", () => Promise.all([
-    resolveLifecycleLimits(context, options.limits === undefined ? planned.limits : options.limits),
-    lifecycleRpc(client, "eth_chainId"),
-    lifecyclePinnedRpc(client, "eth_getCode", [planned.account, toHex(block.number)], block),
-    transactions.length === 0 ? undefined : lifecycleRpc(client, "eth_gasPrice"),
-  ]));
+  const pending = (async () => {
+    if (options.fork !== undefined && lifecycleSourceClient(options.fork.client) === sourceClient) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
+    return lifecycleStage(client, "simulation.context", () => Promise.all([
+      resolveLifecycleLimits(context, options.limits === undefined ? planned.limits : options.limits),
+      lifecycleRpc(client, "eth_chainId"),
+      lifecyclePinnedRpc(client, "eth_getCode", [context.account, toHex(block.number)], block),
+      hasTransactions ? lifecycleRpc(client, "eth_gasPrice") : undefined,
+    ]));
+  })().then((observations) => ({ observations }), (failure: unknown) => ({ failure }));
+  // Attach the failure handler before input validation can refuse or throw.
+  // Preparation is read-only; no probe, measurement, replay or fork work starts.
+  let consumed = false;
+  return async (transactions) => {
+    if (consumed) throw new LifecyclePlanningError("INVALID_SIMULATION", "Prepared simulation context is invocation-local and may only be consumed once");
+    consumed = true;
+    const result = await pending;
+    if ("failure" in result) throw result.failure;
+    if (options.client !== client || options.planned !== planned || context.client !== client || context.block !== block || lifecycleSourceClient(client) !== sourceClient ||
+      planned.account !== context.account || planned.plan.orchestrator !== context.orchestrator || planned.chainId !== context.chainId ||
+      block.number !== blockNumber || block.hash !== blockHash) throw new LifecyclePlanningError("LIMIT_CONTEXT_MISMATCH", "Prepared simulation context differs from the bound source/chain/account/core/block");
+    return simulateLaunchTransactionsWithContext(options, transactions, context, result.observations);
+  };
+}
+
+export async function simulateLaunchTransactions(options: SimulateLaunchPlanOptions, transactions: readonly LifecycleTransaction[], pinnedBlock?: LifecycleBlock): Promise<LifecycleSimulation> {
+  // Standalone calls always produce fresh context, including live chain and fees.
+  if (options.fork !== undefined && lifecycleSourceClient(options.fork.client) === lifecycleSourceClient(options.client)) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
+  const block = pinnedBlock ?? await readLifecycleBlock(options.client);
+  return prepareLaunchSimulation(options, block, transactions.length !== 0)(transactions);
+}
+
+async function simulateLaunchTransactionsWithContext(
+  options: SimulateLaunchPlanOptions,
+  transactions: readonly LifecycleTransaction[],
+  context: LifecycleLimitContext,
+  observations: [{ limits: ResolvedLifecycleLimits; configuration: LifecycleLimits }, unknown, unknown, unknown],
+): Promise<LifecycleSimulation> {
+  const { client, planned } = options;
+  const sourceClient = lifecycleSourceClient(client);
+  const { block } = context;
+  const [{ limits, configuration }, chainId, accountCodeValue, gasPriceValue] = observations;
   const base = { confidence: "stateful" as const, executionProof: "failed" as const, protocolFit: "unknown" as const, transportPreflight: "not-requested" as const, blockNumber: block.number, blockHash: block.hash, account: planned.account, chainId: planned.chainId, limits };
   if (rpcQuantity(chainId, "chain ID") !== planned.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain changed before sequential simulation");
   const accountCode = rpcHex(accountCodeValue, "account code");
