@@ -1,9 +1,14 @@
 import { decodeFunctionResult, encodeFunctionData, isAddress, isHex, parseAbi, toHex, type Abi, type Address, type Hex } from "viem";
-import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLimitContext, type LifecycleLimitSource, type LifecycleLimits, type LifecycleRpcClient, type LifecycleTransaction, type ResolvedLifecycleLimits } from "./types.js";
+import { LifecyclePlanningError, type LifecycleBlock, type LifecycleDiagnosticEvent, type LifecycleDiagnosticListener, type LifecycleDiagnosticStage, type LifecycleLimitContext, type LifecycleLimitSource, type LifecycleLimits, type LifecycleRpcClient, type LifecycleTransaction, type ResolvedLifecycleLimits } from "./types.js";
 import { lifecycleRegistryAbi } from "./abi.js";
 import type { ProfileTopologyV1 } from "./schema.js";
 
 const lifecycleReadConcurrency = 8;
+const diagnosticRpcMethods: Record<string, true> = {
+  eth_chainId: true, eth_getBlockByNumber: true, eth_getBlockByHash: true, eth_getCode: true,
+  eth_getBalance: true, eth_call: true, eth_estimateGas: true, eth_gasPrice: true,
+  eth_simulateV1: true, eth_getTransactionCount: true, eth_getTransactionReceipt: true, eth_getTransactionByHash: true,
+};
 
 /** Owns only one invocation's immutable RPC observations, never live checks or writes. */
 class InvocationLifecycleClient implements LifecycleRpcClient {
@@ -11,6 +16,7 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
   private readonly active = new Set<Promise<void>>();
   private closed = false;
   private readonly concurrency: number;
+  private diagnosticSequence = 0;
   constructor(readonly source: LifecycleRpcClient) {
     this.concurrency = source.supportsReadBatching === true ? lifecycleReadConcurrency : 1;
   }
@@ -28,15 +34,29 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
 
   async run(method: string, params: readonly unknown[]): Promise<unknown> {
     this.assertOpen();
+    const listener = this.source.onDiagnostic;
+    const observedMethod = listener === undefined ? undefined : diagnosticRpcMethods[method] === true ? method : "other";
+    const queuedAt = listener === undefined ? 0 : performance.now();
+    const requestId = listener === undefined ? 0 : ++this.diagnosticSequence;
+    if (listener !== undefined) emitLifecycleDiagnostic(listener, { stage: "rpc", phase: "queued", requestId, method: observedMethod });
     while (this.active.size >= this.concurrency) await Promise.race(this.active);
     this.assertOpen();
+    const started = listener === undefined ? 0 : performance.now();
+    if (listener !== undefined) emitLifecycleDiagnostic(listener, { stage: "rpc", phase: "start", requestId, method: observedMethod, queueMs: started - queuedAt });
     const pending = this.request({ method, params });
     const settled = pending.then(
       () => { this.active.delete(settled); },
       () => { this.active.delete(settled); },
     );
     this.active.add(settled);
-    return pending;
+    try {
+      const result = await pending;
+      if (listener !== undefined) emitLifecycleDiagnostic(listener, { stage: "rpc", phase: "success", requestId, method: observedMethod, durationMs: performance.now() - started });
+      return result;
+    } catch (error) {
+      if (listener !== undefined) emitLifecycleDiagnostic(listener, { stage: "rpc", phase: "failure", requestId, method: observedMethod, durationMs: performance.now() - started });
+      throw error;
+    }
   }
 
   read(method: string, params: readonly unknown[], block: LifecycleBlock): Promise<unknown> {
@@ -45,7 +65,11 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     // caller, value, gas and any other call fields; no selector-only/ABI-name aliasing.
     const key = JSON.stringify([block.number.toString(), block.hash.toLowerCase(), method, params]);
     const existing = this.reads.get(key);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      const listener = this.source.onDiagnostic;
+      if (listener !== undefined) emitLifecycleDiagnostic(listener, { stage: "rpc", phase: "reuse", method: diagnosticRpcMethods[method] === true ? method : "other" });
+      return existing;
+    }
     const pending = this.run(method, params);
     this.reads.set(key, pending);
     void pending.catch(() => { if (this.reads.get(key) === pending) this.reads.delete(key); });
@@ -68,6 +92,32 @@ export async function withLifecycleReadClient<T>(source: LifecycleRpcClient, wor
 
 export function lifecycleSourceClient(client: LifecycleRpcClient): LifecycleRpcClient {
   return client instanceof InvocationLifecycleClient ? client.source : client;
+}
+
+function emitLifecycleDiagnostic(listener: LifecycleDiagnosticListener, event: LifecycleDiagnosticEvent): void {
+  try {
+    const pending = listener(event);
+    if (pending !== undefined) void pending.catch(() => {});
+  } catch { /* Observers cannot change financial behavior. */ }
+}
+
+/** No clock, event allocation or extra promise when diagnostics are disabled. */
+export function lifecycleStage<T>(client: LifecycleRpcClient, stage: LifecycleDiagnosticStage, work: () => Promise<T>): Promise<T> {
+  const listener = lifecycleSourceClient(client).onDiagnostic;
+  return listener === undefined ? work() : observedLifecycleStage(listener, stage, work);
+}
+
+async function observedLifecycleStage<T>(listener: LifecycleDiagnosticListener, stage: LifecycleDiagnosticStage, work: () => Promise<T>): Promise<T> {
+  const started = performance.now();
+  emitLifecycleDiagnostic(listener, { stage, phase: "start" });
+  try {
+    const result = await work();
+    emitLifecycleDiagnostic(listener, { stage, phase: "success", durationMs: performance.now() - started });
+    return result;
+  } catch (error) {
+    emitLifecycleDiagnostic(listener, { stage, phase: "failure", durationMs: performance.now() - started });
+    throw error;
+  }
 }
 
 /** Only explicitly pinned fixed-state reads may participate in invocation reuse. */
@@ -105,8 +155,11 @@ export async function readLifecycleBlock(client: LifecycleRpcClient, tag: Hex | 
   };
 }
 export async function assertLifecycleBlock(client: LifecycleRpcClient, block: LifecycleBlock, expectedChainId?: bigint): Promise<void> {
-  if (expectedChainId !== undefined && rpcQuantity(await lifecycleRpc(client, "eth_chainId"), "chain ID") !== expectedChainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "Source RPC chain changed during the pinned operation");
-  const current = await readLifecycleBlock(client, toHex(block.number));
+  const [chainId, current] = await Promise.all([
+    expectedChainId === undefined ? undefined : lifecycleRpc(client, "eth_chainId"),
+    readLifecycleBlock(client, toHex(block.number)),
+  ]);
+  if (expectedChainId !== undefined && rpcQuantity(chainId, "chain ID") !== expectedChainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "Source RPC chain changed during the pinned operation");
   if (current.hash.toLowerCase() !== block.hash.toLowerCase()) throw new LifecyclePlanningError("STATE_REORGED", "Pinned launch state changed during the operation; read canonical progress again");
 }
 export async function readLifecycleContract<T>(client: LifecycleRpcClient, to: Address, abi: Abi, functionName: string, args: readonly unknown[], block: LifecycleBlock, from?: Address): Promise<T> {

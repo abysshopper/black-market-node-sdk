@@ -2,7 +2,7 @@ import { concatHex, decodeFunctionData, encodeAbiParameters, encodeFunctionData,
 import { abyssLifecycleAdapterAbi, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, poolFeeCollectorFactoryV1Abi, lifecycleV4HookAbi, lifecycleV4LockerAbi, poolHookDeployerV1Abi, sharedHookDeployerV1Abi, fixedFeePoolHookV1Abi, poolMarketAdapterV1Abi, sharedMarketAdapterV1Abi } from "./abi.js";
 import { decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundHookParameters, hasLifecycleV4HookPermissions, hashPoolBoundV4MarketCommitment, poolBoundHookInitCodeHash, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type PoolBoundHookParametersV1 } from "./markets.js";
 import { hashLaunchIdentity, hashLaunchPlan, hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, launchProgressV1Components, LifecycleMode, LifecyclePhase, LifecycleVenue, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MULTI_POSITION_CAPABILITY, type AdapterRegistrationV1, type LaunchPlanV1, type LaunchProgressV1, type MarketIdentityV1, type MarketLiveStateV1, type PreparedMarketV1, type ProfileRegistrationV1, type ProfileTopologyV1, type LaunchEnvelopeV2, type LifecycleDeveloperTerms } from "./schema.js";
-import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, readLifecycleBlock, readLifecycleContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
+import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleContract, readLifecycleProfileTopology, rpcHex, rpcObject, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
 import { LifecyclePlanningError, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleMarketProgress, type LifecycleProfile, type LifecycleReceiptReference, type LifecycleReceiptStatus, type LifecycleRpcClient, type PoolBoundHookDeployment, type ReadLaunchProgressOptions } from "./types.js";
 
 export const ABYSS_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint8,uint24,bytes32,uint160,(int24,int24,uint128,uint256)[])"));
@@ -144,7 +144,7 @@ export async function validateV4LifecycleOracle(options: {
 }
 
 export async function readLifecycleProfiles(options: { client: LifecycleRpcClient; orchestrator: Address; profileIds?: readonly Hex[]; offset?: bigint; limit?: bigint }, pinnedBlock?: LifecycleBlock): Promise<LifecycleProfile[]> {
-  return withLifecycleReadClient(options.client, async (client) => {
+  return withLifecycleReadClient(options.client, (client) => lifecycleStage(client, "profile.certification", async () => {
     const [block, chainIdValue] = await Promise.all([
       pinnedBlock ?? readLifecycleBlock(client),
       lifecycleRpc(client, "eth_chainId"),
@@ -201,7 +201,7 @@ export async function readLifecycleProfiles(options: { client: LifecycleRpcClien
     if (protocolMaximumDeveloperFeeBpsPromise !== undefined) await protocolMaximumDeveloperFeeBpsPromise;
     if (pinnedBlock === undefined) await assertLifecycleBlock(client, block, chainId);
     return profiles;
-  });
+  }));
 }
 
 async function readPoolBoundHookDeploymentDetails(options: { client: LifecycleRpcClient; plan: LaunchPlanV1; marketIndex: number }, block: LifecycleBlock): Promise<{ deployment: PoolBoundHookDeployment; parameters: PoolBoundHookParametersV1 }> {

@@ -4,11 +4,28 @@ import type {
   MarketLiveStateV1, PreparedMarketV1, ProfileRegistrationV1, ProfileTopologyV1, LaunchEnvelopeV2, LifecycleDeveloperTerms,
 } from "./schema.js";
 
+/** Local opt-in timing only: never contains request arguments, addresses, results or errors. */
+export type LifecycleDiagnosticStage =
+  | "plan" | "plan.context" | "plan.domain" | "plan.progress" | "plan.inputs" | "rpc"
+  | "profile.certification" | "simulation.context" | "simulation.nitro"
+  | "simulation.poster" | "simulation.measure" | "simulation.replay" | "simulation.envelope";
+export type LifecycleDiagnosticEvent = {
+  stage: LifecycleDiagnosticStage;
+  phase: "queued" | "start" | "success" | "failure" | "reuse";
+  durationMs?: number;
+  queueMs?: number;
+  requestId?: number;
+  method?: string;
+};
+export type LifecycleDiagnosticListener = (event: LifecycleDiagnosticEvent) => void | Promise<void>;
+
 /** viem public clients or a raw JSON-RPC client; neither selects a transport. */
 export type LifecycleRpcClient = {
   request(args: { method: string; params?: readonly unknown[] }): Promise<unknown>;
   /** Opt in to bounded parallel reads only when the supplied transport batches concurrent requests. */
   supportsReadBatching?: boolean;
+  /** Optional local observer. Listener failures cannot change execution or admission. */
+  onDiagnostic?: LifecycleDiagnosticListener;
 };
 export type LifecycleBlock = { number: bigint; hash: Hash; timestamp: bigint; gasLimit: bigint; baseFeePerGas?: bigint };
 export type LifecycleLimitContext = { client: LifecycleRpcClient; account: Address; orchestrator: Address; block: LifecycleBlock; chainId: bigint };

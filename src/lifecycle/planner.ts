@@ -3,7 +3,7 @@ import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi, lifecycleFu
 import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecycleMode, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LifecycleVenue, LIFECYCLE_ERC404_CAPABILITY, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, LIFECYCLE_MULTI_POSITION_CAPABILITY, LIFECYCLE_REQUIRED_CAPABILITIES, marketIdentityV1Components, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1, type MarketIdentityV1 } from "./schema.js";
 import { ABYSS_LIFECYCLE_CONFIG_SCHEMA, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment, validateLifecycleMarketIdentity, validateV4LifecycleOracle } from "./progress.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, hasLifecycleV4HookPermissions, minePoolBoundHookSalt, predictPoolBoundHookAddress, validateV4LifecycleMarket, V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
-import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, readLifecycleBlock, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
+import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, lifecycleStage, readLifecycleBlock, readLifecycleContract, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
 import { simulateLaunchTransactions } from "./simulation.js";
 import { LifecyclePlanningError, type BuildNextTransactionOptions, type CanonicalLaunchProgress, type LifecycleBlock, type LifecycleFundingPrerequisite, type LifecyclePoolBoundHookDeployment, type LifecycleProfile, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleTransaction, type PlannedLaunch, type PlanLaunchOptions, type PoolBoundLifecyclePreparationProgress, type SimulateLaunchPlanOptions } from "./types.js";
 
@@ -324,7 +324,7 @@ export async function preparePoolBoundLifecyclePlan(options: {
 /** Exact economic commitment with explicit execution mode and current-state admission. No broadcasts. */
 export async function planLaunch(options: PlanLaunchOptions): Promise<PlannedLaunch> {
   return withLifecycleReadClient(options.client, async (client) => {
-    const planned = await planLaunchWithReads(options, client);
+    const planned = await lifecycleStage(client, "plan", () => planLaunchWithReads(options, client));
     if (hashLaunchPlan(planned.plan).toLowerCase() !== planned.planHash.toLowerCase() || hashLaunchIdentity(planned.plan).toLowerCase() !== planned.launchId.toLowerCase()) throw new LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during asynchronous planning; previous reads and simulation are invalid");
     return planned;
   });
@@ -337,22 +337,26 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
   if (plan.chainId > BigInt(Number.MAX_SAFE_INTEGER) || plan.chainId <= 0n) throw new LifecyclePlanningError("CHAIN_MISMATCH", "Chain ID must be a positive exact JavaScript integer");
   validatePlanShape(plan);
   const planHash = hashLaunchPlan(plan); const launchId = hashLaunchIdentity(plan);
-  const [block, chainIdValue] = await Promise.all([
+  const [block, chainIdValue] = await lifecycleStage(client, "plan.context", () => Promise.all([
     readLifecycleBlock(client),
     lifecycleRpc(client, "eth_chainId"),
-  ]);
+  ]));
   if (rpcQuantity(chainIdValue, "chain ID") !== plan.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain differs from the committed plan");
-  const [remoteHash, remoteIdentity, predictedToken, { tokenFactory, tokenFactoryCodeHash }, { limits }] = await Promise.all([
+  const prediction = readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], block);
+  const [remoteHash, remoteIdentity, { tokenFactory, tokenFactoryCodeHash }, { limits }, { identity, progress }] = await lifecycleStage(client, "plan.domain", () => Promise.all([
     readLifecycleContract<Hex>(client, plan.orchestrator, launchLifecycleAbi, "hashPlan", [plan], block),
     readLifecycleContract<Hex>(client, plan.orchestrator, launchLifecycleAbi, "launchIdOf", [plan], block),
-    readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "predictToken", [plan], block),
     readTokenFactoryBinding(client, plan.orchestrator, block),
     resolveLifecycleLimits({ client, account, orchestrator: plan.orchestrator, block, chainId: plan.chainId }, options.limits),
-  ]);
+    lifecycleStage(client, "plan.progress", async () => {
+      const predictedToken = await prediction;
+      const identity = { plan, planHash, launchId, predictedToken, account, mode, confirmations: options.confirmations ?? 1 };
+      const progress = await readLaunchProgress({ client, planned: identity, receipts: options.receipts }, block);
+      return { identity, progress };
+    }),
+  ]));
   if (remoteHash.toLowerCase() !== planHash.toLowerCase() || remoteIdentity.toLowerCase() !== launchId.toLowerCase()) throw new LifecyclePlanningError("ABI_DOMAIN_MISMATCH", "Selected contract does not implement the exact lifecycle V1 plan domain/schema");
   const placeholder: LifecycleSimulation = { backend: "unavailable", confidence: "provisional", admitted: false, executionProof: "unavailable", protocolFit: "unknown", transportPreflight: "not-requested", blockNumber: block.number, blockHash: block.hash, account, chainId: plan.chainId, limits, steps: [] };
-  const identity = { plan, planHash, launchId, predictedToken, account, mode, confirmations: options.confirmations ?? 1 };
-  const progress = await readLaunchProgress({ client, planned: identity, receipts: options.receipts }, block);
   let planned: PlannedLaunch = { ...identity, tokenFactory, tokenFactoryCodeHash, chainId: plan.chainId, transactions: [], prerequisites: [], profiles: [], hookDeployments: [], progress, simulation: placeholder, atomicAttempt: placeholder, preparationBatchSize: plan.markets.length, limits: options.limits };
   const receiptsPending = progress.receipts.some((receipt) => receipt.status === "pending" || receipt.status === "unconfirmed");
   if (!progress.confirmationSafe || receiptsPending) {
@@ -369,10 +373,10 @@ async function planLaunchWithReads(options: PlanLaunchOptions, client: Lifecycle
     await assertLifecycleBlock(client, block, plan.chainId);
     return { ...planned, simulation: { ...placeholder, confidence: "stateful", executionProof: "proved", protocolFit: "proved", admitted: true, reason: "Canonical launch is terminal; no transaction remains" } };
   }
-  const [prerequisites, validation] = await Promise.all([
+  const [prerequisites, validation] = await lifecycleStage(client, "plan.inputs", () => Promise.all([
     progress.canonical.phase === LifecyclePhase.None ? readFunding(client, plan, block) : { prerequisites: [], approvals: [], nativeValue: 0n, reasons: [] },
     validatePendingInputs(client, planned, progress, block),
-  ]);
+  ]));
   const reasons = [...prerequisites.reasons, ...validation.reasons];
   planned = { ...planned, prerequisites: prerequisites.prerequisites, profiles: validation.profiles, hookDeployments: validation.hookDeployments };
   if (reasons.length > 0) {
