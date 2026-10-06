@@ -7,7 +7,29 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 5**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
-## Unreleased certification and dependency-round reductions
+## 0.6.4 invocation-bound planning overlap
+
+Confirmation-bound progress acquires its confirmed block and live chain identity
+together. Profile discovery joins chain identity with independent pinned registry,
+registration and adapter metadata. Chain-dependent certification still waits for
+validated chain evidence; chain failures reject the invocation rather than
+becoming an individual profile refusal. No source, canonical, eligibility,
+confirmation, nonce or receipt observation is removed.
+
+For batching-capable nonterminal, confirmation-safe plans, fresh simulation context
+starts alongside funding and pending-input validation. A private one-shot
+continuation binds the observations to the source client, plan/account/core/chain
+and pinned block. Only successful input validation consumes it. Refused inputs
+cannot start native probes, economic measurement/replay or controlled-fork work;
+late context rejection is handled immediately.
+
+Standalone simulation, serial clients and later staged/partitioning attempts
+resolve fresh context as before. Policy provenance, smart-account refusal,
+native Nitro capability/poster evidence, exact-gas replay and final live
+chain/canonical validation remain. This is read scheduling inside one invocation,
+not a public trusted-context option or cross-review execution cache.
+
+## 0.6.3 certification and dependency-round reductions
 
 The public API, deployment authority and protocol admission rules are unchanged. With an
 actually batching source, selected-profile certification no longer waits for registry
@@ -70,9 +92,10 @@ authority, graph digest and capability refusal through contract-modeled eligibil
 canonical registry identity mismatch, build-next refusal after graph drift, V4
 expected-address evidence with mismatched live getters, overlapped measurement without
 premature replay, failed native evidence, serial/batched plan and fee equality, and
-retained final canonical checks. Obsolete duplicate-getter tests were removed. Final
-build, tests and end-to-end browser/HTTP latency measurement are pending with the
-integrating verification owner; these changes alone do not claim a sub-ten-second review.
+retained final canonical checks. Obsolete duplicate-getter tests were removed.
+The released 0.6.3 SDK passed 133 offline tests with one opt-in real-AMM skip.
+Actual consumer-route timings are recorded by the integrating app, not a
+universal network-latency guarantee.
 
 ## 0.6.2 opt-in internal timing
 
