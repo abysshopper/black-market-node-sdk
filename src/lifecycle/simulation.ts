@@ -1,7 +1,7 @@
 import { decodeEventLog, decodeFunctionResult, encodeFunctionData, encodeFunctionResult, toHex, type Hex } from "viem";
 import { launchLifecycleAbi, lifecycleErc20Abi } from "./abi.js";
 import { LifecyclePhase, type LaunchProgressV1, type LaunchReceiptV1 } from "./schema.js";
-import { assertLifecycleBlock, lifecycleRpc, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readNitroPosterGas, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
+import { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, lifecycleSourceClient, nitroArbSys, nitroArbSysAbi, nitroGasInfo, nitroGasInfoAbi, readLifecycleBlock, readNitroPosterGas, resolveLifecycleLimits, rpcHex, rpcObject, rpcQuantity } from "./rpc.js";
 import { LifecyclePlanningError, type ControlledLifecycleFork, type LifecycleBlock, type LifecyclePostcondition, type LifecycleRpcClient, type LifecycleSimulation, type LifecycleSimulationStep, type LifecycleTransaction, type PlannedLaunch, type ResolvedLifecycleLimits, type SimulateLaunchPlanOptions } from "./types.js";
 
 function conditionRequest(condition: LifecyclePostcondition, planned: PlannedLaunch): { to: Hex; data: Hex } {
@@ -234,13 +234,14 @@ async function simulateForkPass(fork: ControlledLifecycleFork, planned: PlannedL
 
 export async function simulateLaunchTransactions(options: SimulateLaunchPlanOptions, transactions: readonly LifecycleTransaction[], pinnedBlock?: LifecycleBlock): Promise<LifecycleSimulation> {
   const { client, planned } = options;
-  if (options.fork?.client === client) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
+  const sourceClient = lifecycleSourceClient(client);
+  if (options.fork !== undefined && lifecycleSourceClient(options.fork.client) === sourceClient) throw new LifecyclePlanningError("UNSAFE_FORK", "Source RPC must never receive controlled simulation transactions/snapshots/resets");
   const block = pinnedBlock ?? await readLifecycleBlock(client);
   const context = { client, account: planned.account, orchestrator: planned.plan.orchestrator, block, chainId: planned.chainId };
   const { limits, configuration } = await resolveLifecycleLimits(context, options.limits === undefined ? planned.limits : options.limits);
   const base = { confidence: "stateful" as const, executionProof: "failed" as const, protocolFit: "unknown" as const, transportPreflight: "not-requested" as const, blockNumber: block.number, blockHash: block.hash, account: planned.account, chainId: planned.chainId, limits };
   if (rpcQuantity(await lifecycleRpc(client, "eth_chainId"), "chain ID") !== planned.chainId) throw new LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain changed before sequential simulation");
-  const accountCode = rpcHex(await lifecycleRpc(client, "eth_getCode", [planned.account, toHex(block.number)]), "account code");
+  const accountCode = rpcHex(await lifecyclePinnedRpc(client, "eth_getCode", [planned.account, toHex(block.number)], block), "account code");
   if (accountCode !== "0x") return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], reason: "Direct EOA transaction simulation cannot prove smart-account signature/execution behavior" };
   for (const transaction of transactions) {
     if (transaction.from.toLowerCase() !== planned.account.toLowerCase() || BigInt(transaction.chainId) !== planned.chainId) throw new LifecyclePlanningError("ACCOUNT_MISMATCH", "Simulation transaction differs from the committed chain/account");
@@ -254,7 +255,7 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
   if (limits.protocol === "nitro") {
     try {
       await proveNitroBackend(client, planned, block, limits, gasPrice);
-      for (const transaction of transactions) posterGas.push(buffer((await readNitroPosterGas(transaction, context)).posterGas));
+      posterGas.push(...await Promise.all(transactions.map(async (transaction) => buffer((await readNitroPosterGas(transaction, context)).posterGas))));
     } catch (failure) {
       await assertLifecycleBlock(client, block, planned.chainId);
       return { ...base, confidence: "provisional", executionProof: "unavailable", backend: "unavailable", admitted: false, steps: [], reason: `Native Nitro compute/poster proof unavailable: ${failure instanceof Error ? failure.message : String(failure)}. Generic Anvil/Hardhat forks cannot prove ArbOS metering.` };
@@ -368,13 +369,14 @@ export async function simulateLaunchTransactions(options: SimulateLaunchPlanOpti
     }
   }
   const estimates: LifecycleSimulationStep[] = [];
-  const balance = rpcQuantity(await lifecycleRpc(client, "eth_getBalance", [planned.account, toHex(block.number)]), "creator native balance");
+  const balance = rpcQuantity(await lifecyclePinnedRpc(client, "eth_getBalance", [planned.account, toHex(block.number)], block), "creator native balance");
   let remainingBalance = balance;
   let affordabilityFailure: string | undefined;
+  const feeContext = configuration.estimateDataFee === undefined || sourceClient === client ? context : { ...context, client: sourceClient };
   for (let index = 0; index < verifiedSteps.length; index += 1) {
     const step = verifiedSteps[index]; const transaction = transactions[index]; const gasLimit = admittedGasLimits[index];
     if (step === undefined || transaction === undefined || gasLimit === undefined) throw new LifecyclePlanningError("INVALID_SIMULATION", "Missing verified fee context");
-    const dataFee = limits.protocol === "nitro" ? 0n : configuration.estimateDataFee === undefined ? undefined : await configuration.estimateDataFee({ ...transaction, gas: gasLimit }, context);
+    const dataFee = limits.protocol === "nitro" ? 0n : configuration.estimateDataFee === undefined ? undefined : await configuration.estimateDataFee({ ...transaction, gas: gasLimit }, feeContext);
     if (dataFee !== undefined && (typeof dataFee !== "bigint" || dataFee < 0n || dataFee >= 1n << 256n)) throw new LifecyclePlanningError("INVALID_DATA_FEE", "Data-fee oracle must return a nonnegative uint256 bigint amount");
     // Nitro gas includes poster charges. Never add the quoted poster fee again.
     const executionFee = gasLimit * gasPrice;

@@ -7,6 +7,8 @@ import type {
 /** viem public clients or a raw JSON-RPC client; neither selects a transport. */
 export type LifecycleRpcClient = {
   request(args: { method: string; params?: readonly unknown[] }): Promise<unknown>;
+  /** Opt in to bounded parallel reads only when the supplied transport batches concurrent requests. */
+  supportsReadBatching?: boolean;
 };
 export type LifecycleBlock = { number: bigint; hash: Hash; timestamp: bigint; gasLimit: bigint; baseFeePerGas?: bigint };
 export type LifecycleLimitContext = { client: LifecycleRpcClient; account: Address; orchestrator: Address; block: LifecycleBlock; chainId: bigint };

@@ -7,6 +7,78 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 5**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## 0.6.1 read-pipeline changes
+
+Existing standalone calls, deployment targets, economic commitments and admission
+requirements remain compatible. Invalid plan shapes are still refused before RPC work.
+The optional `LifecycleRpcClient.supportsReadBatching` transport hint enables independent
+getter dependency rounds with at most eight SDK-issued requests outstanding per invocation.
+Set it to `true` only when the supplied transport batches concurrent requests; the SDK
+does not select or configure a transport. Other clients retain serial requests, avoiding
+the measured concurrent-unbatched RPC regression. With batching enabled, initial head
+and chain reads overlap. Failed reads release their slots without rejecting unrelated
+queued callers or automatically retrying.
+
+A vanilla one-pool, one-quote, one-range plan selects only its committed profile IDs.
+Abyss-only profile selection no longer requests the V4-only
+`protocolMaximumDeveloperFeeBps` getter. A required V4 fee-limit read still fails the
+operation if unavailable. V4 oracle/deployer/terms work, extra token/position capabilities
+and swap-funding checks remain conditional on the actual committed plan. There is no
+weakened single-pool mode: adapter eligibility, live code hashes, authority/dependency
+bindings, schema/topology and applicable frozen terms remain mandatory.
+
+Identical fixed-state reads share observations only within one planning invocation.
+Identity includes the original source client, pinned block number/hash and complete
+request parameters, including caller, target, calldata, value and gas context. Rejected
+reads are not retained. State changes, another caller/source/block or a subsequent public
+planning invocation cannot reuse those observations; mutated plans and obsolete
+completions are refused. There is no global cache or new public read-scope option.
+
+Chain checks, latest/head/pending observations, receipt reads and canonical block rechecks
+remain live. Wallet/provider preflight, non-view execution calls and stateful/fork RPC
+are not cached. Nitro metering probes, discovery and exact validated replay remain
+separate proofs. A protected opening-buy minimum changes the committed calldata and
+still requires a second full plan and stateful simulation against a fresh latest snapshot.
+
+Raw `request({method,params})` clients remain valid. JSON-RPC HTTP batching is optional
+and transport-owned; concurrent reads allow a configured batch scheduler to combine
+independent messages without changing `msg.sender` or the pinned state. No API planner
+service, transport fallback, signature or broadcast is introduced. The existing Node 20
+minimum and ES2022 target are unchanged; shipped scheduling does not require
+`Promise.withResolvers`.
+
+Verification on 2026-10-06: `pnpm typecheck` and `pnpm test` passed, including the build,
+with **123 tests: 122 passing, one opt-in real-AMM test skipped and zero failures**.
+Offline regressions exercise the vanilla
+Abyss path without V4 fee metadata, mandatory V4 read failures, bounded overlap and
+duplicate reads, exact combined funding, changed code/authority/terms, partial failures,
+chain drift/reorgs, source/caller/call-context separation, failed-slot release and
+obsolete results. These offline checks are not real-wallet or on-chain execution evidence.
+
+A live read-only comparison against installed 0.6.0 measured **one selected canonical
+Abyss profile certification only**, not whole planning, simulation or launch execution.
+Both versions used Node 24.11.1, viem 2.56.3 and identical pinned chain 4663 state at
+block 81455627, hash
+`0x66f20d4c04b1c2357e9cd711c984a83fc8913ab208449ff1a0c8289bf2854036`.
+Five runs per version and transport alternated version order; returned profiles were
+deep-equal, and the chain and canonical block were independently rechecked.
+
+| Transport | Version | Median / p95 (ms) | RPC messages | HTTP envelopes | Peak outstanding |
+| --- | --- | --- | --- | --- | --- |
+| Unbatched, default serial | 0.6.0 | 1496.10 / 1677.93 | 15 | 15 | 1 |
+| Unbatched, default serial | 0.6.1 | 1402.10 / 1414.52 | 14 | 14 | 1 |
+| Batched, explicit opt-in | 0.6.0 | 1503.38 / 1541.41 | 15 | 15 | 1 |
+| Batched, explicit opt-in | 0.6.1 | 1005.11 / 1219.87 | 14 | 10 | 3 |
+
+These scoped measurements do not establish end-to-end launch latency or a general
+provider guarantee. An earlier unbatched concurrency trial regressed from a 1150.64 ms
+baseline median to 3870.97 ms; explicit transport opt-in and default serial scheduling
+remove that scheduling choice for existing clients. For reproduction, keep the selected
+profile, pinned state, source, retry/batching settings and runtime equal; count RPC
+messages separately from HTTP envelopes and retain failures as failures. Do not log RPC
+URLs, accounts, calldata or provider messages, or substitute full-registry/complex-only
+timing for the selected-profile path.
+
 ## 0.6.0 admission changes
 
 Optional caller policy no longer substitutes for, or gates, actual sequential execution proof.
