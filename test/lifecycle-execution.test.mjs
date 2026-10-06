@@ -48,6 +48,7 @@ function clientFor(plan, settings = {}) {
   const captured = [];
   let reorged = false, chainShifted = false;
   const registration = { adapterId: plan.markets[0].adapterId, configSchema: ABYSS_LIFECYCLE_CONFIG_SCHEMA, dependencyDigest: DIGEST, venue: FACTORY, factory: FACTORY, hook: zeroAddress, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, enabled: true };
+  const adapterRegistration = { implementation: ADAPTER, codeHash: DIGEST, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, configVersion: 1, enabled: true };
   const decode = (data, abi) => decodeFunctionData({ abi, data });
   const output = (abi, functionName, result) => encodeFunctionResult({ abi, functionName, result });
   const client = { state, captured, async request({ method, params = [] }) {
@@ -95,19 +96,27 @@ function clientFor(plan, settings = {}) {
         case "wrappedNative": return output(abi, call.functionName, plan.markets[0].quoteAsset);
         case "balanceOf": return output(abi, call.functionName, state.tokenBalance ?? 1000n);
         case "allowance": return output(abi, call.functionName, state.allowance);
-        case "profile": return output(abi, call.functionName, registration);
-        case "adapter": return output(abi, call.functionName, { implementation: ADAPTER, codeHash: DIGEST, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, configVersion: 1, enabled: true });
+        case "profile": return output(abi, call.functionName, { ...registration, ...state.profileOverrides });
+        case "adapter": return output(abi, call.functionName, { ...adapterRegistration, ...state.adapterOverrides });
         case "profileTopology": return output(abi, call.functionName, { hookTopology: 0, configVersion: 1, hookDeployer: zeroAddress, hookCreationCodeHash: zeroHash });
         case "protocolMaximumDeveloperFeeBps":
           if (state.developerCapUnavailable) throw new Error("V4 developer-fee limits unavailable");
           return output(abi, call.functionName, 1000);
         case "fundingTarget": return output(abi, call.functionName, [address(0xfb), DIGEST, true]);
         case "fundingInputAllowed": return output(abi, call.functionName, true);
-        case "dependencyDigest": return output(abi, call.functionName, DIGEST);
-        case "factory": return output(abi, call.functionName, FACTORY);
-        case "CONFIG_SCHEMA": return output(abi, call.functionName, ABYSS_LIFECYCLE_CONFIG_SCHEMA);
-        case "CONFIG_VERSION": return output(abi, call.functionName, 1);
-        case "requireEligible": return output(abi, call.functionName, ADAPTER);
+        case "requireEligible": {
+          // LaunchImplementationRegistryV2.sol:285-296 checks these inside the
+          // pinned on-chain call, not through separate client-side RPC probes.
+          const approvedAdapter = { ...adapterRegistration, ...state.adapterOverrides };
+          const approvedProfile = { ...registration, ...state.profileOverrides };
+          const implementationCode = typeof state.codeFor === "function" ? state.codeFor(approvedAdapter.implementation) : CODE;
+          if (!approvedAdapter.enabled || !approvedProfile.enabled || approvedProfile.adapterId.toLowerCase() !== call.args[0].toLowerCase() ||
+            approvedAdapter.configVersion !== call.args[2] || implementationCode === "0x" || keccak256(implementationCode).toLowerCase() !== approvedAdapter.codeHash.toLowerCase() ||
+            (approvedAdapter.capabilities & call.args[3]) !== call.args[3] || (approvedProfile.capabilities & call.args[3]) !== call.args[3] ||
+            (state.authorities?.[approvedAdapter.implementation.toLowerCase()] ?? CORE).toLowerCase() !== CORE ||
+            (state.graphDigest ?? DIGEST).toLowerCase() !== approvedProfile.dependencyDigest.toLowerCase()) throw new Error("IneligibleImplementation");
+          return output(abi, call.functionName, approvedAdapter.implementation);
+        }
         case "resolve": return output(abi, call.functionName, identity(plan, plan.markets.findIndex((market) => market.quoteAsset.toLowerCase() === call.args[2].quoteAsset.toLowerCase())));
         case "escrowBalance": return output(abi, call.functionName, 1000n);
         default: assert.fail(`Unexpected read ${call.functionName}`);
@@ -248,6 +257,61 @@ test("native Nitro probe must match all pinned values and cannot fund real execu
   }
   const poor = await review(clientFor(plan, { balance: 1n }), plan);
   assert.equal(poor.simulation.admitted, false); assert.match(poor.simulation.reason, /balance/);
+});
+
+test("batched Nitro measurement overlaps isolated probe and poster evidence but exact replay waits for both", async () => {
+  const plan = makePlan({ chainId: 4663n, nativeFunding: true });
+  const source = clientFor(plan, { poster: 200_000n });
+  let releaseProbe, releasePoster;
+  const probeGate = new Promise((resolve) => { releaseProbe = resolve; });
+  const posterGate = new Promise((resolve) => { releasePoster = resolve; });
+  const started = new Set();
+  const client = { supportsReadBatching: true, async request(args) {
+    const response = await source.request(args);
+    if (args.method === "eth_simulateV1") {
+      const request = args.params[0];
+      if (request.blockStateCalls[0].calls[0].to === ARB_SYS) {
+        started.add("probe");
+        await probeGate;
+      } else started.add(request.validation ? "replay" : "measurement");
+    } else if (args.method === "eth_call" && args.params[0].to === NODE_INTERFACE) {
+      started.add("poster");
+      await posterGate;
+    }
+    return response;
+  } };
+  const pending = review(client, plan);
+  await nextTurn();
+  const beforeProbe = new Set(started);
+  releaseProbe();
+  await nextTurn();
+  const replayBeforePoster = started.has("replay");
+  releasePoster();
+  const planned = await pending;
+  assert.deepEqual([...beforeProbe].sort(), ["measurement", "poster", "probe"]);
+  assert.equal(replayBeforePoster, false, "Exact replay needs verified metering and the complete poster budget");
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  assert.equal(started.has("replay"), true);
+  const reference = await review(clientFor(plan, { poster: 200_000n }), plan);
+  assert.deepEqual(planned, reference, "Scheduling cannot change exact committed calldata, proof outcomes, gas or fee envelopes");
+  assert.equal(source.captured.filter((row) => row.method === "eth_simulateV1").length, 3);
+  assert.equal(source.captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 1,
+    "The complete native sequence retains its outer canonical recheck, not a redundant probe-only round");
+});
+
+test("overlapped cap measurement never admits failed native evidence or unavailable execution", async () => {
+  const plan = makePlan({ chainId: 4663n });
+  for (const settings of [{ probeFailure: true }, { probeMismatch: 1 }, { posterResponse: "0x" }, { simulationUnavailable: true }]) {
+    const client = clientFor(plan, settings);
+    client.supportsReadBatching = true;
+    const planned = await review(client, plan);
+    assert.equal(planned.simulation.admitted, false);
+    assert.equal(planned.simulation.executionProof, "unavailable");
+    assert.match(planned.simulation.reason, /Native Nitro compute\/poster proof unavailable|Stateful sequential RPC simulation unavailable/);
+    assert.equal(client.captured.some((row) => row.method === "eth_simulateV1" && row.params[0].validation &&
+      row.params[0].blockStateCalls[0].calls[0].to !== ARB_SYS), false, "A permissive measurement is not exact execution proof");
+    assert.equal(client.captured.some((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a"), true);
+  }
 });
 
 test("nonzero Nitro poster envelope may exceed compute cutoff and affordability never double-charges", async () => {
@@ -421,7 +485,8 @@ test("one plan shares exact pinned observations but retains every stateful repla
   assert.equal(simulations.length, 6, "Atomic and staged each retain their native probe, discovery and exact validated replay");
   assert.ok(simulations.some((row) => !row.params[0].validation));
   assert.ok(client.captured.filter((row) => row.method === "eth_chainId").length >= 6);
-  assert.ok(client.captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length >= 4);
+  assert.equal(client.captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 2,
+    "Atomic and staged simulations each retain their final canonical hash check");
 });
 
 test("domain, profile certification and funding getter rounds overlap with a bounded batching-capable client", async () => {
@@ -440,7 +505,7 @@ test("domain, profile certification and funding getter rounds overlap with a bou
   assert.ok(peak <= 8, `Invocation issued ${peak} concurrent requests`);
   assert.ok(rounds.some((row) => row.method === "eth_call" && row.active > 1));
 
-  for (const names of [["hashPlan", "launchIdOf"], ["balanceOf", "allowance"], ["factory", "CONFIG_SCHEMA", "CONFIG_VERSION"]]) {
+  for (const names of [["hashPlan", "launchIdOf"], ["balanceOf", "allowance"]]) {
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
     const started = [];
@@ -462,6 +527,114 @@ test("domain, profile certification and funding getter rounds overlap with a bou
     assert.equal((await pending).simulation.admitted, true);
     for (const name of names) assert.ok(observed.includes(name), `${name} starts in the same independent dependency round`);
   }
+});
+
+test("selected Abyss profile keeps independent registry reads concurrent", async () => {
+  const plan = makePlan({ chainId: 4663n });
+  const abi = [...launchLifecycleAbi, ...lifecycleRegistryAbi, ...abyssLifecycleAdapterAbi, ...lifecycleAdapterAbi];
+  const cases = [
+    { blocked: `${REGISTRY}:core`, expected: [`${REGISTRY}:profile`] },
+    { blocked: `${REGISTRY}:adapter`, expected: [`${REGISTRY}:profileTopology`] },
+  ];
+  for (const { blocked, expected } of cases) {
+    const source = clientFor(plan);
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const started = new Set();
+    const client = { supportsReadBatching: true, async request(args) {
+      if (args.method === "eth_call" || args.method === "eth_getCode") {
+        const target = args.method === "eth_call" ? args.params[0].to : args.params[0];
+        const name = args.method === "eth_call" ? decodeFunctionData({ abi, data: args.params[0].data }).functionName : args.method;
+        const key = `${target.toLowerCase()}:${name}`;
+        started.add(key);
+        if (key === blocked) await gate;
+      }
+      return source.request(args);
+    } };
+    const pending = readLifecycleProfiles({ client, orchestrator: CORE, profileIds: [plan.markets[0].profileId] });
+    await nextTurn();
+    const observed = new Set(started);
+    release();
+    const [profile] = await pending;
+    assert.equal(profile.admitted, true, profile.reason);
+    for (const key of expected) assert.equal(observed.has(key), true, `${key} has no dependency on ${blocked}`);
+    assert.equal(source.captured.some((row) => row.method === "eth_call" && row.params[0].to === REGISTRY &&
+      decodeFunctionData({ abi: lifecycleRegistryAbi, data: row.params[0].data }).functionName === "protocolMaximumDeveloperFeeBps"), false);
+  }
+});
+
+test("trusted registry eligibility proves live adapter state without duplicate implementation probes", async () => {
+  const plan = makePlan({ chainId: 4663n });
+  const cases = [
+    { settings: {}, admitted: true },
+    { settings: { codeFor: (target) => target.toLowerCase() === ADAPTER ? "0x" : CODE }, admitted: false },
+    { settings: { codeFor: (target) => target.toLowerCase() === ADAPTER ? "0x600260005560026000f3" : CODE }, admitted: false },
+    { settings: { authorities: { [ADAPTER]: address(0xff) } }, admitted: false },
+    { settings: { graphDigest: FOREIGN_HASH }, admitted: false },
+    { settings: { adapterOverrides: { enabled: false } }, admitted: false },
+    { settings: { profileOverrides: { enabled: false } }, admitted: false },
+    { settings: { adapterOverrides: { capabilities: 0n } }, admitted: false },
+    { settings: { profileOverrides: { capabilities: 0n } }, admitted: false },
+  ];
+  for (const { settings, admitted } of cases) {
+    const source = clientFor(plan, settings);
+    const client = { supportsReadBatching: true, request(args) {
+      if (args.method === "eth_getCode" && [ADAPTER, FACTORY].includes(args.params[0].toLowerCase())) throw new Error("Already-certified runtime probe is unavailable");
+      if (args.method === "eth_call" && args.params[0].to.toLowerCase() === ADAPTER) {
+        const name = decodeFunctionData({ abi: abyssLifecycleAdapterAbi, data: args.params[0].data }).functionName;
+        if (["core", "dependencyDigest", "factory", "CONFIG_SCHEMA", "CONFIG_VERSION"].includes(name)) throw new Error("Already-certified adapter metadata probe is unavailable");
+      }
+      return source.request(args);
+    } };
+    const [profile] = await readLifecycleProfiles({ client, orchestrator: CORE, profileIds: [plan.markets[0].profileId] });
+    assert.equal(profile.admitted, admitted, profile.reason);
+    if (!admitted) assert.match(profile.reason, /IneligibleImplementation/);
+  }
+});
+
+test("certified Abyss discovery still rejects mismatched canonical registry identities", async () => {
+  const plan = makePlan({ chainId: 4663n });
+  for (const profileOverrides of [{ factory: address(0xff) }, { venue: address(0xff) }, { hook: address(0xff) }]) {
+    const client = clientFor(plan, { profileOverrides });
+    const [profile] = await readLifecycleProfiles({ client, orchestrator: CORE, profileIds: [plan.markets[0].profileId] });
+    assert.equal(profile.admitted, false);
+    assert.match(profile.reason, /canonical factory\/variant\/schema binding/);
+  }
+});
+
+test("a changed live graph digest invalidates an admitted plan before build-next", async () => {
+  const plan = makePlan({ chainId: 4663n }), client = clientFor(plan);
+  const baseline = await review(client, plan);
+  assert.equal(baseline.simulation.admitted, true, baseline.simulation.reason);
+  client.state.graphDigest = FOREIGN_HASH;
+  const changed = await review(client, plan);
+  assert.equal(changed.simulation.admitted, false);
+  assert.match(changed.simulation.reason, /IneligibleImplementation/);
+  await assert.rejects(buildNextTransaction({ client, planned: baseline }), { code: "PLAN_NOT_ADMITTED" });
+});
+
+test("conversion input admission does not wait for independent profile certification", async () => {
+  const plan = makePlan();
+  plan.funding = plan.funding.map((funding) => ({ ...funding, kind: 2, inputAsset: address(0x30), inputAmount: 20n, target: address(0xfc), data: "0x1234" }));
+  const source = clientFor(plan);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let inputRead = false;
+  const client = { supportsReadBatching: true, async request(args) {
+    if (args.method === "eth_call" && args.params[0].to === REGISTRY &&
+      decodeFunctionData({ abi: lifecycleRegistryAbi, data: args.params[0].data }).functionName === "requireEligible") await gate;
+    if (args.method === "eth_call" && args.params[0].to === REGISTRY &&
+      decodeFunctionData({ abi: lifecycleRegistryAbi, data: args.params[0].data }).functionName === "fundingInputAllowed") inputRead = true;
+    return source.request(args);
+  } };
+  const pending = review(client, plan);
+  await nextTurn();
+  const inputBeforeCertification = inputRead;
+  release();
+  const planned = await pending;
+  assert.equal(inputBeforeCertification, true);
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  assert.deepEqual(planned.transactions.map((transaction) => transaction.kind), ["approve-reset", "approve", "atomic"]);
 });
 
 test("funding totals remain exact when parallel conversions share an input and need zero-first approval", async () => {
@@ -493,7 +666,7 @@ test("fresh invocations cannot reuse superseded code, registry or escrow authori
   client.state.codeFor = (target) => target.toLowerCase() === ADAPTER ? "0x600260005560026000f3" : target.toLowerCase() === ACCOUNT ? "0x" : CODE;
   const changed = await review(client, plan);
   assert.equal(changed.simulation.admitted, false);
-  assert.match(changed.simulation.reason, /Adapter code hash/);
+  assert.match(changed.simulation.reason, /IneligibleImplementation/);
   delete client.state.codeFor;
   client.state.authorities = { [REGISTRY]: address(0xff) };
   await assert.rejects(review(client, plan), { code: "REGISTRY_BINDING" });

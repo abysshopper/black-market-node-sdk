@@ -7,6 +7,73 @@ The canonical authorities are the registry/certification/adapter/config contract
 in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 5**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
+## Unreleased certification and dependency-round reductions
+
+The public API, deployment authority and protocol admission rules are unchanged. With an
+actually batching source, selected-profile certification no longer waits for registry
+authority before reading the selected registrations, or for adapter registration before
+reading topology and applicable V4 envelope/terms. Eligibility overlaps graph certification.
+Private profile certification uses the registry's pinned `requireEligible` result and
+requires its returned implementation to match the registration. This covers discovery
+and standalone bound-hook metadata. Three duplicate implementation RPCs (`eth_getCode`,
+`core`, `dependencyDigest`) were removed: the registry already checks enabled records,
+exact profile/version/capability agreement, live runtime hash, core and live digest.
+The existing local V4 graph-digest comparison uses `registration.dependencyDigest`,
+whose equality to the live implementation digest is established by that same call.
+
+Abyss certification no longer re-reads `factory`, `CONFIG_SCHEMA`, `CONFIG_VERSION` or
+factory code. The registry certifies those fixed bindings before storing a profile;
+current eligibility pins the approved runtime and rechecks its live graph digest.
+SDK-side schema/version/topology and canonical chain/factory/variant checks still use
+the returned registration, including factory/venue agreement and no hook. A changed
+runtime or factory graph must fail authoritative eligibility, not an optional duplicate
+getter. Market resolution and both exact planning/simulation passes remain required.
+
+Source reasons in the reviewed protocol repository:
+
+- `contracts/src/launch/lifecycle/v2/LaunchImplementationRegistryV2.sol:285-296`
+  implements current eligibility; `:88-97` certifies Abyss before storing it and
+  `:153-174` prevents profile rebinding.
+- `contracts/src/launch/lifecycle/v2/LaunchCertificationV2.sol:79-102` certifies
+  Abyss schema/version/capabilities, factory/code/canonical identity and graph digest.
+- `contracts/src/launch/lifecycle/v1/AbyssMarketAdapterV1.sol:75-76,150-167`
+  makes the core/factory immutable and binds the live graph code/initcode hashes.
+
+V4 metadata, reviewed dependency code/getters, creation chunks and shared-root
+provenance remain independent pinned reads. Chunk addresses come from the frozen
+envelope only for scheduling; live deployer getters must still match them, including
+STOP prefixes, size/hash bounds, constructor creation hash, graph digest, runtime
+provenance and callback permissions.
+
+Planning reads swap-input admission and existing escrow balances alongside profile
+certification. A market's resolution uses its certified implementation while exact
+capability eligibility, selected-oracle validation and any bound-hook evidence settle.
+Their results must all agree before the resolved identity can authorize simulation.
+
+For batching-capable Nitro sources, the isolated ArbOS probe, NodeInterface poster
+quote and permissive exact-calldata measurement overlap. Probe isolation and its balance
+override do not enter the real execution sequence. Exact-gas validated replay waits for
+matching native metering, the poster budget and successful measurement. The redundant
+probe-only chain/hash recheck was removed: successful admission and simulation refusal
+still perform the enclosing live chain/canonical-block assertion. Natural child-block
+fees, uint64 gas bounds, real payer affordability, EIP-150 envelope discovery and
+postconditions are unchanged. Non-batching sources retain sequential measurement.
+
+No process-wide or cross-review cache, new read authority, public scope API, admission
+skip or write was introduced. Both opening-buy planning passes still choose fresh heads,
+retain live chain/pending/receipt observations and execute their own native proofs and
+validated replay. Only identical, complete pinned wire reads inside one invocation reuse
+observations.
+
+Offline regressions cover concurrent retained dependency responses, changed runtime,
+authority, graph digest and capability refusal through contract-modeled eligibility,
+canonical registry identity mismatch, build-next refusal after graph drift, V4
+expected-address evidence with mismatched live getters, overlapped measurement without
+premature replay, failed native evidence, serial/batched plan and fee equality, and
+retained final canonical checks. Obsolete duplicate-getter tests were removed. Final
+build, tests and end-to-end browser/HTTP latency measurement are pending with the
+integrating verification owner; these changes alone do not claim a sub-ten-second review.
+
 ## 0.6.2 opt-in internal timing
 
 Initialize a lifecycle read client with optional `onDiagnostic(event)` to observe internal

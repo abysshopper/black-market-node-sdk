@@ -123,10 +123,14 @@ async function validatePendingInputs(client: LifecycleRpcClient, planned: Planne
   for (const policy of plan.feeAssets) if (policy.asset.toLowerCase() !== planned.predictedToken.toLowerCase()) assets.add(policy.asset);
   for (const market of plan.markets) assets.add(market.quoteAsset);
   for (const funding of plan.funding) { assets.add(funding.asset); if (funding.kind !== LifecycleFundingKind.NativeWrap && funding.inputAsset !== zeroAddress) assets.add(funding.inputAsset); }
-  const [profiles, registry, assetCodes] = await Promise.all([
+  const registryRead = readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "registry", [], block);
+  const [profiles, registry, assetCodes, allowedInputs, escrowBalances] = await Promise.all([
     readLifecycleProfiles({ client, orchestrator: plan.orchestrator, profileIds: [...new Set(plan.markets.map((market) => market.profileId))] }, block),
-    readLifecycleContract<Address>(client, plan.orchestrator, launchLifecycleAbi, "registry", [], block),
+    registryRead,
     Promise.all([...assets].map(async (asset) => ({ asset, code: rpcHex(await lifecyclePinnedRpc(client, "eth_getCode", [asset, toHex(block.number)], block), "asset code") }))),
+    registryRead.then((registry) => Promise.all(plan.funding.map((funding) => funding.kind === LifecycleFundingKind.Swap && funding.inputAsset !== zeroAddress
+      ? readLifecycleContract<boolean>(client, registry, lifecycleRegistryAbi, "fundingInputAllowed", [funding.inputAsset], block) : true))),
+    progress.canonical.phase === LifecyclePhase.None ? [] : Promise.all(plan.funding.map((funding) => readLifecycleContract<bigint>(client, plan.orchestrator, launchLifecycleAbi, "escrowBalance", [planned.launchId, funding.asset], block))),
   ]);
   const reasons = profiles.filter((profile) => !profile.admitted).map((profile) => profile.reason ?? "Implementation/profile is unavailable");
   if (block.timestamp > plan.deadline) reasons.push("The immutable launch deadline has expired; cancellation remains available");
@@ -134,10 +138,7 @@ async function validatePendingInputs(client: LifecycleRpcClient, planned: Planne
   if (!plan.feeAssets.some((policy) => policy.asset.toLowerCase() === planned.predictedToken.toLowerCase())) reasons.push("The launch token must have a committed fee policy");
   for (const { asset, code } of assetCodes) if (code === "0x") reasons.push(`Asset ${asset} has no contract code`);
   const required = LIFECYCLE_REQUIRED_CAPABILITIES | (plan.token.kind === LifecycleTokenKind.ERC404 ? LIFECYCLE_ERC404_CAPABILITY : 0n);
-  const [allowedInputs, markets, escrowBalances] = await Promise.all([
-    Promise.all(plan.funding.map((funding) => funding.kind === LifecycleFundingKind.Swap && funding.inputAsset !== zeroAddress
-      ? readLifecycleContract<boolean>(client, registry, lifecycleRegistryAbi, "fundingInputAllowed", [funding.inputAsset], block) : true)),
-    Promise.all(plan.markets.map(async (market, index) => {
+  const markets = await Promise.all(plan.markets.map(async (market, index) => {
       const profile = profiles.find((item) => item.id.toLowerCase() === market.profileId.toLowerCase());
       let positions = 0;
       let deployment: LifecyclePoolBoundHookDeployment | undefined;
@@ -152,23 +153,24 @@ async function validatePendingInputs(client: LifecycleRpcClient, planned: Planne
         if (config === undefined) throw new LifecyclePlanningError("UNSUPPORTED_SCHEMA", `Unsupported lifecycle config schema ${profile.registration.configSchema}`);
         if ("developerFeeBps" in config) {
           validateV4LifecycleMarket({ market, config, profile, token: planned.predictedToken });
-          if (config.version === 4) await validateV4LifecycleOracle({ client, envelope: profile.envelope!, oracleConfigId: config.oracleConfigId, block });
         }
         if (config.positions.length === 0 || config.positions.length > 32) throw new LifecyclePlanningError("INVALID_POSITION_COUNT", "A launch commits at most 32 positive positions across every market/venue");
         positions = config.positions.length;
         const rewards = progress.canonical.rewards === zeroAddress && plan.token.rewardMode === LifecycleRewardMode.Dividends ? planned.predictedToken : progress.canonical.rewards;
         if ("treasury" in config && rewards !== zeroAddress && config.treasury.toLowerCase() === rewards.toLowerCase() && config.hookFeePips !== 0 && config.protocolFeeDenominator !== 0) throw new LifecyclePlanningError("INVALID_FEE_POLICY", "Hook protocol treasury cannot be the launch rewards contract");
         const capabilities = required | (positions > 1 ? LIFECYCLE_MULTI_POSITION_CAPABILITY : 0n);
-        const [adapter, boundDeployment] = await Promise.all([
+        const [adapter, boundDeployment, resolvedIdentity] = await Promise.all([
           readLifecycleContract<Address>(client, registry, lifecycleRegistryAbi, "requireEligible", [market.adapterId, market.profileId, market.configVersion, capabilities], block),
           profile.topology.hookTopology === 2 ? readPoolBoundHookDeployment({ client, plan, marketIndex: index }, block) : undefined,
+          readLifecycleContract<MarketIdentityV1>(client, profile.adapter.implementation, lifecycleAdapterAbi, "resolve", [planned.launchId, planned.predictedToken, market], block),
+          "developerFeeBps" in config && config.version === 4 ? validateV4LifecycleOracle({ client, envelope: profile.envelope!, oracleConfigId: config.oracleConfigId, block }) : undefined,
         ]);
         if (adapter.toLowerCase() !== profile.adapter.implementation.toLowerCase()) throw new LifecyclePlanningError("MARKET_IDENTITY", "Eligible adapter differs from the certified profile implementation");
         if (boundDeployment !== undefined) {
           if (!hasLifecycleV4HookPermissions(boundDeployment.predictedHook)) throw new LifecyclePlanningError("INVALID_HOOK_BITS", "Finalize the pool-bound salt with the exact lifecycle hook permission bits before planning wallet execution");
           deployment = { marketIndex: index, ...boundDeployment };
         }
-        identity = await readLifecycleContract<MarketIdentityV1>(client, adapter, lifecycleAdapterAbi, "resolve", [planned.launchId, planned.predictedToken, market], block);
+        identity = resolvedIdentity;
         validateLifecycleMarketIdentity(identity, plan, planned.predictedToken, index);
         const expectedHook = deployment?.predictedHook ?? profile.registration.hook;
         if (identity.factory.toLowerCase() !== profile.registration.factory.toLowerCase() || identity.hook.toLowerCase() !== expectedHook.toLowerCase() || (identity.venue === LifecycleVenue.UniswapV4 && (identity.manager.toLowerCase() !== profile.registration.venue.toLowerCase() || profile.topology.hookTopology === 0)) || (identity.venue === LifecycleVenue.Abyss && (identity.factory.toLowerCase() !== profile.registration.venue.toLowerCase() || profile.topology.hookTopology !== 0))) throw new LifecyclePlanningError("MARKET_IDENTITY", "Canonical venue dependencies differ from exact immutable profile/topology approval");
@@ -181,9 +183,7 @@ async function validatePendingInputs(client: LifecycleRpcClient, planned: Planne
         }
       } catch (failure) { reason = failure instanceof Error ? failure.message : String(failure); }
       return { positions, deployment, identity, reason };
-    })),
-    progress.canonical.phase === LifecyclePhase.None ? [] : Promise.all(plan.funding.map((funding) => readLifecycleContract<bigint>(client, plan.orchestrator, launchLifecycleAbi, "escrowBalance", [planned.launchId, funding.asset], block))),
-  ]);
+  }));
   for (const [index, funding] of plan.funding.entries()) {
     if (funding.asset.toLowerCase() === planned.predictedToken.toLowerCase() || (funding.kind === LifecycleFundingKind.Swap && funding.inputAsset.toLowerCase() === planned.predictedToken.toLowerCase())) reasons.push("Launch-token inventory cannot be an external funding output or conversion input");
     if (!allowedInputs[index]) reasons.push(`Conversion input ${funding.inputAsset} is not currently admitted`);
