@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, encodeFunctionResult, keccak256, parseAbi, stringToHex, toHex, zeroAddress, zeroHash } from "viem";
 
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
-const { ABYSS_LIFECYCLE_CONFIG_SCHEMA, abyssLifecycleAdapterAbi, buildNextTransaction, encodeAbyssLifecycleMarketConfig, hashLaunchIdentity, hashLaunchPlan, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleRegistryAbi, LifecyclePhase, LIFECYCLE_REQUIRED_CAPABILITIES, planLaunch, simulateLaunchPlan } = await import(sdkPath);
+const { ABYSS_LIFECYCLE_CONFIG_SCHEMA, abyssLifecycleAdapterAbi, buildNextTransaction, encodeAbyssLifecycleMarketConfig, hashLaunchIdentity, hashLaunchPlan, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleRegistryAbi, LifecyclePhase, LIFECYCLE_REQUIRED_CAPABILITIES, planLaunch, readLifecycleProfiles, simulateLaunchPlan } = await import(sdkPath);
 const address = (n) => toHex(BigInt(n), { size: 20 });
 const ACCOUNT = address(0xa0), CORE = address(0xf0), REGISTRY = address(0xf1), ESCROW = address(0xf2), ADAPTER = address(0xf3), FACTORY = address(0xf4), TOKEN = address(0x10);
 const CODE = "0x600160005560016000f3";
@@ -54,7 +55,7 @@ function clientFor(plan, settings = {}) {
     if (["eth_sendTransaction", "eth_sendRawTransaction", "evm_snapshot", "anvil_reset"].includes(method)) assert.fail("Source and submission admission must remain read-only");
     if (method === "eth_chainId") return toHex(chainShifted ? plan.chainId + 1n : plan.chainId);
     if (method === "eth_getBlockByNumber") return { number: toHex(42n), hash: reorged ? FOREIGN_HASH : HASH, timestamp: "0x64", gasLimit: toHex(state.headerGas ?? (plan.chainId === 4663n ? 1n << 50n : 30_000_000n)), baseFeePerGas: toHex(state.gasPrice) };
-    if (method === "eth_getCode") return params[0].toLowerCase() === ACCOUNT.toLowerCase() ? state.accountCode ?? "0x" : CODE;
+    if (method === "eth_getCode") return typeof state.codeFor === "function" ? state.codeFor(params[0]) : params[0].toLowerCase() === ACCOUNT.toLowerCase() ? state.accountCode ?? "0x" : CODE;
     if (method === "eth_getBalance") return toHex(state.balance);
     if (method === "eth_getTransactionCount") return "0x0";
     if (method === "eth_gasPrice") return toHex(state.gasPrice);
@@ -89,15 +90,19 @@ function clientFor(plan, settings = {}) {
         case "tokenFactory": return output(abi, call.functionName, ADAPTER);
         case "fundingEscrow": return output(abi, call.functionName, ESCROW);
         case "registry": return output(abi, call.functionName, REGISTRY);
-        case "core": return output(abi, call.functionName, CORE);
+        case "core": return output(abi, call.functionName, state.authorities?.[target] ?? CORE);
         case "readLaunchProgress": return output(abi, call.functionName, progress(plan, state.phase));
         case "wrappedNative": return output(abi, call.functionName, plan.markets[0].quoteAsset);
-        case "balanceOf": return output(abi, call.functionName, 1000n);
+        case "balanceOf": return output(abi, call.functionName, state.tokenBalance ?? 1000n);
         case "allowance": return output(abi, call.functionName, state.allowance);
         case "profile": return output(abi, call.functionName, registration);
         case "adapter": return output(abi, call.functionName, { implementation: ADAPTER, codeHash: DIGEST, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, configVersion: 1, enabled: true });
         case "profileTopology": return output(abi, call.functionName, { hookTopology: 0, configVersion: 1, hookDeployer: zeroAddress, hookCreationCodeHash: zeroHash });
-        case "protocolMaximumDeveloperFeeBps": return output(abi, call.functionName, 1000);
+        case "protocolMaximumDeveloperFeeBps":
+          if (state.developerCapUnavailable) throw new Error("V4 developer-fee limits unavailable");
+          return output(abi, call.functionName, 1000);
+        case "fundingTarget": return output(abi, call.functionName, [address(0xfb), DIGEST, true]);
+        case "fundingInputAllowed": return output(abi, call.functionName, true);
         case "dependencyDigest": return output(abi, call.functionName, DIGEST);
         case "factory": return output(abi, call.functionName, FACTORY);
         case "CONFIG_SCHEMA": return output(abi, call.functionName, ABYSS_LIFECYCLE_CONFIG_SCHEMA);
@@ -164,6 +169,20 @@ function clientFor(plan, settings = {}) {
   return client;
 }
 const review = (client, plan, extra = {}) => planLaunch({ client, plan, account: ACCOUNT, mode: "atomic", ...extra });
+
+test("a vanilla Abyss launch does not depend on V4 fee metadata or weaken native protocol proof", async () => {
+  const plan = makePlan({ chainId: 4663n, nativeFunding: true });
+  const planned = await review(clientFor(plan, { developerCapUnavailable: true }), plan);
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  assert.equal(planned.simulation.executionProof, "proved");
+  assert.equal(planned.simulation.limits.protocol, "nitro");
+  assert.equal(planned.profiles[0].venueKind, "abyss");
+  assert.deepEqual(planned.transactions.map((transaction) => transaction.kind), ["atomic"]);
+  await assert.rejects(review(clientFor(plan, {
+    developerCapUnavailable: true,
+    authorities: { [ADAPTER.toLowerCase()]: address(0xbad) },
+  }), plan), { code: "TOKEN_FACTORY_BINDING" });
+});
 
 test("missing optional policy admits the exact approval/launch sequence without certifying unknown caps", async () => {
   const plan = makePlan(), client = clientFor(plan, { allowance: 0n });
@@ -381,4 +400,155 @@ test("zero metering cannot admit a nonpositive reviewed gas envelope", async () 
     assert.match(planned.simulation.reason, /positive uint64/);
     await assert.rejects(buildNextTransaction({ client, planned }), { code: "PLAN_NOT_ADMITTED" });
   }
+});
+
+test("one plan shares exact pinned observations but retains every stateful replay and live canonical check", async () => {
+  const plan = makePlan({ chainId: 4663n, markets: 2 }), client = clientFor(plan, { allowance: 0n });
+  const planned = await review(client, plan, { mode: "staged" });
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  const getterCount = (abi, name) => client.captured.filter((row) => {
+    if (row.method !== "eth_call") return false;
+    try { return decodeFunctionData({ abi, data: row.params[0].data }).functionName === name; } catch { return false; }
+  }).length;
+  assert.equal(getterCount(launchLifecycleAbi, "predictToken"), 1);
+  assert.equal(getterCount(launchLifecycleAbi, "registry"), 1);
+  assert.equal(getterCount(lifecycleRegistryAbi, "requireEligible"), 1);
+  for (const name of ["getMaxTxGasLimit", "getMaxBlockGasLimit"]) assert.equal(getterCount(gasInfoAbi, name), 1);
+  assert.equal(getterCount(arbSysAbi, "arbOSVersion"), 1);
+  assert.equal(client.captured.filter((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === ADAPTER).length, 1);
+  assert.equal(client.captured.filter((row) => row.method === "eth_getBalance" && row.params[0].toLowerCase() === ACCOUNT).length, 1);
+  const simulations = client.captured.filter((row) => row.method === "eth_simulateV1");
+  assert.equal(simulations.length, 6, "Atomic and staged each retain their native probe, discovery and exact validated replay");
+  assert.ok(simulations.some((row) => !row.params[0].validation));
+  assert.ok(client.captured.filter((row) => row.method === "eth_chainId").length >= 6);
+  assert.ok(client.captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length >= 4);
+});
+
+test("domain, profile certification and funding getter rounds overlap with a bounded batching-capable client", async () => {
+  const plan = makePlan({ markets: 7 }), source = clientFor(plan);
+  let active = 0, peak = 0;
+  const rounds = [];
+  const client = { supportsReadBatching: true, async request(args) {
+    active += 1; peak = Math.max(peak, active);
+    rounds.push({ method: args.method, active });
+    await nextTurn();
+    try { return await source.request(args); } finally { active -= 1; }
+  } };
+  const planned = await review(client, plan);
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  assert.ok(peak > 1, "Independent getters must start before earlier responses settle");
+  assert.ok(peak <= 8, `Invocation issued ${peak} concurrent requests`);
+  assert.ok(rounds.some((row) => row.method === "eth_call" && row.active > 1));
+
+  for (const names of [["hashPlan", "launchIdOf"], ["balanceOf", "allowance"], ["factory", "CONFIG_SCHEMA", "CONFIG_VERSION"]]) {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const started = [];
+    const gated = { supportsReadBatching: true, async request(args) {
+      if (args.method === "eth_call") {
+        for (const abi of [launchLifecycleAbi, lifecycleErc20Abi, abyssLifecycleAdapterAbi]) {
+          let call;
+          try { call = decodeFunctionData({ abi, data: args.params[0].data }); } catch { continue; }
+          if (names.includes(call.functionName)) { started.push(call.functionName); await gate; }
+          break;
+        }
+      }
+      return source.request(args);
+    } };
+    const pending = review(gated, plan);
+    await nextTurn();
+    const observed = [...started];
+    release();
+    assert.equal((await pending).simulation.admitted, true);
+    for (const name of names) assert.ok(observed.includes(name), `${name} starts in the same independent dependency round`);
+  }
+});
+
+test("funding totals remain exact when parallel conversions share an input and need zero-first approval", async () => {
+  const plan = makePlan({ markets: 2 });
+  const inputAsset = address(0x30), target = address(0xfc);
+  plan.funding = plan.funding.map((funding) => ({ ...funding, kind: 2, inputAsset, inputAmount: 20n, target, data: "0x1234" }));
+  const client = clientFor(plan, { allowance: 1n });
+  const planned = await review(client, plan);
+  assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+  assert.deepEqual(planned.transactions.map((tx) => tx.kind), ["approve-reset", "approve", "atomic"]);
+  const [spender, amount] = decodeFunctionData({ abi: lifecycleErc20Abi, data: planned.transactions[1].data }).args;
+  assert.equal(spender.toLowerCase(), ESCROW.toLowerCase());
+  assert.equal(amount, 40n);
+  assert.deepEqual(planned.prerequisites.map((row) => [row.requiredInput, row.inputBalance, row.allowance]), [[20n, 1000n, 1n], [20n, 1000n, 1n]]);
+  for (const name of ["balanceOf", "allowance"]) {
+    const rows = client.captured.filter((row) => row.method === "eth_call" && row.params[0].to === inputAsset && decodeFunctionData({ abi: lifecycleErc20Abi, data: row.params[0].data }).functionName === name);
+    assert.equal(rows.length, 1);
+  }
+  client.state.tokenBalance = 39n;
+  const insufficient = await review(client, plan);
+  assert.equal(insufficient.simulation.admitted, false);
+  assert.match(insufficient.simulation.reason, /combined funding requirements/);
+});
+
+test("fresh invocations cannot reuse superseded code, registry or escrow authority", async () => {
+  const plan = makePlan(), client = clientFor(plan);
+  const baseline = await review(client, plan);
+  assert.equal(baseline.simulation.admitted, true);
+  client.state.codeFor = (target) => target.toLowerCase() === ADAPTER ? "0x600260005560026000f3" : target.toLowerCase() === ACCOUNT ? "0x" : CODE;
+  const changed = await review(client, plan);
+  assert.equal(changed.simulation.admitted, false);
+  assert.match(changed.simulation.reason, /Adapter code hash/);
+  delete client.state.codeFor;
+  client.state.authorities = { [REGISTRY]: address(0xff) };
+  await assert.rejects(review(client, plan), { code: "REGISTRY_BINDING" });
+  client.state.authorities = { [ESCROW]: address(0xff) };
+  await assert.rejects(review(client, plan), { code: "FUNDING_BINDING" });
+  client.state.authorities = { [ADAPTER]: address(0xff) };
+  await assert.rejects(review(client, plan), { code: "TOKEN_FACTORY_BINDING" });
+});
+
+test("a failed parallel funding observation is visible unchanged and a fresh invocation can recover", async () => {
+  const plan = makePlan(), source = clientFor(plan), failure = new Error("Pinned funding allowance is unavailable");
+  let fail = true;
+  const client = { request(args) {
+    if (args.method === "eth_call" && args.params[0].to === plan.funding[0].inputAsset && decodeFunctionData({ abi: lifecycleErc20Abi, data: args.params[0].data }).functionName === "allowance" && fail) return Promise.reject(failure);
+    return source.request(args);
+  } };
+  await assert.rejects(review(client, plan), (error) => error === failure);
+  fail = false;
+  assert.equal((await review(client, plan)).simulation.admitted, true);
+});
+
+test("partial profile failure stays attached to its row without certifying it or hiding healthy profiles", async () => {
+  const plan = makePlan(), source = clientFor(plan);
+  const profileIds = [0, 1, 2, 3].map((variant) => keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "uint8" }], [keccak256(stringToHex("BLACK_MARKET_ABYSS_CANONICAL_PROFILE_V1")), plan.chainId, FACTORY, variant])));
+  const client = { request(args) {
+    if (args.method === "eth_call" && args.params[0].to === REGISTRY) {
+      const call = decodeFunctionData({ abi: lifecycleRegistryAbi, data: args.params[0].data });
+      if (call.functionName === "profileTopology" && call.args[0] === profileIds[1]) return Promise.reject(new Error("This pinned topology is unavailable"));
+    }
+    return source.request(args);
+  } };
+  const rows = await readLifecycleProfiles({ client, orchestrator: CORE, profileIds });
+  assert.deepEqual(rows.map((row) => row.id), profileIds);
+  assert.deepEqual(rows.map((row) => row.admitted), [true, false, true, true]);
+  assert.match(rows[1].reason, /pinned topology is unavailable/);
+});
+
+test("input mutation while getters are outstanding makes the result obsolete instead of executable", async () => {
+  const plan = makePlan(), source = clientFor(plan);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const client = { async request(args) {
+    if (args.method === "eth_call" && args.params[0].to === plan.funding[0].inputAsset && decodeFunctionData({ abi: lifecycleErc20Abi, data: args.params[0].data }).functionName === "allowance") await gate;
+    return source.request(args);
+  } };
+  const pending = review(client, plan);
+  await nextTurn();
+  plan.buys[0].minTokenOut = 6n;
+  release();
+  await assert.rejects(pending, { code: "PLAN_MUTATED" });
+  assert.equal((await review(client, plan)).simulation.admitted, true);
+});
+
+test("an invocation-local read wrapper cannot disguise a source RPC as a disposable fork", async () => {
+  const plan = makePlan(), client = clientFor(plan);
+  await assert.rejects(review(client, plan, { fork: { client, isolation: "disposable", allowTransactions: true } }), { code: "UNSAFE_FORK" });
+  assert.equal(client.captured.some((row) => row.method === "eth_simulateV1"), false);
 });

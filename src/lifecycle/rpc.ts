@@ -3,8 +3,81 @@ import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLimitContext
 import { lifecycleRegistryAbi } from "./abi.js";
 import type { ProfileTopologyV1 } from "./schema.js";
 
+const lifecycleReadConcurrency = 8;
+
+/** Owns only one invocation's immutable RPC observations, never live checks or writes. */
+class InvocationLifecycleClient implements LifecycleRpcClient {
+  private readonly reads = new Map<string, Promise<unknown>>();
+  private readonly active = new Set<Promise<void>>();
+  private closed = false;
+  private readonly concurrency: number;
+  constructor(readonly source: LifecycleRpcClient) {
+    this.concurrency = source.supportsReadBatching === true ? lifecycleReadConcurrency : 1;
+  }
+
+  async request(args: { method: string; params?: readonly unknown[] }): Promise<unknown> {
+    this.assertOpen();
+    const result = await this.source.request(args);
+    this.assertOpen();
+    return result;
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new LifecyclePlanningError("READ_SCOPE_CLOSED", "Lifecycle read invocation has already settled");
+  }
+
+  async run(method: string, params: readonly unknown[]): Promise<unknown> {
+    this.assertOpen();
+    while (this.active.size >= this.concurrency) await Promise.race(this.active);
+    this.assertOpen();
+    const pending = this.request({ method, params });
+    const settled = pending.then(
+      () => { this.active.delete(settled); },
+      () => { this.active.delete(settled); },
+    );
+    this.active.add(settled);
+    return pending;
+  }
+
+  read(method: string, params: readonly unknown[], block: LifecycleBlock): Promise<unknown> {
+    this.assertOpen();
+    // Source identity is this scope's original client. The complete wire call includes
+    // caller, value, gas and any other call fields; no selector-only/ABI-name aliasing.
+    const key = JSON.stringify([block.number.toString(), block.hash.toLowerCase(), method, params]);
+    const existing = this.reads.get(key);
+    if (existing !== undefined) return existing;
+    const pending = this.run(method, params);
+    this.reads.set(key, pending);
+    void pending.catch(() => { if (this.reads.get(key) === pending) this.reads.delete(key); });
+    return pending;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.reads.clear();
+  }
+}
+
+/** Internal callers join the same invocation; no process-wide/source-wide read cache. */
+export async function withLifecycleReadClient<T>(source: LifecycleRpcClient, work: (client: LifecycleRpcClient) => Promise<T>): Promise<T> {
+  if (source instanceof InvocationLifecycleClient) return work(source);
+  const client = new InvocationLifecycleClient(source);
+  try { return await work(client); }
+  finally { client.close(); }
+}
+
+export function lifecycleSourceClient(client: LifecycleRpcClient): LifecycleRpcClient {
+  return client instanceof InvocationLifecycleClient ? client.source : client;
+}
+
+/** Only explicitly pinned fixed-state reads may participate in invocation reuse. */
+export async function lifecyclePinnedRpc(client: LifecycleRpcClient, method: "eth_call" | "eth_getCode" | "eth_getBalance", params: readonly unknown[], block: LifecycleBlock): Promise<unknown> {
+  if (params.length !== 2 || params[1] !== toHex(block.number)) throw new LifecyclePlanningError("INVALID_READ_CONTEXT", "Reusable lifecycle reads require the exact pinned block and no state overrides");
+  return client instanceof InvocationLifecycleClient ? client.read(method, params, block) : lifecycleRpc(client, method, params);
+}
+
 export async function lifecycleRpc(client: LifecycleRpcClient, method: string, params: readonly unknown[] = []): Promise<unknown> {
-  return client.request({ method, params });
+  return client instanceof InvocationLifecycleClient ? client.run(method, params) : client.request({ method, params });
 }
 export function rpcObject(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", `${label} must be an object`);
@@ -38,7 +111,11 @@ export async function assertLifecycleBlock(client: LifecycleRpcClient, block: Li
 }
 export async function readLifecycleContract<T>(client: LifecycleRpcClient, to: Address, abi: Abi, functionName: string, args: readonly unknown[], block: LifecycleBlock, from?: Address): Promise<T> {
   const data = encodeFunctionData({ abi, functionName, args });
-  const result = rpcHex(await lifecycleRpc(client, "eth_call", [{ to, from, data }, toHex(block.number)]), functionName);
+  const request = [{ to, from, data }, toHex(block.number)];
+  const getter = abi.some((item) => item.type === "function" && item.name === functionName && (item.stateMutability === "view" || item.stateMutability === "pure"));
+  const result = rpcHex(await (getter && functionName !== "readLaunchProgress"
+    ? lifecyclePinnedRpc(client, "eth_call", request, block)
+    : lifecycleRpc(client, "eth_call", request)), functionName);
   // ABI decoding validates scalar widths and tuple layout; T names that exact frozen ABI result.
   const decoded = decodeFunctionResult({ abi, functionName, data: result }) as T;
   return decoded;
@@ -61,7 +138,7 @@ const maxUint64 = (1n << 64n) - 1n;
 /** A poster quote is an envelope budget, never an execution/compute proof. */
 export async function readNitroPosterGas(transaction: LifecycleTransaction, context: LifecycleLimitContext): Promise<{ posterGas: bigint; baseFee: bigint; l1BaseFeeEstimate: bigint }> {
   const data = encodeFunctionData({ abi: nitroNodeInterfaceAbi, functionName: "gasEstimateL1Component", args: [transaction.to, false, transaction.data] });
-  const result = rpcHex(await lifecycleRpc(context.client, "eth_call", [{ from: transaction.from, to: nitroNodeInterface, data, value: toHex(transaction.value) }, toHex(context.block.number)]), "Nitro poster estimate");
+  const result = rpcHex(await lifecyclePinnedRpc(context.client, "eth_call", [{ from: transaction.from, to: nitroNodeInterface, data, value: toHex(transaction.value) }, toHex(context.block.number)], context.block), "Nitro poster estimate");
   if (result.length !== 194) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Nitro poster estimate must contain exactly three ABI words");
   const [posterGas, baseFee, l1BaseFeeEstimate] = decodeFunctionResult({ abi: nitroNodeInterfaceAbi, functionName: "gasEstimateL1Component", data: result });
   if (posterGas < 0n || posterGas > maxUint64 || baseFee <= 0n || l1BaseFeeEstimate < 0n) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", "Nitro poster estimate has invalid gas or fee values");
@@ -70,14 +147,15 @@ export async function readNitroPosterGas(transaction: LifecycleTransaction, cont
 
 async function readNitroScalar(context: LifecycleLimitContext, to: Address, abi: Abi, functionName: string): Promise<bigint> {
   const data = encodeFunctionData({ abi, functionName });
-  const result = rpcHex(await lifecycleRpc(context.client, "eth_call", [{ to, data }, toHex(context.block.number)]), functionName);
+  const result = rpcHex(await lifecyclePinnedRpc(context.client, "eth_call", [{ to, data }, toHex(context.block.number)], context.block), functionName);
   if (result.length !== 66) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", `${functionName} must return exactly one ABI word`);
   return decodeFunctionResult({ abi, functionName, data: result }) as bigint;
 }
 
 export async function resolveLifecycleLimits(context: LifecycleLimitContext, source?: LifecycleLimitSource): Promise<{ limits: ResolvedLifecycleLimits; configuration: LifecycleLimits }> {
   let configuration: LifecycleLimits;
-  try { configuration = source === undefined ? {} : typeof source === "function" ? await source(context) : source; }
+  const policyContext = typeof source === "function" && context.client instanceof InvocationLifecycleClient ? { ...context, client: context.client.source } : context;
+  try { configuration = source === undefined ? {} : typeof source === "function" ? await source(policyContext) : source; }
   catch (failure) { throw new LifecyclePlanningError("LIMIT_SOURCE_FAILED", `Supplied execution policy could not be resolved: ${failure instanceof Error ? failure.message : String(failure)}`); }
   if (configuration === null || typeof configuration !== "object" || Array.isArray(configuration)) throw new LifecyclePlanningError("INVALID_LIMITS", "Supplied execution policy must be an object");
   const headroomBps = configuration.headroomBps === undefined ? 1500 : configuration.headroomBps;
@@ -98,12 +176,16 @@ export async function resolveLifecycleLimits(context: LifecycleLimitContext, sou
   let arbOSVersion: bigint | undefined; let maxTxComputeGas: bigint | undefined; let maxBlockComputeGas: bigint | undefined;
   if (protocol === "nitro") {
     try {
-      const rawVersion = await readNitroScalar(context, nitroArbSys, nitroArbSysAbi, "arbOSVersion");
+      const [rawVersion, txComputeGas, blockComputeGas] = await Promise.all([
+        readNitroScalar(context, nitroArbSys, nitroArbSysAbi, "arbOSVersion"),
+        readNitroScalar(context, nitroGasInfo, nitroGasInfoAbi, "getMaxTxGasLimit"),
+        readNitroScalar(context, nitroGasInfo, nitroGasInfoAbi, "getMaxBlockGasLimit"),
+      ]);
       // ArbSys alone adds 55 to the logical Nitro ArbOS version.
       if (typeof rawVersion !== "bigint" || rawVersion < 105n) throw new Error("ArbOS version 50 or newer is required (ArbSys raw version >= 105)");
       arbOSVersion = rawVersion - 55n;
-      maxTxComputeGas = await readNitroScalar(context, nitroGasInfo, nitroGasInfoAbi, "getMaxTxGasLimit");
-      maxBlockComputeGas = await readNitroScalar(context, nitroGasInfo, nitroGasInfoAbi, "getMaxBlockGasLimit");
+      maxTxComputeGas = txComputeGas;
+      maxBlockComputeGas = blockComputeGas;
       if ([maxTxComputeGas, maxBlockComputeGas].some((limit) => typeof limit !== "bigint" || limit <= 0n || limit > maxUint64)) throw new Error("Nitro compute getters must be positive uint64 values");
     } catch (failure) { throw new LifecyclePlanningError("NITRO_LIMITS_UNAVAILABLE", `Pinned Nitro compute limits could not be established: ${failure instanceof Error ? failure.message : String(failure)}; header gasLimit is not a fallback`); }
     if (configuration.estimateDataFee !== undefined) throw new LifecyclePlanningError("INVALID_LIMITS", "Nitro poster fees are already included in gas; an external data-fee estimator would double-charge them");

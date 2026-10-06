@@ -1,0 +1,285 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import { decodeFunctionData, encodeFunctionData, encodeFunctionResult, keccak256, parseAbi, toHex, zeroAddress, zeroHash } from "viem";
+
+const sourceTests = process.env.SDK_SOURCE_TEST === "1";
+const sdkPath = sourceTests ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
+const rpcPath = sourceTests ? "../src/lifecycle/rpc.ts" : "../dist/lifecycle/rpc.js";
+const { hashLaunchBounds, hashLaunchDependencies, hashLifecycleProfile, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleRegistryAbi,
+  lifecycleV4LockerAbi, poolFeeCollectorFactoryV1Abi, poolHookDeployerV1Abi, poolMarketAdapterV1Abi,
+  LIFECYCLE_REQUIRED_CAPABILITIES, readLifecycleProfiles, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA } = await import(sdkPath);
+const { assertLifecycleBlock, lifecyclePinnedRpc, lifecycleRpc, readLifecycleContract, withLifecycleReadClient } = await import(rpcPath);
+const address = (value) => toHex(BigInt(value), { size: 20 });
+const hash = (value) => toHex(BigInt(value), { size: 32 });
+const CORE = address(0xf0), REGISTRY = address(0xf1), ADAPTER = address(0xf2);
+const CODE = "0x600160005560016000f3", CHUNK = `0x00${CODE.slice(2)}`;
+const block = { number: 42n, hash: hash(42), timestamp: 100n, gasLimit: 30_000_000n };
+const echoAbi = parseAbi(["function echo() view returns (uint256)", "function change() returns (uint256)"]);
+
+// Complete frozen config-5 observations exercise the real graph certification path.
+// These are offline RPC fixtures, not deployment or simulation evidence.
+function boundProfileClient() {
+  const codeHash = keccak256(CODE);
+  const bounds = { minimumTickSpacing: 1, maximumTickSpacing: 200, maximumPositions: 32, maximumOracleCardinality: 4096, feeModeFlags: 3 };
+  const graph = { manager: address(0xf3), hookRoot: zeroAddress, oracleFactory: address(0xf4), locker: address(0xf5), collectorFactory: address(0xf6),
+    collectorDeployer: address(0xf7), hookDeployer: address(0xf8), coreCodeHash: codeHash, managerCodeHash: codeHash,
+    hookRuntimeCodeHash: zeroHash, oracleFactoryCodeHash: codeHash, lockerCodeHash: codeHash, collectorFactoryCodeHash: codeHash,
+    collectorDeployerCodeHash: codeHash, hookDeployerCodeHash: codeHash, hookCreationCodeHash: codeHash,
+    codeChunk0: address(0xf9), codeChunk0Hash: keccak256(CHUNK), codeChunk1: zeroAddress, codeChunk1Hash: zeroHash, sharedHookSalt: zeroHash };
+  const envelope = { artifactDigest: hash(1), reviewManifestDigest: hash(2), configBoundsDigest: hashLaunchBounds(bounds), termsDigest: hash(3),
+    topology: 2, configVersion: 5, economicVersion: 3, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, flags: 0n, callbackFlags: 0x1afc,
+    callbackMask: 0x3fff, protocolTreasury: address(0xda), protocolFeeDenominator: 5, beneficiary: address(0xdb), maximumDeveloperFeeBps: 500, bounds, graph };
+  const id = hashLifecycleProfile(envelope), adapterId = hash(4);
+  const digest = hashLaunchDependencies({ chainId: 4663n, core: CORE, registry: REGISTRY, registrar: ADAPTER, graph });
+  const registration = { adapterId, configSchema: V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA, dependencyDigest: digest, venue: graph.manager,
+    factory: zeroAddress, hook: zeroAddress, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, enabled: true };
+  const state = { codes: {}, values: {}, failures: {}, reorg: false, chainDrift: false };
+  const captured = [];
+  const client = { state, captured, id, graph, envelope, async request({ method, params = [] }) {
+    captured.push({ method, params });
+    if (method === "eth_chainId") return toHex(state.chainDrift ? 4664n : 4663n);
+    if (method === "eth_getBlockByNumber") return { number: "0x2a", hash: state.reorg && params[0] !== "latest" ? hash(43) : block.hash,
+      timestamp: "0x64", gasLimit: toHex(block.gasLimit) };
+    if (method === "eth_getCode") return state.codes[params[0].toLowerCase()] ?? (params[0].toLowerCase() === graph.codeChunk0 ? CHUNK : CODE);
+    assert.equal(method, "eth_call", "Profile discovery only uses read-only source methods");
+    assert.equal(params[1], "0x2a", "Every graph observation uses the same pinned block");
+    const target = params[0].to.toLowerCase();
+    const abis = target === CORE ? [launchLifecycleAbi] : target === REGISTRY ? [lifecycleRegistryAbi]
+      : target === ADAPTER ? [poolMarketAdapterV1Abi, lifecycleAdapterAbi] : target === graph.locker ? [lifecycleV4LockerAbi]
+        : target === graph.collectorFactory ? [poolFeeCollectorFactoryV1Abi] : target === graph.hookDeployer ? [poolHookDeployerV1Abi] : [];
+    let call, abi;
+    for (const candidate of abis) { try { call = decodeFunctionData({ abi: candidate, data: params[0].data }); abi = candidate; break; } catch {} }
+    assert.ok(call, "Unexpected graph read");
+    const key = `${target}:${call.functionName}`;
+    if (state.failures[key]) throw state.failures[key];
+    let result;
+    if (Object.hasOwn(state.values, key)) result = state.values[key];
+    else if (target === CORE) result = { registry: REGISTRY }[call.functionName];
+    else if (target === REGISTRY) result = { core: CORE, profileIds: [id], profile: registration,
+      adapter: { implementation: ADAPTER, codeHash, capabilities: LIFECYCLE_REQUIRED_CAPABILITIES, configVersion: 5, enabled: true },
+      profileTopology: { hookTopology: 2, configVersion: 5, hookDeployer: graph.hookDeployer, hookCreationCodeHash: graph.hookCreationCodeHash },
+      profileEnvelope: envelope, developerTerms: [ADAPTER, envelope.beneficiary, 500, envelope.termsDigest, true], protocolMaximumDeveloperFeeBps: 1000,
+      requireEligible: ADAPTER }[call.functionName];
+    else if (target === ADAPTER) result = { core: CORE, dependencyDigest: digest, PROFILE_ID: id, CONFIG_SCHEMA: registration.configSchema,
+      CONFIG_VERSION: 5, implementationRegistry: REGISTRY, poolManager: graph.manager, hookRoot: graph.hookRoot, oracleFactory: graph.oracleFactory,
+      locker: graph.locker, collectorFactory: graph.collectorFactory, hookDeployer: graph.hookDeployer }[call.functionName];
+    else if (target === graph.locker) result = { launcher: ADAPTER, poolManager: graph.manager }[call.functionName];
+    else if (target === graph.collectorFactory) result = { collectorDeployer: graph.collectorDeployer }[call.functionName];
+    else if (target === graph.hookDeployer) result = { creationCodeHash: graph.hookCreationCodeHash, codeChunk0: graph.codeChunk0, codeChunk1: graph.codeChunk1 }[call.functionName];
+    assert.notEqual(result, undefined, "Fixture must supply a complete ABI observation, never a fallback");
+    if (call.functionName === "requireEligible") {
+      if (state.reorgAfterEligibility) state.reorg = true;
+      if (state.driftAfterEligibility) state.chainDrift = true;
+    }
+    return encodeFunctionResult({ abi, functionName: call.functionName, result });
+  } };
+  return client;
+}
+
+test("reviewed graph rounds remain fully certified and duplicate profile IDs preserve ordered results with bounded reads", async () => {
+  const source = boundProfileClient();
+  let active = 0, peak = 0;
+  const client = { supportsReadBatching: true, async request(args) {
+    active += 1; peak = Math.max(peak, active);
+    await nextTurn();
+    try { return await source.request(args); } finally { active -= 1; }
+  } };
+  const rows = await readLifecycleProfiles({ client, orchestrator: CORE, profileIds: Array(16).fill(source.id) });
+  assert.equal(rows.length, 16);
+  assert.ok(rows.every((row) => row.admitted), rows[0].reason);
+  assert.ok(peak > 1 && peak <= 8, `Observed read concurrency ${peak}`);
+  for (const target of [CORE, ADAPTER, source.graph.manager, source.graph.oracleFactory, source.graph.locker,
+    source.graph.collectorFactory, source.graph.collectorDeployer, source.graph.hookDeployer, source.graph.codeChunk0]) {
+    assert.equal(source.captured.filter((row) => row.method === "eth_getCode" && row.params[0].toLowerCase() === target).length, 1);
+  }
+  assert.equal(source.captured.filter((row) => row.method === "eth_chainId").length, 2);
+  assert.equal(source.captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 1);
+});
+
+test("standalone clients without read batching retain serial transport compatibility", async () => {
+  const source = boundProfileClient();
+  let active = 0;
+  const client = { async request(args) {
+    active += 1;
+    try {
+      assert.equal(active, 1, "The transport cannot serve concurrent independent requests");
+      await nextTurn();
+      return await source.request(args);
+    } finally { active -= 1; }
+  } };
+  const [profile] = await readLifecycleProfiles({ client, orchestrator: CORE, profileIds: [source.id] });
+  assert.equal(profile.id, source.id);
+  assert.equal(profile.admitted, true, profile.reason);
+});
+
+test("changed reviewed runtime, authority, terms, eligibility and creation chunks fail actual profile admission", async () => {
+  const source = boundProfileClient();
+  const read = async () => (await readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }))[0];
+  assert.equal((await read()).admitted, true);
+  const mutations = [
+    { apply: () => { source.state.codes[source.graph.manager] = "0x600260005560026000f3"; }, reason: /runtime.*graph hash/ },
+    { apply: () => { source.state.values[`${ADAPTER}:core`] = address(0xff); }, reason: /authority or dependency digest/ },
+    { apply: () => { source.state.values[`${source.graph.locker}:launcher`] = address(0xff); }, reason: /locker authority/ },
+    { apply: () => { source.state.values[`${REGISTRY}:developerTerms`] = [ADAPTER, source.envelope.beneficiary, 499, source.envelope.termsDigest, true]; }, reason: /developer terms/ },
+    { apply: () => { source.state.values[`${REGISTRY}:requireEligible`] = address(0xff); }, reason: /refuses this profile/ },
+    { apply: () => { source.state.codes[source.graph.codeChunk0] = CODE; }, reason: /STOP-prefixed bytecode/ },
+  ];
+  for (const mutation of mutations) {
+    source.state.codes = {}; source.state.values = {};
+    mutation.apply();
+    const row = await read();
+    assert.equal(row.admitted, false);
+    assert.match(row.reason, mutation.reason);
+  }
+});
+
+test("partial reviewed-graph read failures remain refusal evidence and do not poison a later invocation", async () => {
+  const source = boundProfileClient(), key = `${ADAPTER}:oracleFactory`;
+  source.state.failures[key] = new Error("Pinned reviewed oracle dependency could not be read");
+  const options = { client: source, orchestrator: CORE, profileIds: [source.id] };
+  const [failed] = await readLifecycleProfiles(options);
+  assert.equal(failed.admitted, false);
+  assert.match(failed.reason, /oracle dependency could not be read/);
+  delete source.state.failures[key];
+  assert.equal((await readLifecycleProfiles(options))[0].admitted, true);
+});
+
+test("standalone profile certification never reuses final chain or canonical block checks", async () => {
+  for (const [flag, code] of [["reorgAfterEligibility", "STATE_REORGED"], ["driftAfterEligibility", "CHAIN_MISMATCH"]]) {
+    const source = boundProfileClient();
+    source.state[flag] = true;
+    await assert.rejects(readLifecycleProfiles({ client: source, orchestrator: CORE, profileIds: [source.id] }), { code });
+  }
+});
+
+test("fixed read identity separates source, block hash/number, caller and complete call context", async () => {
+  const fromA = address(1), fromB = address(2), captured = [];
+  const source = { revision: 0n, async request(args) {
+    captured.push(args);
+    const call = args.params[0];
+    const value = this.revision + (call.from === fromA ? 11n : call.from === fromB ? 22n : 33n) + BigInt(call.value ?? "0x0") + BigInt(call.gas ?? "0x0");
+    return encodeFunctionResult({ abi: echoAbi, functionName: "echo", result: value });
+  } };
+  await withLifecycleReadClient(source, async (client) => {
+    const same = () => readLifecycleContract(client, CORE, echoAbi, "echo", [], block, fromA);
+    const results = await Promise.all([same(), same(), readLifecycleContract(client, CORE, echoAbi, "echo", [], block, fromB), readLifecycleContract(client, CORE, echoAbi, "echo", [], block)]);
+    assert.deepEqual(results, [11n, 11n, 22n, 33n]);
+    assert.equal(captured.length, 3);
+    const data = encodeFunctionData({ abi: echoAbi, functionName: "echo" });
+    for (const fields of [{ from: fromA, value: "0x1" }, { from: fromA, gas: "0x2" }]) {
+      const params = [{ to: CORE, data, ...fields }, "0x2a"];
+      const first = await lifecyclePinnedRpc(client, "eth_call", params, block);
+      assert.equal(await lifecyclePinnedRpc(client, "eth_call", params, block), first);
+    }
+    assert.equal(captured.length, 5);
+    source.revision = 100n;
+    assert.equal(await readLifecycleContract(client, CORE, echoAbi, "echo", [], { ...block, hash: hash(43) }, fromA), 111n);
+    assert.equal(await readLifecycleContract(client, CORE, echoAbi, "echo", [], { ...block, number: 43n }, fromA), 111n);
+    assert.equal(await same(), 11n);
+    assert.equal(captured.length, 7);
+  });
+  assert.equal(await withLifecycleReadClient(source, (client) => readLifecycleContract(client, CORE, echoAbi, "echo", [], block, fromA)), 111n);
+  const other = { async request() { return encodeFunctionResult({ abi: echoAbi, functionName: "echo", result: 999n }); } };
+  assert.equal(await withLifecycleReadClient(other, (client) => readLifecycleContract(client, CORE, echoAbi, "echo", [], block, fromA)), 999n);
+});
+
+test("rejected fixed reads preserve the original error and are not retained as reusable authority", async () => {
+  const failure = new Error("One pinned observation is unavailable");
+  const source = { calls: 0, async request() {
+    this.calls += 1;
+    if (this.calls === 1) throw failure;
+    return encodeFunctionResult({ abi: echoAbi, functionName: "echo", result: 44n });
+  } };
+  await withLifecycleReadClient(source, async (client) => {
+    await assert.rejects(readLifecycleContract(client, CORE, echoAbi, "echo", [], block), (error) => error === failure);
+    assert.equal(await readLifecycleContract(client, CORE, echoAbi, "echo", [], block), 44n);
+    assert.equal(source.calls, 2);
+  });
+});
+
+test("live, provider and stateful RPC requests plus non-view eth_call remain uncached", async () => {
+  const captured = [];
+  const source = { async request(args) {
+    captured.push(args);
+    if (args.method === "eth_call") return encodeFunctionResult({ abi: echoAbi, functionName: "change", result: BigInt(captured.length) });
+    if (args.method === "eth_chainId") return "0x1";
+    if (args.method === "eth_getBlockByNumber") return { number: "0x2a", hash: block.hash, timestamp: "0x64", gasLimit: toHex(block.gasLimit) };
+    return "0x0";
+  } };
+  await withLifecycleReadClient(source, async (client) => {
+    for (const [method, params] of [["eth_chainId", []], ["eth_getBlockByNumber", ["latest", false]], ["eth_accounts", []],
+      ["eth_getTransactionCount", [address(1), "pending"]], ["eth_estimateGas", [{ from: address(1), to: CORE, data: "0x" }, "latest"]],
+      ["eth_simulateV1", [{ blockStateCalls: [] }, "0x2a"]], ["evm_snapshot", []]]) {
+      await lifecycleRpc(client, method, params); await lifecycleRpc(client, method, params);
+      assert.equal(captured.filter((row) => row.method === method).length, 2);
+    }
+    await assertLifecycleBlock(client, block, 1n); await assertLifecycleBlock(client, block, 1n);
+    assert.equal(captured.filter((row) => row.method === "eth_getBlockByNumber" && row.params[0] === "0x2a").length, 2);
+    const first = await readLifecycleContract(client, CORE, echoAbi, "change", [], block);
+    const second = await readLifecycleContract(client, CORE, echoAbi, "change", [], block);
+    assert.notEqual(first, second);
+  });
+});
+
+test("settled invocations discard late observations instead of installing them for a later caller", async () => {
+  const gate = nextTurn();
+  const failure = new Error("Required parallel observation failed");
+  const source = { supportsReadBatching: true, calls: 0, async request(args) {
+    this.calls += 1;
+    if (args.method === "eth_chainId") throw failure;
+    const result = encodeFunctionResult({ abi: echoAbi, functionName: "echo", result: BigInt(this.calls) });
+    await gate;
+    return result;
+  } };
+  let obsoleteClient;
+  const pending = withLifecycleReadClient(source, async (client) => {
+    obsoleteClient = client;
+    await Promise.all([readLifecycleContract(client, CORE, echoAbi, "echo", [], block), lifecycleRpc(client, "eth_chainId")]);
+  });
+  await assert.rejects(pending, (error) => error === failure);
+  await nextTurn();
+  await assert.rejects(readLifecycleContract(obsoleteClient, CORE, echoAbi, "echo", [], block), { code: "READ_SCOPE_CLOSED" });
+  assert.equal(await withLifecycleReadClient(source, (client) => readLifecycleContract(client, CORE, echoAbi, "echo", [], block)), 3n);
+});
+
+test("a rejected read releases its bounded slot without rejecting an unrelated queued caller", async () => {
+  // Node 20 has no Promise.withResolvers; this gate requires an externally released executor.
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const failure = new Error("First independent observation failed");
+  const called = [];
+  let active = 0, peak = 0;
+  const source = { supportsReadBatching: true, async request(args) {
+    called.push(args.params[0].to);
+    active += 1; peak = Math.max(peak, active);
+    try {
+      if (args.params[0].to === address(100)) throw failure;
+      await gate;
+      return encodeFunctionResult({ abi: echoAbi, functionName: "echo", result: BigInt(args.params[0].to) });
+    } finally { active -= 1; }
+  } };
+  const pending = withLifecycleReadClient(source, (client) => Promise.allSettled(
+    Array.from({ length: 9 }, (_, index) => readLifecycleContract(client, address(100 + index), echoAbi, "echo", [], block)),
+  ));
+  await nextTurn();
+  const startedBeforeRelease = called.length;
+  release();
+  const results = await pending;
+  assert.equal(startedBeforeRelease, 9, "The ninth read starts after the failed slot settles, without waiting for unrelated reads");
+  assert.ok(peak <= 8);
+  assert.equal(results[0].status, "rejected"); assert.equal(results[0].reason, failure);
+  for (const [index, result] of results.slice(1).entries()) {
+    assert.equal(result.status, "fulfilled"); assert.equal(result.value, BigInt(101 + index));
+  }
+});
+
+test("required V4 fee-limit read failure still rejects profile certification", async () => {
+  const client = boundProfileClient();
+  const failure = new Error("V4 fee limits unavailable");
+  client.state.failures[`${REGISTRY}:protocolMaximumDeveloperFeeBps`] = failure;
+  await assert.rejects(
+    readLifecycleProfiles({ client, orchestrator: CORE, profileIds: [client.id] }, block),
+    (error) => error === failure,
+  );
+});
