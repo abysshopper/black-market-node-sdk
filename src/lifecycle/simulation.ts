@@ -545,21 +545,18 @@ async function simulateLaunchTransactionsWithContext(
     await assertLifecycleBlock(client, block, planned.chainId);
     return { ...base, backend, admitted: false, executionProof: "unavailable", steps: measured };
   }
-  const computeGas = measured.map((step) => buffer(step.gasRequired ?? step.gasUsed ?? computeCeiling));
-  const gasLimits = computeGas.map((gas, index) => gas + (posterGas[index] ?? 0n));
+  // Padding belongs to new envelopes. A reviewed envelope may consume its
+  // original margin; only exact replay at its held gas/price proves it still fits.
+  const computeGas = measured.map((step, index) => {
+    const required = step.gasRequired ?? step.gasUsed ?? computeCeiling;
+    return nextEnvelope !== undefined && index === 0 ? required : buffer(required);
+  });
+  const gasLimits = computeGas.map((gas, index) =>
+    nextEnvelope !== undefined && index === 0 ? nextEnvelope.gas : gas + (posterGas[index] ?? 0n));
   const exceeds = gasLimits.findIndex((gas, index) => gas <= 0n || gas >= 1n << 64n || (computeGas[index] ?? 0n) > limits.executionGasCeiling || limits.transactionGasCeiling !== undefined && gas > limits.transactionGasCeiling);
   if (exceeds >= 0) {
     await assertLifecycleBlock(client, block, planned.chainId);
     return { ...base, executionProof: "unavailable", protocolFit: "failed", backend, admitted: false, steps: measured, failureCategory: "capacity", capacityConstraint: (computeGas[exceeds] ?? 0n) > limits.executionGasCeiling ? "compute" : "gas-envelope", reason: "Execution compute/headroom or complete poster gas envelope is outside positive uint64 gas and current protocol/known transaction limits", failedTransactionId: transactions[exceeds]?.id };
-  }
-  if (nextEnvelope !== undefined) {
-    if (nextEnvelope.gas < (gasLimits[0] ?? 0n) || limits.transactionGasCeiling !== undefined && nextEnvelope.gas > limits.transactionGasCeiling) {
-      await assertLifecycleBlock(client, block, planned.chainId);
-      return { ...base, executionProof: "unavailable", protocolFit: "failed", backend, admitted: false, steps: measured,
-        failureCategory: "capacity", capacityConstraint: "gas-envelope", failedTransactionId: transactions[0]?.id,
-        reason: "Reviewed gas cannot cover current minimum compute/headroom/poster requirements or exceeds the current transaction ceiling" };
-    }
-    gasLimits[0] = nextEnvelope.gas;
   }
   // Envelope discovery may enlarge future unfinished steps, never the reviewed
   // immediate one. Every retry still executes the entire sequence at held price.
@@ -678,12 +675,12 @@ async function simulateLaunchTransactionsWithContext(
   }
   assertCurrent();
   if (nextEnvelope !== undefined && finalFailure === undefined) {
-    const currentMinimum = buffer(verifiedSteps[0]?.gasRequired ?? verifiedSteps[0]?.gasUsed ?? nextEnvelope.gas);
+    const currentMinimum = verifiedSteps[0]?.gasRequired ?? verifiedSteps[0]?.gasUsed ?? nextEnvelope.gas;
     if (nextEnvelope.gas < currentMinimum) {
       await assertLifecycleBlock(client, block, planned.chainId);
       return { ...base, backend, admitted: false, executionProof: "proved", protocolFit: "failed", steps: verifiedSteps,
         failureCategory: "capacity", capacityConstraint: "gas-envelope", failedTransactionId: transactions[0]?.id,
-        reason: "Exact reviewed replay leaves insufficient current minimum gas headroom" };
+        reason: "Exact reviewed replay exceeds the held gas envelope" };
     }
   }
   const estimates: LifecycleSimulationStep[] = [];

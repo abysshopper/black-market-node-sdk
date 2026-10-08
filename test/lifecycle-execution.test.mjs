@@ -1202,19 +1202,43 @@ test("reviewed malformed values and fees refuse before source or submission RPC 
   }
 });
 
-test("held envelope must cover fresh compute, poster, headroom, transaction ceilings and real balance", async () => {
+test("fresh execution may consume reviewed padding without increasing gas or price", async () => {
+  const plan = makePlan({ chainId: 4663n, nativeFunding: true });
+  for (const mode of ["atomic", "staged"]) {
+    const planned = await review(clientFor(plan, { poster: 200_000n }), plan, { mode });
+    const reviewedTransaction = planned.transactions[0];
+    for (const vector of [
+      { settings: { computeUsed: 1_000_153n } },
+      { settings: { poster: 200_001n } },
+      { settings: { actualPoster: 210_000n } },
+      { settings: {}, limits: { headroomBps: 2000 } },
+    ]) {
+      const source = clientFor(plan, { poster: 200_000n, ...vector.settings });
+      const next = await buildNextTransaction({ client: source, planned, reviewedTransaction,
+        limits: vector.limits, submissionClient: submissionFor(plan) });
+      assert.equal(next.admission.executionProof, "proved");
+      assert.equal(next.admission.protocolFit, "proved");
+      assert.equal(next.admission.transportPreflight, "passed");
+      assert.equal(next.gas, reviewedTransaction.gas);
+      assert.equal(next.gasPrice, reviewedTransaction.gasPrice);
+      assert.equal(next.data, reviewedTransaction.data);
+      assert.equal(next.value, reviewedTransaction.value);
+      assert.ok(next.estimate.gasUsed <= next.gas);
+      const replay = economicRequests(source).find((row) => row.params[0].validation);
+      assert.equal(BigInt(replay.params[0].blockStateCalls[0].calls[0].gas), reviewedTransaction.gas);
+    }
+  }
+});
+
+test("held envelopes still enforce actual compute, poster, transaction ceilings and real balance", async () => {
   const plan = makePlan({ chainId: 4663n, nativeFunding: true });
   const planned = await review(clientFor(plan, { poster: 200_000n }), plan);
   const reviewedTransaction = planned.transactions[0];
-  assert.equal(reviewedTransaction.gas, 1_380_000n);
   for (const vector of [
-    { settings: { computeUsed: 1_000_001n }, constraint: "gas-envelope" },
-    { settings: { poster: 200_001n }, constraint: "gas-envelope" },
-    { settings: {}, limits: { headroomBps: 2000 }, constraint: "gas-envelope" },
-    { settings: {}, limits: { accountGasLimit: 1_379_999n }, constraint: "gas-envelope" },
-    { settings: { txCompute: 1_000_000n }, constraint: "compute" },
+    { settings: {}, limits: { accountGasLimit: reviewedTransaction.gas - 1n }, constraint: "gas-envelope" },
+    { settings: { txCompute: 999_999n }, constraint: "compute" },
     { settings: { balance: 2_760_009n }, category: "affordability" },
-    { settings: { actualPoster: 210_000n }, constraint: "gas-envelope", replay: true },
+    { settings: { actualPoster: 380_001n }, category: "capacity", replay: true },
   ]) {
     const source = clientFor(plan, { poster: 200_000n, ...vector.settings }), submissionClient = submissionFor(plan);
     await assert.rejects(buildNextTransaction({ client: source, planned, reviewedTransaction, limits: vector.limits, submissionClient }), (failure) => {
@@ -1224,8 +1248,12 @@ test("held envelope must cover fresh compute, poster, headroom, transaction ceil
       if (vector.category) assert.equal(failure.simulation.failureCategory, vector.category);
       return true;
     });
-    if (vector.replay) assert.deepEqual(economicRequests(source).map((row) => row.params[0].validation), [false, true],
-      "Successful native execution without required held-envelope headroom still refuses");
+    if (vector.replay) {
+      const requests = economicRequests(source);
+      assert.deepEqual(requests.map((row) => row.params[0].validation), [false, true]);
+      assert.equal(BigInt(requests[1].params[0].blockStateCalls[0].calls[0].gas), reviewedTransaction.gas,
+        "An exhausted held envelope is never enlarged or retried");
+    }
     assert.equal(submissionClient.captured.length, 0);
   }
 });
