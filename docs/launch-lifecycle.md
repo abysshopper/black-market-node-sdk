@@ -4,30 +4,140 @@
 
 The canonical authorities are the registry/certification/adapter/config contracts under
 `contracts/src/launch/lifecycle/v2`, typed hook deployers, and `contracts/src/launch/fees/v3`
-in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 5**,
+in the protocol repository. Plan identity is `LaunchPlanV1`. Pool-bound V4 uses **config 6**,
 canonical Abyss uses **config 1**, and generic current shared-V4 support uses **config 4**.
 
-## 0.6.4 invocation-bound planning overlap
+## Unreleased transaction-first construction
 
-Confirmation-bound progress acquires its confirmed block and live chain identity
-together. Profile discovery joins chain identity with independent pinned registry,
-registration and adapter metadata. Chain-dependent certification still waits for
-validated chain evidence; chain failures reject the invocation rather than
-becoming an individual profile refusal. No source, canonical, eligibility,
-confirmation, nonce or receipt observation is removed.
+Known chain/core/profile identities use frozen release construction metadata.
+`getKnownLifecycleDeployment`, `getKnownLifecycleProfile` and
+`listKnownLifecycleProfiles` are pure, browser-safe selectors. Profile selection
+accepts either `KnownLifecycleProfile` keys or exact profile IDs.
+`KnownLifecycleHook.FixedFeePoolV1` identifies the shipped contract class, whose current constructor is V2.
+Unknown identities return no preset; explicit `readLifecycleProfiles` and unlisted
+profile construction retain live discovery/certification. Presets describe release
+availability, never current admission, and contain no `admitted` claim.
+The current Robinhood preset is the mined October8 config6 graph, with its own
+addresses, runtime pins, creation-code chunks, profile/schema and 20-word V2
+constructor. Historical config5 codecs and 18-word V1 ABIs remain explicit for
+existing deployments, but October5 evidence is not relabeled or selected as the
+current preset. Explicit live discovery certifies unlisted deployments from actual
+pinned reads.
 
-For batching-capable nonterminal, confirmation-safe plans, fresh simulation context
-starts alongside funding and pending-input validation. A private one-shot
-continuation binds the observations to the source client, plan/account/core/chain
-and pinned block. Only successful input validation consumes it. Refused inputs
-cannot start native probes, economic measurement/replay or controlled-fork work;
-late context rejection is handled immediately.
+`prepareAndPlanLifecycleLaunch` compiles the exact requested mode before native
+execution calibration. Known construction uses local commitments and hook
+creation code, mines salts once and compares every final constructor binding.
+Token prediction remains a genuine pinned factory read; advancing the block
+during asynchronous mining can require a second prediction. Current progress,
+receipts, nonce/confirmation gates, exact native proof and final canonical guards
+remain authoritative. Public discovery/constructor boundaries observe the current
+chain; policy callbacks are resolved freshly rather than cached as constant values.
 
-Standalone simulation, serial clients and later staged/partitioning attempts
-resolve fresh context as before. Policy provenance, smart-account refusal,
-native Nitro capability/poster evidence, exact-gas replay and final live
-chain/canonical validation remain. This is read scheduling inside one invocation,
-not a public trusted-context option or cross-review execution cache.
+Optional `buySlippageBps` (integer 0–9999) protects **every ordered buy** from its
+actual diagnostic receipt output using `floor(output * (10000 - bps) / 10000)`.
+The diagnostic candidate is never admitted or returned for execution. Only the
+complete final protected commitment can pass measurement and validated replay.
+Protection is available only for an unstarted launch; omission preserves minima.
+
+`buildLaunchTransactions({ plan, mode, preparationBatches? })` is a pure unsigned
+compiler. Staged preparation counts must cover all markets exactly. Every command
+carries the full plan; `PlannedLaunch.totalCalldataBytes` sums exact remaining
+command bytes, including approvals. Splitting preparation cannot reduce this
+per-command calldata or partition mint/lock/all-buys/public-opening activation.
+
+Atomic and staged are explicit choices. Only proven compute/gas-envelope capacity
+can partition empty preparations. Semantic, opaque `DeploymentFailed`, source,
+provider-clamp and byte-cap refusals do not authorize retries or partitioning.
+Native explicit OOG recognizes simulator VM code `-32015` and compatible `-32000`,
+not near-cap gas consumption. Both activation receipt and event counts must match
+the committed positions. Failure DTOs expose safe classifications/numeric facts,
+not raw provider messages. Abort closes continuations, including unsupported adapters.
+
+`deriveLaunchPositionRanges` requires a source-defined Black Market
+`distributionPreset`: `"early-scarcity"`, `"staircase"` or `"smooth-ramp"`.
+Inventory weights, 64 active spacing steps and intentional gaps follow
+`black-market/apps/web/src/lib/launch.ts`. Early Scarcity widens sparse bands;
+Staircase inserts three-step gaps only between new inventory shelves; Smooth Ramp
+keeps gently narrowing bands contiguous. The SDK defaults to five positions and
+supports counts from 2 through 16. Arbitrary equal-tick fractions of the distance
+to a protocol boundary are not these presets.
+For Staircase, `staircaseBoundaries: "adjacent"` explicitly removes the empty
+shelf gaps while retaining the source inventory weights and widths. The default
+`"source-gaps"` preserves the original topology. Adjacent positions share an
+exact spacing-aligned tick; overlap is not required for continuous price.
+An empty gap can move the pool price without exchanging tokens in that interval.
+
+
+`extendFinalRangeToBoundary` defaults to `false`. Explicitly enabling it replaces
+only the final band's far endpoint with the usable spacing-aligned protocol
+boundary, preserving every earlier band and the final band's near endpoint.
+The complete canonical preset must fit before this extension is applied.
+`boundaryTick` and `boundarySqrtPriceX96` always describe that finite protocol
+boundary; endpoint sqrt ratios are not exclusive swap-price guards.
+
+Pass the raw token budget for **one pool**. Each position exposes `inventoryBps`
+and its pre-mint `allocatedTokenAmount` cap: all but the last allocation floor
+their basis-point share, and the last receives the exact remaining budget.
+All caps and funded liquidities must be positive. `maxTokenAmount` equals the intended
+`allocatedTokenAmount`, including any mint-rounding residual; `tokenAmountMaximum`
+equals the pool budget. Both venues use the maximum exact budget-safe integer liquidity:
+one additional liquidity unit would exceed that position's allocated cap.
+`unspentTokenAmount` is the budget minus the canonical rounded-up expected mint
+debit, not an extra allocation or creator reserve. Do not add it to `tokenAmountMaximum`.
+Current admission requires position maxima to sum exactly to each market budget and
+market budgets to sum exactly to minted supply. The SDK planner and pure compiler
+enforce these equalities for every supported venue. The orchestrator burns every
+actual leftover before any buy. Positive int128 liquidity and V4 signed settlement
+limits remain enforced; arbitrary caller plans still need complete live admission.
+
+The existing ordering convention is `launchedTokenIsQuote: true` for launched
+token0. Gross liquidity must fit `maxLiquidityPerTick` at **each endpoint**;
+adjacent bands share their endpoint's gross capacity, while the sum of disjoint
+positions is not capped as if all began at launch. `openingActiveLiquidity`
+reflects the actual `[tickLower, tickUpper)` opening state. Token0 starts in the
+first band; token1 has zero opening-active liquidity until a downward quote buy
+crosses the opening upper endpoint. `buySideLiquidity` is only the first
+reachable band's liquidity, never the sum of all disjoint bands. Each position
+also exposes exact endpoint sqrt ratios for display valuation.
+
+No cross-review execution cache, caller certificate or admission skip exists.
+Recovery and `buildNextTransaction` acquire fresh authority and retain separate
+immediate-submission-provider preflight. Construction/proof is not submission.
+
+## Unreleased reviewed next envelopes
+
+`BuildNextTransactionOptions.reviewedTransaction` optionally supplies an untrusted
+previously reviewed immediate transaction. Omit it to construct a new envelope
+with the existing greater-of-recommendation-and-twice-pinned-base fee strategy.
+Supply it after review to validate that exact envelope, not to import cached
+admission or waive current-state proof.
+
+The SDK reconstructs the current unfinished commands from fresh canonical
+progress, funding/allowances and deployment/profile authority. It matches
+`id/kind/chainId/from/to/data/value` before using the reviewed gas or price.
+Preparation batching remains SDK-derived, not caller-selected. Malformed,
+wrong-step or changed envelopes refuse without returning executable calldata.
+
+Fresh measurement and complete native validated replay use the held price.
+The immediate replay uses the exact held gas; later unfinished steps receive
+fresh gas bounds and remain in the same stateful sequence. Current compute,
+poster, minimum headroom, tightening ceilings and full-sequence actual-balance
+affordability still apply. Exact replay also checks gross-gas headroom without
+counting Nitro's temporary compute hold. Neither natural child base fees nor
+payer balances are overridden. A higher advisory quote alone is not a refusal;
+an invalid current fee, insufficient gas or failed proof never silently raises
+the held envelope.
+
+Approvals/resets, atomic launches, every staged next step and cancellation use
+this same contract. Cancellation retains its adapter-independent recovery policy.
+Fresh receipt/nonce/confirmation and final canonical checks remain mandatory.
+When supplied, `submissionClient` must estimate the exact held gas/price at
+`latest`; it still proves only immediate transport acceptance, not wallet identity.
+Returned estimates/admission are fresh and do not trust fields supplied with the
+reviewed transaction. Generic EVM external data-fee callbacks now receive the
+exact simulated `gas` and `gasPrice`.
+
+
 
 ## 0.6.3 certification and dependency-round reductions
 
@@ -217,16 +327,20 @@ capabilities and explicit atomic/staged behavior are unchanged.
 ## Deployed infrastructure
 
 Robinhood mainnet (`4663`) selects the mined `pool-launch-v1` deployment captured at block
-`80548181` in `contracts/deployments/launch/pool-launch-v1/20261005T053747Z-b5a7b88/manifest.json`.
-The manifest records successful receipts and canonical runtime evidence. The graph has two
-adapters and five admitted profiles: one fixed pool-bound V4 profile and four canonical Abyss
-variants. It does not deploy a shared V4 root.
+`82880546` in `contracts/deployments/launch/pool-launch-v1/20261008T000141Z-e174ce6/manifest.json`.
+The manifest records 22 successful receipts and canonical runtime evidence. The graph has two
+adapters and five admitted profiles: one fixed pool-bound config6/V2 profile and four
+canonical Abyss variants. It does not deploy a shared V4 root.
+The current V4 profile is `0xf18140c2fb66a4202a0f22d62d6288bf7976db108de5381e5497aaed332a06f8`.
+Its exact creation-code hash is `0x11c4c7b1f265ed708b7d53ab828c89d237ca821333daa808f1913986c6f8f1ab`;
+the release artifact's unpatched runtime is not a deployed hook-instance runtime.
+October5 config5/V1 evidence remains historical, never a substitute for this graph.
 
 | SDK field | Mainnet address |
 | --- | --- |
-| `launchOrchestrator` | `0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E` |
-| `launchImplementationRegistry` | `0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee` |
-| `launchFeeOwnerRegistry` | `0x15778Aad08e12D458B2848F035860e2a8c2a0725` |
+| `launchOrchestrator` | `0x91560876033d568d25CDe98C78c33ff8FC43962c` |
+| `launchImplementationRegistry` | `0xB2B0f9F36617810D67b8fC175153Aa10024C1358` |
+| `launchFeeOwnerRegistry` | `0x64b5ca1f21B8E84305b0e4D847924dca39Eb1fcb` |
 
 `getAddresses(4663)` exposes this graph; `robinhoodLaunchApplication` exposes the mined
 launch constants. Launch addresses on `31337` and `46631` remain zero unless configured.
@@ -248,17 +362,23 @@ independently certifies config-1 variants without an author envelope or royalty 
 The admission EIP-712 domain is `Black Market Launch Registry`, version `2`.
 
 `LaunchBoundsV2` has five members: minimum/maximum tick spacing, maximum positions,
-maximum oracle cardinality, and fee-mode flags. Creators select valid LP/hook rates below
-1,000,000 pips, a registered oracle configuration, and per-pool external-liquidity policy.
+maximum oracle cardinality, and fee-mode flags. LP and SharedV4 hook fees remain below
+1,000,000 pips. Pool-bound minimum/maximum hook fees satisfy
+`0 <= minimumHookFeePips <= hookFeePips <= 1,000,000`; sensitivity is an explicit uint32.
+Creators also select a registered oracle configuration and per-pool external-liquidity policy.
 Author royalty ceilings are separate. Robinhood P1 `(1,4096)`, P2 `(6,4096)`, and P3 `(17,4096)`
 can use the same admitted profile; the selected oracle is checked at the pinned block.
 With `externalLiquidityDisabled=false`, third-party LP add/remove is allowed after opening.
 Permanent launch custody and pre-opening protection still apply.
 
-The deployed pool stack uses `FixedFeePoolHookV1`, `PoolHookDeployerV1`,
-`PoolMarketAdapterV1`, and `PoolFeeCollectorFactoryV1`. The complete `fixedFeePoolHookV1Abi`
-includes the exact **one-tuple, 18-field constructor**, callbacks, events, and errors from the
-mined artifact. Its fixed scalar fee calculation does not imply a scalar-argument constructor.
+Config5 exports `fixedFeePoolHookV1Abi`, `poolHookDeployerV1Abi` and
+`poolFeeCollectorFactoryV1Abi` for the actual V1 wire contracts. Config6 exports
+`fixedFeePoolHookConfigV6Abi`, `poolHookDeployerConfigV6Abi` and
+`poolFeeCollectorFactoryConfigV6Abi`, including its 20-word constructor and
+`minimumHookFeePips()` / `feeSensitivityPipsSecondsPerTick()` getters. Existing
+config5 hooks are not queried for nonexistent V2 fee getters. Constructor encoding
+and initcode hashing require explicit `configVersion`; schema constants are
+`V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V5` and `_V6`, never an ambiguous alias.
 Generic shared contracts are `FixedFeeSharedHookV1`, `SharedHookDeployerV1`, and
 `SharedMarketAdapterV1`; they require their own admitted deployment graph.
 Other current ABI exports include `sharedMarketAdapterV1Abi`, `sharedHookDeployerV1Abi`,
@@ -273,13 +393,13 @@ Validation uses `validateV4LifecycleMarket`; the collector factory getter is
 | --- | --- |
 | `readLifecycleProfiles({client, orchestrator, profileIds?, offset?, limit?})` | Bounded registry discovery, schema/topology dispatch, reviewed graph/terms certification and current registry admission. Default offset/limit is 0/100; explicit IDs can select a reviewed deployment's identities. |
 | `predictLifecycleToken({client, plan})` | Exact prediction from the explicit core. |
-| `preparePoolBoundLifecyclePlan({client, plan, signal?, onProgress?})` | Finalizes current config-5 salts offchain, then rechecks frozen plan, token-factory binding and exact deployment metadata. Does not deploy. |
+| `prepareAndPlanLifecycleLaunch({client, account, plan, mode, limits?, fork?, receipts?, confirmations?, signal?, onProgress?})` | Mines config6/V2 salts offchain, verifies exact final deployment bindings and returns complete selected-mode admission under one SDK-owned fresh post-mining snapshot. No source-chain deployment or broadcast. |
 | `readPoolBoundHookDeployment({client, plan, marketIndex})` | Verifies typed factory, code chunks, constructor, normalized economics, initcode, salt, CREATE2 prediction and recorded provenance of existing code. Works with draft salts; permission bits are additionally required for executable predeployment. |
 | `buildPoolBoundHookDeploymentTransaction({client, plan, marketIndex})` | Optional permissionless typed `deploy(parameters,salt)` calldata. Does not create a token, register/initialize a pool, bind a collector or activate a launch. |
-| `planLaunch({client, account, plan, mode, limits?, fork?, receipts?, confirmations?})` | Validates domain/funding/admission and canonical progress, records the exact atomic attempt, and reviews only the explicitly selected mode. |
+| `planLaunch({client, account, plan, mode, limits?, fork?, receipts?, confirmations?, signal?})` | Independently fresh domain/funding/profile/progress/execution admission of the already-finalized commitment, simulating only the explicitly selected mode. |
 | `simulateLaunchPlan({client, planned, limits?, fork?, receipts?, confirmations?})` | Rereads canonical state and proves remaining work. Preserves receipt evidence, economics and selected mode. |
 | `readLaunchProgress({client, planned, receipts?, confirmations?})` | Confirmation-bound canonical state, latest head, receipt/replacement/reorg status, account-nonce safety and actual prepared market/live state. |
-| `buildNextTransaction({client, planned, submissionClient?, limits?, fork?, receipts?, confirmations?, action?})` | Rereads progress, constraints and stateful proof before returning one admitted transaction. Optional `submissionClient` adds read-only exact immediate envelope preflight. `action: "cancel"` uses the stored commitment without requiring fresh adapter/profile admission. Terminal launches return `undefined`. |
+| `buildNextTransaction({client, planned, reviewedTransaction?, submissionClient?, limits?, fork?, receipts?, confirmations?, action?})` | Rereads progress, constraints and complete stateful proof before returning one admitted transaction. Optional untrusted `reviewedTransaction` must match the current canonical next step and freshly prove its exact gas/price. Optional `submissionClient` adds read-only immediate exact-envelope preflight. `action: "cancel"` uses the stored commitment without requiring fresh adapter/profile admission. Terminal launches return `undefined`. |
 
 Clients may be viem public clients or raw `request({method,params})` RPC clients. Transport, wallet, signing and durable storage are application-owned. `PlannedLaunch` contains bigint values and live limit callbacks: persist `serializeLaunchPlan(plan)`, explicit execution mode, confirmation policy and receipt references, not the entire object.
 
@@ -328,21 +448,34 @@ Registry `authorizationDigest`, `beneficiaryNonces` and `registerProfile` ABIs e
 (uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])
 ```
 
-### Pool-bound V4, version 5
+### Pool-bound V4, version 6
 
-`encodePoolBoundV4LifecycleMarketConfig` / `decodePoolBoundV4LifecycleMarketConfig` accept only inner version 5. Market `configVersion` is 5. Exact schema:
+`encodePoolBoundV4LifecycleMarketConfig` / `decodePoolBoundV4LifecycleMarketConfig` accept only inner version 6. Market `configVersion` is 6. Exact schema:
 
 ```text
-(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])
+(uint16,uint24,int24,uint160,uint24,uint24,uint32,uint8,uint8,address,bool,bytes32,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])
 ```
 
-Both preserve LP/hook fees, tick spacing, opening price, fee mode/denominator/treasury, external-liquidity policy, and canonical oracle identity. Then come `profileId`, `termsDigest`, `developerBeneficiary`, and explicit `developerFeeBps`, followed by positions. Version 5 inserts `hookSalt` immediately before `profileId`. Every developer rate, including zero, is creator-selected. Copy terms from the selected profile's envelope. Inner/outer profile IDs must match; author identity is not the live payout. The creator rate cannot exceed either reviewed maximum or protocol ceiling.
+Both preserve LP/hook fees, tick spacing, opening price, fee mode/denominator/treasury, external-liquidity policy, and canonical oracle identity. Pool-bound version6 inserts `uint24 minimumHookFeePips` and `uint32 feeSensitivityPipsSecondsPerTick` **immediately after `uint24 hookFeePips`**; `hookFeePips` remains the maximum. All other fields retain their order, including `hookSalt` immediately before `profileId`. Then come `profileId`, `termsDigest`, `developerBeneficiary`, explicit `developerFeeBps`, and positions. Every developer rate, including zero, is creator-selected. Copy terms from the selected profile's envelope. Inner/outer profile IDs must match; author identity is not the live payout. The creator rate cannot exceed either reviewed maximum or protocol ceiling.
+
+All three hook fee settings are independently chosen per pool and frozen at launch.
+One million pips is 100%, and 10,000 pips is 1%. `validatePoolBoundHookFees` validates
+integer `0 <= minimum <= maximum <= 1,000,000` and sensitivity `0..4,294,967,295`.
+Sensitivity has units **fee-pips × seconds/tick**. For positive normalized,
+oracle-clamped observed tick change over `ageSeconds`, the rate is
+`min(maximum, minimum + floor(sensitivity * positiveObservedTickChange / ageSeconds))`.
+Unavailable history, flat/falling observations and zero sensitivity use minimum;
+maximum zero yields zero. No fixed percentage trigger or fixed seconds multiplier
+is implicit in these values. Registered oracle normalization and movement clamping
+remain authoritative.
 
 ```ts
 const profile = profiles.find((row) => row.id === selectedProfileId);
 if (!profile?.admitted || !profile.envelope || !profile.developerTerms) throw new Error("Selected profile is not reviewed/admitted");
 const config = encodePoolBoundV4LifecycleMarketConfig({
-  version: 5, hookSalt: zeroHash, lpFeePips, tickSpacing, sqrtPriceX96, hookFeePips, feeMode,
+  version: 6, hookSalt: zeroHash, lpFeePips, tickSpacing, sqrtPriceX96,
+  hookFeePips: creatorMaximumFeePips, minimumHookFeePips: creatorMinimumFeePips,
+  feeSensitivityPipsSecondsPerTick: creatorSensitivityPipsSecondsPerTick, feeMode,
   protocolFeeDenominator: profile.envelope.protocolFeeDenominator,
   treasury: profile.envelope.protocolTreasury,
   externalLiquidityDisabled: creatorSelectedExternalLiquidityDisabled,
@@ -363,30 +496,32 @@ Abyss retains `encodeAbyssLifecycleMarketConfig` / `decodeAbyssLifecycleMarketCo
 
 ## Freeze and finalize bound economics
 
-Freeze chain/core/creator/nonce, token identity, sorted fee policies, all funding/budgets/positions/terms and ordered buys before mining. Create config 5 with the chosen bound profile's exact terms and a draft salt; never implicitly reinterpret a shared config.
+Freeze chain/core/creator/nonce, token identity, sorted fee policies, all funding/budgets/positions/terms and ordered buys before mining. Create config6 with all three creator fee settings, the chosen bound profile's exact terms and a draft salt; never implicitly reinterpret a shared or historical config5 config.
 
 ```ts
 const stop = new AbortController();
-const finalized = await preparePoolBoundLifecyclePlan({
-  client, plan: draft, signal: stop.signal,
+const finalized = await prepareAndPlanLifecycleLaunch({
+  client, account: draft.creator, plan: draft, mode: "staged", signal: stop.signal,
   onProgress: ({marketIndex, attempts, predictedHook}) => console.log(marketIndex, attempts.toString(), predictedHook),
 });
 const saved = serializeLaunchPlan(finalized.plan);
-const boundIndex = finalized.plan.markets.findIndex((market) => market.configVersion === 5);
+if (!finalized.simulation.admitted) throw new Error(finalized.simulation.reason);
+// Use finalized.progress and finalized.hookDeployments; do not immediately plan again.
+const boundIndex = finalized.plan.markets.findIndex((market) => market.configVersion === 6);
 const optionalPredeploy = await buildPoolBoundHookDeploymentTransaction({client, plan: finalized.plan, marketIndex: boundIndex});
 // Inspect only; separately admit/authenticate/sign any optional predeployment.
 ```
 
-The collector supplies canonical normalized economic commitment and constructor metadata. `hashPoolBoundV4MarketCommitment` uses domain `black-market.pool-bound-market-economics.v1`: chain, core, registrar, predicted token, adapter/profile/quote/budget/version and encoded config hash with **only hookSalt zeroed**. Developer identity/digest/rate remain committed. The 18-word constructor freezes manager, registrar, oracle factory, core, locker, token/quote, fees/spacing/price/policy, economic commitment and position count. Salt is used verbatim by CREATE2, not as a constructor argument.
+The collector supplies canonical normalized economic commitment and constructor metadata. `hashPoolBoundV4MarketCommitment` uses domain `black-market.pool-bound-market-economics.v1`: chain, core, registrar, predicted token, adapter/profile/quote/budget/version and encoded config hash with **only hookSalt zeroed**. Minimum, maximum and sensitivity, plus developer identity/digest/rate, remain committed. `PoolBoundHookParametersV2` and `poolBoundHookParametersV2Components` are the current constructor API; there is no V1 alias. The constructor freezes manager, registrar, oracle factory, core, locker, token/quote, fees/spacing/price/policy, economic commitment and position count. Salt is used verbatim by CREATE2, not as a constructor argument. Local/remote constructor equality and deployed immutable getters bind both new values.
 
-Mining is cancellable/nonblocking; `abort()` raises `AbortError` and does not cancel an onchain launch. Persist the returned finalized plan, not the draft. A salt-only change preserves normalized economics but changes final plan hash. Other changes invalidate initcode/mining; concurrent mutation is refused. Normal next-step review rechecks token factory and the captured `hookDeployments` baseline. Predeployment is permissionless, but code presence or self-reported getters alone cannot be adopted as provenance. It does not register/initialize/seal/open a market and does not eliminate real code-deposit/setup gas.
+Mining is cancellable/nonblocking; `abort()` raises `AbortError` and does not cancel an onchain launch. The miner reuses the exact CREATE2 preimage's immutable prefix/suffix and checks all 14 permission bits before materializing rejected-address progress at bounded macrotask boundaries. Persist the returned finalized plan, not the draft. A salt-only change preserves normalized economics but changes final plan hash. Other changes invalidate initcode/mining; concurrent mutation is refused. Normal next-step review rechecks token factory and the captured `hookDeployments` baseline. Predeployment is permissionless, but code presence or self-reported getters alone cannot be adopted as provenance. It does not register/initialize/seal/open a market and does not eliminate real code-deposit/setup gas.
 
 ## Explicit execution mode and indivisible activation
 
-Every planning call requires `mode: "atomic" | "staged"`. For an unstarted launch, `atomicAttempt` records the exact approval/funding plus atomic sequence independently of the requested graph.
+Every planning call requires `mode: "atomic" | "staged"`. Only that requested mode receives economic simulation; staged does not compute or expose an unused atomic attempt.
 
 - Atomic: after funding prerequisites, token creation, empty infrastructure, all mint/lock/buys/public activation are one transaction.
-- Staged: prerequisites, `beginLaunch(Staged)`, contiguous empty `prepareMarkets` batches, then one `activateLaunch`. Preparation batches may shrink to fit.
+- Staged: prerequisites, `beginLaunch(Staged)`, contiguous empty `prepareMarkets` batches, then one `activateLaunch`. An unclassified stateful preparation refusal may try bounded smaller empty batches, without claiming gas exhaustion. Reviewed decoded core/validator/registry/hook invariant errors, including `InvalidPreparationOrder`, `InvalidPhase` and constructor/configuration guards, stop that search. Unknown wrappers such as `DeploymentFailed`, generic error/panic data and near-cap consumption do not establish an inner cause.
 - Activation cannot split. If mint/lock/all buys/opening cannot fit, staged is also refused. No position/buy/minimum is omitted to manufacture success.
 
 No automatic atomic-to-staged fallback exists. Obtain separate consent to review the same commitment as staged. Both venues use token transfer restrictions plus activation-time canonical opening-state checks, not a pool gate. Manipulated opening price or preactivation liquidity fails verification; the token stays inactive and the launch remains Ready/cancellable. Failed activation rolls back every mint, seal, buy and opening together.
@@ -413,6 +548,20 @@ the exact returned gas/fee envelope, every postcondition and all ordered buy bou
 Fork discovery uses gross sequential estimates, not refund-reduced receipt gas as an
 executable minimum. Explicit ceiling recovery preserves gasleft/EIP-150 validation and
 carries that successfully replayed ceiling, never a smaller unproved envelope.
+
+Replay source, HTTP and malformed-response failures remain provisional with
+`executionProof: "unavailable"` and do not retry economic execution. `AbortError`
+propagates unchanged, including cancellation during supplied policy and Nitro getter
+reads. A recognized execution refusal may discover at most one genuinely larger
+validated envelope within the same legal compute/total limits. Without returned
+failing-call evidence, `failedTransactionId` stays absent; an opaque RPC error does
+not invent a failing transaction or authorize preparation partitioning.
+Returned failures retain the actual exact-replay prefix and its first failing
+transaction, never a transaction ID borrowed from permissive measurement. For the
+first failed preparation only, reviewed invariant errors may decode native
+`error.data` when raw `returnData` is empty; nonempty raw bytes take precedence.
+Unknown errors, `Panic`, generic `Error` and deployment wrappers do not establish
+a deterministic preparation invariant or an out-of-gas cause.
 
 Sequential backends:
 
@@ -441,6 +590,11 @@ steps whose execution cannot yet be independently estimated. It budgets poster g
 The buffered compute-discovery envelope plus buffered poster budget is carried into
 exact validated replay; an approximate poster quote is never subtracted from total
 gas use to certify exact compute fit.
+Measurement waits for successful capability and candidate-specific poster evidence,
+then uses the legal complete compute-plus-poster envelope. Near-cap gas consumption
+does not diagnose OOG, constructor failure or collision. Unsupported/transport
+evidence remains unavailable, and only a recognized execution-envelope refusal
+can trigger bounded envelope discovery.
 
 A separate pinned validated simulation probes all three ArbOS/version/getter values
 against the canonical observations. Only that isolated capability probe temporarily
@@ -460,6 +614,19 @@ this complete envelope once; adding `posterFee` again would double-charge. A cal
 `estimateDataFee` is therefore rejected on Nitro. On generic EVM it retains its original
 semantics as a validated external fee added outside execution gas. Missing external fee
 does not manufacture an all-in estimate. All observations and limits refresh for build-next.
+For initial construction, the exact legacy gas-price envelope is the greater of
+the fresh RPC recommendation and twice the pinned base fee. This avoids
+underpriced submission when `eth_gasPrice` lags the block base fee. Reviewed
+envelopes retain their exact gas/price only after fresh full-sequence measurement,
+native validated replay, current minimum headroom and affordability checks.
+The held price need not equal a new recommendation or twice the current base fee;
+natural child fees and the actual submission estimate must accept it. Replay,
+affordability and submission use that same price, without a base-fee override.
+A known aggregate budget whose legal minimum already exceeds its ceiling refuses
+before capability probes or poster work; equality is allowed. A definitive returned
+failure from the final exact replay skips a later payer-balance lookup, while
+retaining fee/estimate validation and final canonical checks. Successful replay
+still requires current actual-balance affordability.
 
 Source references: [ArbSys version encoding](https://github.com/OffchainLabs/nitro-precompile-interfaces/blob/main/ArbSys.sol),
 [ArbGasInfo compute getters](https://github.com/OffchainLabs/nitro-precompile-interfaces/blob/main/ArbGasInfo.sol),
@@ -502,8 +669,12 @@ const planned = await planLaunch({ client, account: plan.creator, plan, mode: "a
 const submissionClient = {
   request: ({ method, params }) => activeProvider.request({ method, params }),
 };
-const next = await buildNextTransaction({ client, planned, receipts, submissionClient });
-// Freshly verify the active wallet account/connector/chain again, then review/sign next.
+const reviewedTransaction = await buildNextTransaction({ client, planned, receipts, submissionClient });
+// Present this exact envelope for user review. After explicit confirmation:
+if (reviewedTransaction !== undefined) {
+  const next = await buildNextTransaction({ client, planned, receipts, submissionClient, reviewedTransaction });
+  // Recheck active account/connector/chain and strict exact-envelope equality before signing next.
+}
 ```
 
 When supplied, `submissionClient` receives only read-only `eth_chainId` and
@@ -608,13 +779,16 @@ irreversible. The official SDK chain-4663 RPC is the default.
 
 The implementation imports public `@black-market/sdk`, resolves `getAddresses(4663)`,
 derives the creator from the key and discovers the actual admitted profiles. V4 requires
-bound topology/config `5`; Abyss requires exact adapter `profileId(3)` QUOTE_ORACLE/config
+bound topology/config `6` on a new V2-constructor graph; Abyss requires exact adapter `profileId(3)` QUOTE_ORACLE/config
 `1`. It verifies wrapped-native binding/decimals and registered P1 oracle `(1,4096)`.
-All eight original token/reward/venue/position/mode cases retain their exact economics:
+All eight original token/reward/venue/position/mode cases retain their inventory and workload:
 ERC20 `1_000_000e18` supply; ERC404 `10_000e18` supply / `100e18` NFT unit; selected
 staking/dividends and token-only burn; one through five permanent positions and ordered
 native-wrap opening buys. It saves identity/finalized salts/plans before execution and
 never changes mode, drops positions/buys or overrides failed admission.
+V4 examples select the actual admitted version: config5 preserves fixed-fee V1
+economics; config6 freezes max `10000`, min `1000` pips and sensitivity `7654321`
+fee-pips × seconds/tick on its independently admitted graph.
 Optional `NFT_BASE_URI` provides an ERC404 base URI you actually host; its default is
 empty, with real NFT units/mirror behavior but no claim of hosted NFT metadata.
 
@@ -681,7 +855,7 @@ NFC/trimmed text, normalized URLs, fixed field order, and null absent optional v
 | --- | --- |
 | `LAUNCH_API_TEST_URL` | Required HTTP service root, e.g. `http://127.0.0.1:18763`; no implicit production target. |
 | `LAUNCH_API_TEST_CHAIN_ID` | Defaults to `4663`; must be configured on the test service. |
-| `LAUNCH_API_TEST_ORCHESTRATOR` | Defaults to `0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E`; must match the service's signing domain. |
+| `LAUNCH_API_TEST_ORCHESTRATOR` | Defaults to `getAddresses(4663).launchOrchestrator` (October8 mined graph); must match the service's signing domain. |
 | `LAUNCH_API_TEST_PRIVATE_KEY` | Required only for the explicit signed suite; disposable EOA key, never a production key. |
 
 ```sh

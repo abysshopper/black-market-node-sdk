@@ -93,7 +93,7 @@ export function readExampleConfiguration(sdk, redactor, env = process.env) {
   };
   return {
     chainId: "4663", rpcUrl, apiUrl: launchApiUrl(env.LAUNCH_API_URL),
-    orchestrator: addresses.launchOrchestrator, creator: account.address,
+    orchestrator: addresses.launchOrchestrator, implementationRegistry: addresses.launchImplementationRegistry, creator: account.address,
     quoteAsset: addresses.weth, quoteDecimals: 18, oracleFactory: addresses.abyssFactory,
     nftBaseUri: env.NFT_BASE_URI || "",
     executionLimits: {

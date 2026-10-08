@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  decodeEventLog, decodeFunctionResult, encodeAbiParameters, encodeFunctionData, keccak256,
+  decodeEventLog, decodeFunctionResult, encodeAbiParameters, encodeFunctionData, erc20Abi, keccak256,
   recoverTypedDataAddress, toHex, zeroAddress, zeroHash,
 } from "viem";
 import {
@@ -17,8 +17,25 @@ const UNIT = 10n ** 18n;
 const OPENING_PRICE = 2n ** 96n;
 const MIN_SQRT_RATIO = 4295128739n;
 const MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342n;
+const BUY_SLIPPAGE_BPS = 50;
 const same = (left, right) => typeof left === "string" && typeof right === "string" && left.toLowerCase() === right.toLowerCase();
 const addressEqual = (actual, expected, label) => assert.ok(same(actual, expected), `${label}: expected ${expected}, got ${actual}`);
+
+// Receipt accounting, not a creator reserve or an unchanged-total-supply assumption.
+export function verifyLaunchInventory({ supply, totalSupply, orchestrator, creator, transfers, buys, orchestratorBalance, creatorBalance }) {
+  const minted = transfers.filter((transfer) => same(transfer.from, zeroAddress));
+  assert.equal(minted.reduce((sum, transfer) => sum + transfer.value, 0n), supply, "Exact minted supply");
+  assert.ok(minted.every((transfer) => same(transfer.to, orchestrator)), "Initial inventory belongs only to the launch core");
+  const burns = transfers.filter((transfer) => same(transfer.to, zeroAddress));
+  assert.ok(burns.every((transfer) => same(transfer.from, orchestrator)), "Launch residual burns belong only to the launch core");
+  const burned = burns.reduce((sum, transfer) => sum + transfer.value, 0n);
+  assert.ok(burned <= supply, "Residual inventory cannot exceed minted supply");
+  assert.equal(totalSupply, supply - burned, "Actual remaining supply accounts for residual burns");
+  assert.equal(orchestratorBalance, 0n, "No launch inventory remains in the core");
+  const bought = buys.filter((buy) => same(buy.recipient, creator)).reduce((sum, buy) => sum + buy.tokenOut, 0n);
+  assert.equal(creatorBalance, bought, "Creator receives only paid opening buys, never residual inventory");
+  return { minted: supply, burned, remainingSupply: totalSupply, creatorBought: bought };
+}
 
 
 function validateCase(scenario) {
@@ -34,7 +51,7 @@ function validateCase(scenario) {
     if (market.feeMode !== undefined && (market.venue !== "v4" || ![0, 1].includes(market.feeMode))) throw exampleError("UNSUPPORTED_CASE", "Only V4 markets support explicit feeMode 0/1");
     positions += market.positions;
   }
-  if (positions > 64) throw exampleError("UNSUPPORTED_CASE", "Case exceeds 64 permanent positions");
+  if (positions > 32) throw exampleError("UNSUPPORTED_CASE", "Case exceeds 32 permanent positions");
 }
 
 function rpcClient(url, artifacts, signal, label) {
@@ -85,7 +102,7 @@ function receiptEvents(receipt, address, abi, eventName) {
   });
 }
 
-async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal }) {
+async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits }) {
   const read = contractReader(client);
   artifacts.stage("profile-discovery");
   const profiles = await sdk.readLifecycleProfiles({ client, orchestrator: fixture.orchestrator });
@@ -93,8 +110,10 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   artifacts.event("registry-profiles", { profiles });
   const selected = {};
   if (scenario.markets.some((row) => row.venue === "v4")) {
-    const bound = profiles.filter((row) => row.venueKind === "uniswap-v4" && same(row.registration.configSchema, sdk.V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA) && row.topology.hookTopology === 2 && row.topology.configVersion === 5);
-    if (bound.length !== 1 || !bound[0].admitted || !bound[0].envelope || !bound[0].developerTerms) throw exampleError("PROFILE_NOT_ADMITTED", "An unambiguous admitted certified pool-bound V4/schema5 profile with frozen terms is required", { data: bound });
+    const bound = profiles.filter((row) => row.venueKind === "uniswap-v4" && row.topology.hookTopology === 2 &&
+      row.topology.configVersion === 6 && same(row.registration.configSchema, sdk.V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6) &&
+      row.adapter.configVersion === 6 && row.envelope?.configVersion === 6);
+    if (bound.length !== 1 || !bound[0].admitted || !bound[0].envelope || !bound[0].developerTerms) throw exampleError("PROFILE_NOT_ADMITTED", "An unambiguous admitted pool-bound V4 config6/V2 profile with its exact schema and frozen terms is required", { data: bound });
     selected.v4 = bound[0];
   }
   if (scenario.markets.some((row) => row.venue === "abyss")) {
@@ -109,6 +128,7 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
     selected.abyss = canonical[0];
   }
   const escrow = await read(fixture.orchestrator, sdk.launchLifecycleAbi, "fundingEscrow");
+  addressEqual(await read(escrow, sdk.lifecycleFundingEscrowAbi, "core"), fixture.orchestrator, "Funding escrow core");
   addressEqual(await read(escrow, sdk.lifecycleFundingEscrowAbi, "wrappedNative"), fixture.quoteAsset, "Actual native-wrap funding binding");
   assert.equal(await read(fixture.quoteAsset, sdk.erc20Abi, "decimals"), fixture.quoteDecimals, "Actual quote decimals");
   if (selected.v4) addressEqual(await read(selected.v4.adapter.implementation, sdk.poolMarketAdapterV1Abi, "oracleFactory"), fixture.oracleFactory, "V4 registered oracle factory");
@@ -137,6 +157,12 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   const token0 = BigInt(predictedToken) < BigInt(fixture.quoteAsset);
   const markets = scenario.markets.map((spec, marketIndex) => {
     const profile = selected[spec.venue];
+    const baseBudget = token.supply / BigInt(scenario.markets.length);
+    const tokenBudget = marketIndex === scenario.markets.length - 1
+      ? token.supply - baseBudget * BigInt(marketIndex) : baseBudget;
+    const baseMaximum = tokenBudget / BigInt(spec.positions);
+    const maximum = (index) => index === spec.positions - 1
+      ? tokenBudget - baseMaximum * BigInt(index) : baseMaximum;
     const positions = Array.from({ length: spec.positions }, (_unused, index) => ({
       tickLower: token0 ? index * 120 : index === spec.positions - 1 ? -887220 : -(index + 1) * 120,
       tickUpper: token0 ? index === spec.positions - 1 ? 887220 : (index + 1) * 120 : -index * 120,
@@ -148,17 +174,19 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
       const feeMode = spec.feeMode ?? 0;
       if (spec.positions > envelope.bounds.maximumPositions || 60 < envelope.bounds.minimumTickSpacing || 60 > envelope.bounds.maximumTickSpacing || !(envelope.bounds.feeModeFlags & 1 << feeMode)) throw exampleError("UNSUPPORTED_CASE", "Exact V4 positions, spacing or fee mode exceed the actual certified envelope", { data: { spec, bounds: envelope.bounds } });
       config = sdk.encodePoolBoundV4LifecycleMarketConfig({
-        version: 5, lpFeePips: 3000, hookFeePips: 10000, tickSpacing: 60, sqrtPriceX96: OPENING_PRICE,
+        version: 6, lpFeePips: 3000, hookFeePips: 10000,
+        minimumHookFeePips: 1000, feeSensitivityPipsSecondsPerTick: 7654321,
+        tickSpacing: 60, sqrtPriceX96: OPENING_PRICE,
         feeMode, protocolFeeDenominator: envelope.protocolFeeDenominator, treasury: envelope.protocolTreasury,
         externalLiquidityDisabled: true, oracleConfigId: fixture.oracleConfigId, profileId: profile.id,
         termsDigest: envelope.termsDigest, developerBeneficiary: envelope.beneficiary, developerFeeBps: 0, hookSalt: zeroHash,
-        positions: positions.map((position, index) => ({ ...position, salt: toHex(BigInt(marketIndex * 32 + index + 1), { size: 32 }), maxTokenAmount: 1100n * UNIT })),
+        positions: positions.map((position, index) => ({ ...position, salt: toHex(BigInt(marketIndex * 32 + index + 1), { size: 32 }), maxTokenAmount: maximum(index) })),
       });
     } else config = sdk.encodeAbyssLifecycleMarketConfig({
       profile: 3, fee: 3000, oracleConfigId: fixture.oracleConfigId, openingSqrtPriceX96: OPENING_PRICE,
-      positions: positions.map((position) => ({ ...position, tokenAmountMaximum: 1100n * UNIT })),
+      positions: positions.map((position, index) => ({ ...position, tokenAmountMaximum: maximum(index) })),
     });
-    return { adapterId: profile.registration.adapterId, profileId: profile.id, quoteAsset: fixture.quoteAsset, tokenBudget: 1100n * UNIT, configVersion: spec.venue === "v4" ? 5 : 1, config };
+    return { adapterId: profile.registration.adapterId, profileId: profile.id, quoteAsset: fixture.quoteAsset, tokenBudget, configVersion: spec.venue === "v4" ? profile.topology.configVersion : 1, config };
   });
   const buys = markets.flatMap((_market, marketIndex) => Array.from({ length: scenario.buysPerMarket }, () => ({
     marketIndex, quoteAmountIn: 10n ** 15n, minTokenOut: 1n, recipient: fixture.creator,
@@ -173,18 +201,17 @@ async function constructPlan({ client, fixture, scenario, sdk, artifacts, signal
   const plan = { ...draft, markets, buys, feeAssets, funding: [{ asset: fixture.quoteAsset, amount, kind: sdk.LifecycleFundingKind.NativeWrap, inputAsset: fixture.quoteAsset, inputAmount: amount, target: zeroAddress, data: "0x" }] };
   artifacts.save("draft-plan.json", plan);
   artifacts.result.chain.predictedToken = predictedToken;
-  artifacts.stage("salt-finalization", { predictedToken, selectedProfiles: Object.fromEntries(Object.entries(selected).map(([key, profile]) => [key, profile.id])) });
-  const prepared = await sdk.preparePoolBoundLifecyclePlan({ client, plan, signal,
+  artifacts.stage("preparation-and-planning", { predictedToken, selectedProfiles: Object.fromEntries(Object.entries(selected).map(([key, profile]) => [key, profile.id])) });
+  const planned = await sdk.prepareAndPlanLifecycleLaunch({ client, account: fixture.creator, plan, mode: scenario.mode, limits, confirmations: 1, buySlippageBps: BUY_SLIPPAGE_BPS, signal,
     onProgress: (progress) => artifacts.event("salt-mining", progress),
   });
-  artifacts.save("plan.json", JSON.parse(sdk.serializeLaunchPlan(prepared.plan)));
-  artifacts.save("hook-deployments.json", prepared.deployments);
-  const actualPrediction = await sdk.predictLifecycleToken({ client, plan: prepared.plan });
-  addressEqual(actualPrediction, predictedToken, "Finalized token prediction");
-  artifacts.result.chain.planHash = sdk.hashLaunchPlan(prepared.plan);
-  artifacts.result.chain.launchId = sdk.hashLaunchIdentity(prepared.plan);
-  artifacts.event("plan-finalized", { predictedToken, planHash: artifacts.result.chain.planHash, launchId: artifacts.result.chain.launchId, mode: scenario.mode, markets: markets.length, positions: scenario.markets.reduce((sum, market) => sum + market.positions, 0), buys: buys.length, deployments: prepared.deployments });
-  return { plan: prepared.plan, predictedToken };
+  artifacts.save("plan.json", JSON.parse(sdk.serializeLaunchPlan(planned.plan)));
+  artifacts.save("hook-deployments.json", planned.hookDeployments);
+  addressEqual(planned.predictedToken, predictedToken, "Finalized token prediction");
+  artifacts.result.chain.planHash = planned.planHash;
+  artifacts.result.chain.launchId = planned.launchId;
+  artifacts.event("plan-finalized", { predictedToken, planHash: planned.planHash, launchId: planned.launchId, mode: planned.mode, markets: markets.length, positions: scenario.markets.reduce((sum, market) => sum + market.positions, 0), buys: buys.length, deployments: planned.hookDeployments });
+  return { planned, predictedToken };
 }
 
 function apiTransport({ artifacts, signal, apiUrl }) {
@@ -247,6 +274,7 @@ async function stageMetadata({ fixture, plan, sdk, artifacts, transport, wallet 
   assert.equal(session.chainId, Number(plan.chainId)); addressEqual(session.wallet, plan.creator, "Session wallet");
   assert.equal(session.status, "ready_to_launch"); assert.equal(session.metadata.name, plan.token.name); assert.equal(session.metadata.symbol, plan.token.symbol);
   assert.equal(session.image, null, "This example stages metadata only");
+  assert.equal(session.metadata.description, metadata.description); assert.ok(session.transactionHash == null, "New metadata session cannot already bind a transaction");
   artifacts.result.api.status = "session-ready";
   return { api, sessionId: session.sessionId, capability: session.capability };
 }
@@ -271,8 +299,11 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
   let activation;
   for (let step = 0; step < 64; step += 1) {
     artifacts.stage("build-next", { step });
-    const next = await sdk.buildNextTransaction({ client, planned, receipts: references, limits, submissionClient: client });
+    const reviewedTransaction = planned.transactions[step];
+    const next = await sdk.buildNextTransaction({ client, planned, receipts: references, limits, submissionClient: client, reviewedTransaction, signal });
     if (!next) return { references, activation };
+    assert.ok(reviewedTransaction, "No transaction outside the saved review may be submitted");
+    for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field], `Fresh ${field} must match the saved review`);
     artifacts.event("next-admitted", { transaction: next });
     assert.equal(next.chainId, Number(planned.chainId));
     assert.equal(BigInt(await client.request({ method: "eth_chainId" })), planned.chainId, "Recheck execution chain before every send");
@@ -309,6 +340,8 @@ async function executePlan({ client, fixture, planned, sdk, artifacts, signal, l
     });
     const { row, receipt } = submitted;
     addressEqual(receipt.transactionHash, row.transactionHash, "Receipt transaction hash");
+    addressEqual(receipt.from, next.from, "Receipt sender");
+    addressEqual(receipt.to, next.to, "Receipt destination");
     if (BigInt(receipt.status) !== 1n) {
       let trace;
       try { trace = await client.request({ method: "debug_traceTransaction", params: [row.transactionHash, { tracer: "callTracer" }] }); }
@@ -371,7 +404,7 @@ async function verifyChain({ client, planned, references, activation, fixture, s
   artifacts.result.chain.tokenState = tokenState;
   artifacts.event("actual-token", { token, tokenState });
   assert.equal(tokenState.name, planned.plan.token.name); assert.equal(tokenState.symbol, planned.plan.token.symbol); assert.equal(tokenState.decimals, 18);
-  assert.equal(tokenState.initialSupply, planned.plan.token.supply); assert.equal(tokenState.totalSupply, planned.plan.token.supply);
+  assert.equal(tokenState.initialSupply, planned.plan.token.supply);
   assert.equal(tokenState.rewardMode, scenario.rewardMode); assert.equal(tokenState.burnOnCancel, false);
   assert.equal(tokenState.active, true); assert.equal(tokenState.cancelled, false); assert.equal(tokenState.exclusionsFinalized, true);
   addressEqual(tokenState.authority, fixture.orchestrator, "Token authority"); addressEqual(tokenState.tokenFactory, planned.tokenFactory, "Token factory"); addressEqual(tokenState.launchId, planned.launchId, "Token launch ID");
@@ -416,6 +449,14 @@ async function verifyChain({ client, planned, references, activation, fixture, s
   assert.equal(activated.length, 1); addressEqual(activated[0].launchId, planned.launchId, "Activation launch ID"); addressEqual(activated[0].planHash, planned.planHash, "Activation commitment"); addressEqual(activated[0].token, token, "Activation token");
   assert.equal(activated[0].marketCount, scenario.markets.length); assert.equal(activated[0].positionCount, expectedPositions);
   const buys = receiptEvents(activation.receipt, fixture.orchestrator, sdk.launchLifecycleAbi, "InitialBuyExecuted");
+  const transfers = artifacts.transactions.flatMap((row) => receiptEvents(row.receipt, token, erc20Abi, "Transfer"));
+  tokenState.inventory = verifyLaunchInventory({
+    supply: planned.plan.token.supply, totalSupply: tokenState.totalSupply,
+    orchestrator: fixture.orchestrator, creator: fixture.creator, transfers, buys,
+    orchestratorBalance: await read(token, sdk.lifecycleErc20Abi, "balanceOf", [fixture.orchestrator]),
+    creatorBalance: await read(token, sdk.lifecycleErc20Abi, "balanceOf", [fixture.creator]),
+  });
+  artifacts.event("actual-inventory-accounting", tokenState.inventory);
   artifacts.result.chain.buys = buys;
   artifacts.event("actual-ordered-buys", { buys });
   assert.equal(buys.length, planned.plan.buys.length);
@@ -482,7 +523,12 @@ async function publishAndVerify({ fixture, planned, activation, session, sdk, ar
       transport.setTimeoutMs(remainingMs);
       try { return await session.api.publishUploadSession(Number(planned.chainId), session.sessionId, session.capability, { chainId: Number(planned.chainId), transactionHash: activation.transactionHash }); }
       catch (error) {
-        if (error instanceof sdk.LaunchPublishPending && error.session.token != null) addressEqual(error.session.token, planned.predictedToken, "Pending API token");
+        if (error instanceof sdk.LaunchPublishPending) {
+          assert.equal(error.session.chainId, Number(planned.chainId));
+          addressEqual(error.session.wallet, planned.plan.creator, "Pending API wallet");
+          if (error.session.token != null) addressEqual(error.session.token, planned.predictedToken, "Pending API token");
+          if (error.session.transactionHash != null) addressEqual(error.session.transactionHash, activation.transactionHash, "Pending API activation");
+        }
         throw error;
       }
     },
@@ -493,6 +539,7 @@ async function publishAndVerify({ fixture, planned, activation, session, sdk, ar
   addressEqual(published.transactionHash, activation.transactionHash, "Published activation transaction");
   assert.equal(published.chainId, Number(planned.chainId)); addressEqual(published.wallet, planned.plan.creator, "Published wallet");
   assert.ok(["optimistic", "final"].includes(published.status)); assert.ok(["optimistic", "final"].includes(published.canonicalStatus));
+  assert.equal(published.metadataStatus, "ready", "Publication must actually make owner metadata available");
   assert.equal(published.metadata.name, planned.plan.token.name); assert.equal(published.metadata.symbol, planned.plan.token.symbol);
   artifacts.stage("api-token-verification");
   transport.setTimeoutMs(30_000);
@@ -528,14 +575,14 @@ async function executeExample({ fixture, scenario, sdk, artifacts, signal }) {
   assert.equal(chainId, 4663n, "Examples require Robinhood chain 4663");
   assert.equal(await client.request({ method: "eth_getCode", params: [fixture.creator, "latest"] }), "0x", "Creator must be an EOA");
   assert.notEqual(await client.request({ method: "eth_getCode", params: [fixture.orchestrator, "latest"] }), "0x", "Current orchestrator must be deployed");
+  addressEqual(await contractReader(client)(fixture.orchestrator, sdk.launchLifecycleAbi, "registry"), fixture.implementationRegistry, "Configured deployment registry");
   const wallet = createLocalLaunchWallet({ privateKey: process.env.PRIVATE_KEY, creator: fixture.creator, chainId, orchestrator: fixture.orchestrator, client, redactor: artifacts.redactor });
   artifacts.event("deployment-verified", { chainId, creator: fixture.creator, orchestrator: fixture.orchestrator });
-  const { plan, predictedToken } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal });
-  artifacts.stage("execution-planning");
   const limits = limitSource(fixture, artifacts);
-  const planned = await sdk.planLaunch({ client, account: fixture.creator, plan, mode: scenario.mode, limits, confirmations: 1 });
+  const { planned, predictedToken } = await constructPlan({ client, fixture, scenario, sdk, artifacts, signal, limits });
+  const { plan } = planned;
   artifacts.save("planning.json", planned);
-  artifacts.event("execution-plan", { mode: planned.mode, simulation: planned.simulation, atomicAttempt: planned.atomicAttempt, prerequisites: planned.prerequisites, transactions: planned.transactions });
+  artifacts.event("execution-plan", { mode: planned.mode, simulation: planned.simulation, prerequisites: planned.prerequisites, transactions: planned.transactions });
   assert.equal(planned.mode, scenario.mode, "Never silently change requested mode"); addressEqual(planned.predictedToken, predictedToken, "Planner token prediction");
   if (!planned.simulation.admitted) throw exampleError("PLAN_NOT_ADMITTED", planned.simulation.reason ?? "The actual SDK did not admit this exact launch", { simulation: planned.simulation });
   const transport = apiTransport({ artifacts, signal, apiUrl: fixture.apiUrl });

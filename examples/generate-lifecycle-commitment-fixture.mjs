@@ -1,7 +1,9 @@
 import { encodeAbiParameters, keccak256, parseAbiParameters, stringToHex } from "viem";
 import { writeFile } from "node:fs/promises";
 
-// Independent wire-format reference: does not import the SDK encoder under test.
+// Frozen historical config4 wire-format reference: does not import the SDK encoder under test.
+// Deliberately preserves the original bytes/hash, including pre-cutover allocations.
+// This vector is not an allocation-valid 0.7.0 construction or an executable launch.
 const wire = "(uint256 chainId,address orchestrator,address creator,uint256 nonce,(uint8 kind,uint8 rewardMode,string name,string symbol,uint256 supply,uint256 nftUnit,string metadataURI,bytes32 salt,address inventoryRecipient,bool burnOnCancel) token,(address asset,uint256 amount,uint8 kind,address inputAsset,uint256 inputAmount,address target,bytes data)[] funding,(address asset,uint16 ownerBps,uint16 rewardsBps,uint16 burnBps)[] feeAssets,(bytes32 adapterId,bytes32 profileId,address quoteAsset,uint256 tokenBudget,uint32 configVersion,bytes config)[] markets,(uint32 marketIndex,uint256 quoteAmountIn,uint256 minTokenOut,address recipient,uint160 sqrtPriceLimitX96)[] buys,uint256 deadline,uint16 executorFeeBps) plan";
 const address = (value) => `0x${value.toString(16).padStart(40, "0")}`;
 const bytes32 = (value) => `0x${value.toString(16).padStart(64, "0")}`;

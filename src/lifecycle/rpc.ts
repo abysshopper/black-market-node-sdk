@@ -17,6 +17,8 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
   private closed = false;
   private readonly concurrency: number;
   private diagnosticSequence = 0;
+  private chainId?: Promise<bigint>;
+  private readonly limitObservations = new Map<LifecycleLimitSource | undefined, Map<string, Promise<LifecycleLimitObservation>>>();
   constructor(readonly source: LifecycleRpcClient) {
     this.concurrency = source.supportsReadBatching === true ? lifecycleReadConcurrency : 1;
   }
@@ -28,7 +30,7 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     return result;
   }
 
-  private assertOpen(): void {
+  assertOpen(): void {
     if (this.closed) throw new LifecyclePlanningError("READ_SCOPE_CLOSED", "Lifecycle read invocation has already settled");
   }
 
@@ -59,6 +61,34 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
     }
   }
 
+  observeChainId(): Promise<bigint> {
+    this.assertOpen();
+    return this.chainId ??= this.run("eth_chainId", []).then((value) => rpcQuantity(value, "chain ID"));
+  }
+
+  observeLimits(context: LifecycleLimitContext, source?: LifecycleLimitSource): Promise<LifecycleLimitObservation> {
+    this.assertOpen();
+    // A caller callback is live policy, not an immutable pinned observation.
+    // Its current result must validate provenance; native fixed-state reads still reuse their wire cache.
+    if (typeof source === "function") return resolveLifecycleLimitsFresh(context, source).then((result) => {
+      this.assertOpen();
+      result.assertCurrent();
+      return result;
+    });
+    const key = JSON.stringify([context.chainId.toString(), context.account.toLowerCase(), context.orchestrator.toLowerCase(), context.block.number.toString(), context.block.hash.toLowerCase(), context.block.timestamp.toString(), context.block.gasLimit.toString(), context.block.baseFeePerGas?.toString()]);
+    let byContext = this.limitObservations.get(source);
+    if (byContext === undefined) { byContext = new Map(); this.limitObservations.set(source, byContext); }
+    const contexts = byContext;
+    let observation = byContext.get(key);
+    if (observation === undefined) {
+      observation = resolveLifecycleLimitsFresh(context, source);
+      byContext.set(key, observation);
+      const owned = observation;
+      void owned.catch(() => { if (contexts.get(key) === owned) contexts.delete(key); });
+    }
+    return observation.then((result) => { this.assertOpen(); result.assertCurrent(); return result; });
+  }
+
   read(method: string, params: readonly unknown[], block: LifecycleBlock): Promise<unknown> {
     this.assertOpen();
     // Source identity is this scope's original client. The complete wire call includes
@@ -79,6 +109,8 @@ class InvocationLifecycleClient implements LifecycleRpcClient {
   close(): void {
     this.closed = true;
     this.reads.clear();
+    this.chainId = undefined;
+    this.limitObservations.clear();
   }
 }
 
@@ -92,6 +124,13 @@ export async function withLifecycleReadClient<T>(source: LifecycleRpcClient, wor
 
 export function lifecycleSourceClient(client: LifecycleRpcClient): LifecycleRpcClient {
   return client instanceof InvocationLifecycleClient ? client.source : client;
+}
+
+/** Internal continuations cannot retain proof after their read owner settles. */
+export function assertLifecycleReadClientOpen(client: LifecycleRpcClient): boolean {
+  if (!(client instanceof InvocationLifecycleClient)) return false;
+  client.assertOpen();
+  return true;
 }
 
 function emitLifecycleDiagnostic(listener: LifecycleDiagnosticListener, event: LifecycleDiagnosticEvent): void {
@@ -129,6 +168,13 @@ export async function lifecyclePinnedRpc(client: LifecycleRpcClient, method: "et
 export async function lifecycleRpc(client: LifecycleRpcClient, method: string, params: readonly unknown[] = []): Promise<unknown> {
   return client instanceof InvocationLifecycleClient ? client.run(method, params) : client.request({ method, params });
 }
+/** One invocation's observed identity. End-of-operation and submission checks
+ * deliberately use uncached eth_chainId so a switched provider cannot retain proof. */
+export function readLifecycleChainId(client: LifecycleRpcClient): Promise<bigint> {
+  return client instanceof InvocationLifecycleClient
+    ? client.observeChainId()
+    : lifecycleRpc(client, "eth_chainId").then((value) => rpcQuantity(value, "chain ID"));
+}
 export function rpcObject(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", `${label} must be an object`);
   // The object guard establishes the RPC record boundary; fields remain untrusted unknowns.
@@ -143,6 +189,19 @@ export function rpcQuantity(value: unknown, label: string): bigint {
   const hex = rpcHex(value, label);
   if (!/^0x[0-9a-fA-F]+$/.test(hex)) throw new LifecyclePlanningError("INVALID_RPC_RESPONSE", `${label} must be a quantity`);
   return BigInt(hex);
+}
+
+/** Public refusal details contain only fixed text and numeric RPC/HTTP codes, never provider messages. */
+export function lifecycleFailureReason(failure: unknown): string {
+  for (let depth = 0; depth < 8 && failure !== null && typeof failure === "object"; depth += 1) {
+    const error = failure as { code?: unknown; status?: unknown; statusCode?: unknown; cause?: unknown };
+    const status = error.status ?? error.statusCode;
+    if (typeof status === "number" && Number.isSafeInteger(status) && status >= 400 && status <= 599) return `HTTP read failed (status ${status})`;
+    if (typeof error.code === "number" && Number.isSafeInteger(error.code)) return `RPC request failed (code ${error.code})`;
+    if (failure instanceof LifecyclePlanningError) return "Lifecycle planning guard rejected the request";
+    failure = error.cause;
+  }
+  return "Read or execution proof failed";
 }
 export async function readLifecycleBlock(client: LifecycleRpcClient, tag: Hex | "latest" = "latest"): Promise<LifecycleBlock> {
   const value = rpcObject(await lifecycleRpc(client, "eth_getBlockByNumber", [tag, false]), "block");
@@ -205,12 +264,37 @@ async function readNitroScalar(context: LifecycleLimitContext, to: Address, abi:
   return decodeFunctionResult({ abi, functionName, data: result }) as bigint;
 }
 
-export async function resolveLifecycleLimits(context: LifecycleLimitContext, source?: LifecycleLimitSource): Promise<{ limits: ResolvedLifecycleLimits; configuration: LifecycleLimits }> {
+export type LifecycleLimitObservation = {
+  limits: ResolvedLifecycleLimits;
+  configuration: LifecycleLimits;
+  assertCurrent: () => void;
+};
+
+/** Reuse only SDK-owned, pinned observations inside the still-open invocation.
+ * Caller-supplied policies remain checked for mutation on every consumption. */
+export function resolveLifecycleLimits(context: LifecycleLimitContext, source?: LifecycleLimitSource): Promise<LifecycleLimitObservation> {
+  return context.client instanceof InvocationLifecycleClient
+    ? context.client.observeLimits(context, source)
+    : resolveLifecycleLimitsFresh(context, source);
+}
+
+async function resolveLifecycleLimitsFresh(context: LifecycleLimitContext, source?: LifecycleLimitSource): Promise<LifecycleLimitObservation> {
   let configuration: LifecycleLimits;
   const policyContext = typeof source === "function" && context.client instanceof InvocationLifecycleClient ? { ...context, client: context.client.source } : context;
   try { configuration = source === undefined ? {} : typeof source === "function" ? await source(policyContext) : source; }
-  catch (failure) { throw new LifecyclePlanningError("LIMIT_SOURCE_FAILED", `Supplied execution policy could not be resolved: ${failure instanceof Error ? failure.message : String(failure)}`); }
+  catch (failure) {
+    if (failure instanceof Error && failure.name === "AbortError") throw failure;
+    throw new LifecyclePlanningError("LIMIT_SOURCE_FAILED", `Supplied execution policy could not be resolved: ${lifecycleFailureReason(failure)}`);
+  }
   if (configuration === null || typeof configuration !== "object" || Array.isArray(configuration)) throw new LifecyclePlanningError("INVALID_LIMITS", "Supplied execution policy must be an object");
+  const suppliedConfiguration = configuration;
+  configuration = Object.freeze({ ...configuration });
+  const configurationKeys = Object.keys(configuration) as (keyof LifecycleLimits)[];
+  const assertCurrent = () => {
+    if (Object.keys(suppliedConfiguration).length !== configurationKeys.length || configurationKeys.some((key) => suppliedConfiguration[key] !== configuration[key])) {
+      throw new LifecyclePlanningError("LIMIT_CONTEXT_MISMATCH", "Supplied execution policy changed after its pinned observation");
+    }
+  };
   const headroomBps = configuration.headroomBps === undefined ? 1500 : configuration.headroomBps;
   if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and 10000 basis points");
   for (const limit of [context.block.gasLimit, configuration.chainGasLimit, configuration.rpcGasLimit, configuration.accountGasLimit, configuration.maxSimulationGas]) {
@@ -240,7 +324,10 @@ export async function resolveLifecycleLimits(context: LifecycleLimitContext, sou
       maxTxComputeGas = txComputeGas;
       maxBlockComputeGas = blockComputeGas;
       if ([maxTxComputeGas, maxBlockComputeGas].some((limit) => typeof limit !== "bigint" || limit <= 0n || limit > maxUint64)) throw new Error("Nitro compute getters must be positive uint64 values");
-    } catch (failure) { throw new LifecyclePlanningError("NITRO_LIMITS_UNAVAILABLE", `Pinned Nitro compute limits could not be established: ${failure instanceof Error ? failure.message : String(failure)}; header gasLimit is not a fallback`); }
+    } catch (failure) {
+      if (failure instanceof Error && failure.name === "AbortError") throw failure;
+      throw new LifecyclePlanningError("NITRO_LIMITS_UNAVAILABLE", `Pinned Nitro compute limits could not be established: ${lifecycleFailureReason(failure)}; header gasLimit is not a fallback`);
+    }
     if (configuration.estimateDataFee !== undefined) throw new LifecyclePlanningError("INVALID_LIMITS", "Nitro poster fees are already included in gas; an external data-fee estimator would double-charge them");
   }
   const envelopeCaps = [configuration.chainGasLimit, configuration.rpcGasLimit, configuration.accountGasLimit].filter((limit): limit is bigint => limit !== undefined);
@@ -256,15 +343,16 @@ export async function resolveLifecycleLimits(context: LifecycleLimitContext, sou
     ...(configuration.maxCalldataBytes === undefined ? ["Applicable chain/account/RPC calldata byte cap is unknown"] : []),
     ...(configuration.maxSimulationGas === undefined ? ["RPC aggregate simulation gas cap is unknown"] : []),
   ];
+  assertCurrent();
   return {
-    configuration,
-    limits: {
+    configuration, assertCurrent,
+    limits: Object.freeze({
       protocol, executionGasCeiling, transactionGasCeiling, arbOSVersion, maxTxComputeGas, maxBlockComputeGas, headroomBps,
       maxCalldataBytes: configuration.maxCalldataBytes, maxSimulationGas: configuration.maxSimulationGas,
       blockGasLimit: context.block.gasLimit, chainGasLimit: configuration.chainGasLimit,
       rpcGasLimit: configuration.rpcGasLimit, accountGasLimit: configuration.accountGasLimit,
-      unknownExecutionConstraints,
-      unknownConstraints: [...unknownExecutionConstraints, ...(protocol === "evm" && configuration.estimateDataFee === undefined ? ["External chain-specific data fee is unavailable"] : [])],
-    },
+      unknownExecutionConstraints: Object.freeze(unknownExecutionConstraints),
+      unknownConstraints: Object.freeze([...unknownExecutionConstraints, ...(protocol === "evm" && configuration.estimateDataFee === undefined ? ["External chain-specific data fee is unavailable"] : [])]),
+    }),
   };
 }

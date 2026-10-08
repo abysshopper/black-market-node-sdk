@@ -3,7 +3,7 @@ import { zeroAddress } from "viem";
 import {
   createProtocolPublicClient, getAddresses, isSupportedChainId,
   launchLifecycleAbi, readLifecycleProfiles,
-} from "../dist/index.js";
+} from "@black-market/sdk";
 
 const chainId = Number(process.env.CHAIN_ID ?? "4663");
 if (!isSupportedChainId(chainId)) throw new Error("CHAIN_ID must be 4663, 46631, or 31337");

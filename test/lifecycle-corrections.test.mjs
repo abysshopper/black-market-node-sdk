@@ -6,6 +6,10 @@ import { encodeAbiParameters, keccak256 } from "viem";
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
 const { adapterRegistrationV1Components, buildNextTransaction, hashLaunchIdentity, hashLaunchPlan, launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi, lifecycleMarketComponents, LifecyclePhase, lifecycleRegistryAbi, launchProgressV1Components, marketIdentityV1Components, parseLaunchPlan, planLaunch, preparedMarketV1Components, profileRegistrationV1Components, readLaunchProgress, simulateLaunchPlan } = await import(sdkPath);
 const fixture = JSON.parse(await readFile(new URL("./fixtures/launch-lifecycle-v1.json", import.meta.url), "utf8"));
+// The portable golden vector predates full allocation; execution fixtures use
+// its exact position maxima without changing the historical codec evidence.
+fixture.plan.markets = fixture.plan.markets.map((market) => ({ ...market, tokenBudget: (10n ** 24n).toString() }));
+fixture.plan.token.supply = (2n * 10n ** 24n).toString();
 // Deterministic fake-RPC consumer fixtures for the observed corrective
 // behaviors: injected chain state only, no network, no mocked SDK echoes.
 // Contract answers are encoded with the frozen public ABI exactly as a chain
@@ -180,7 +184,7 @@ function minimalPlanned(plan) {
   return {
     plan, planHash: hashLaunchPlan(plan), launchId: hashLaunchIdentity(plan), predictedToken: TOKEN, tokenFactory: ADAPTER, tokenFactoryCodeHash: keccak256(CODE), hookDeployments: [],
     account: plan.creator, chainId: plan.chainId, mode: "staged", confirmations: 1,
-    transactions: [], prerequisites: [], profiles: [], simulation, atomicAttempt: simulation,
+    transactions: [], prerequisites: [], profiles: [], simulation,
     progress: null, preparationBatchSize: plan.markets.length,
   };
 }
@@ -198,6 +202,8 @@ test("absent receipt with an unchanged observed block stays pending and blocks f
     buildNextTransaction({ client, planned: minimalPlanned(plan), action: "continue", receipts: [reference], confirmations: 2 }),
     { code: "RECEIPT_PENDING" },
   );
+  assert.equal(client.captured.some((row) => row.method === "eth_simulateV1"), false);
+  assert.equal(client.captured.some((row) => row.method === "eth_call" && row.params[0].data.slice(0, 10) === selectorOf(launchLifecycleAbi, "tokenFactory")), false, "Pending receipts keep the canonical gate ahead of deployment planning");
 });
 
 /** F4 counterpart: a genuinely changed canonical observed block is still a reorg. */
@@ -211,18 +217,24 @@ test("absent receipt under a changed canonical observed block remains a real reo
 });
 
 /** F3: confirmed canonical terminal phase returns no work before any other gate. */
-test("confirmed terminal canonical phase returns no work without consulting the creator nonce", async () => {
+test("confirmed terminal canonical phase precedes unsafe nonce gates without restarting planning", async () => {
   const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
   for (const { label, phase, mode, selected } of [{ label: "Active", phase: 4, mode: 0, selected: "atomic" }, { label: "Cancelled", phase: 5, mode: 1, selected: "staged" }]) {
-    const client = scenarioClient({
-      progress: startedProgress(plan, { phase, prepared: plan.markets.length, mode }),
-      // A drifting creator nonce is the previously-first, unrelated gate: the
-      // terminal no-work answer must be returned before UNCONFIRMED_STATE.
-      txCount: () => 11n,
-    });
-    const planned = { ...minimalPlanned(plan), mode: selected };
-    const next = await buildNextTransaction({ client, planned, action: "continue" });
-    assert.equal(next, undefined, `${label} is terminal; no transaction remains`);
+    for (const action of ["continue", "cancel"]) {
+      let nonce = 10n;
+      const client = scenarioClient({
+        progress: startedProgress(plan, { phase, prepared: plan.markets.length, mode }),
+        // Confirmed and pending nonces differ. A confirmed terminal answer
+        // remains terminal before the unrelated uncertainty gate.
+        txCount: () => nonce++,
+      });
+      const planned = { ...minimalPlanned(plan), mode: selected };
+      assert.equal(await buildNextTransaction({ client, planned, action }), undefined, `${label} is terminal for ${action}`);
+      assert.equal(client.captured.some((row) => row.method === "eth_simulateV1"), false);
+      for (const name of ["hashPlan", "tokenFactory", "registry"]) {
+        assert.equal(client.captured.some((row) => row.method === "eth_call" && row.params[0].data.slice(0, 10) === selectorOf(launchLifecycleAbi, name)), false, "Terminal canonical state does not require fresh execution admission");
+      }
+    }
   }
 });
 
@@ -237,6 +249,8 @@ test("head-only activation is not terminal and still waits for confirmation dept
     buildNextTransaction({ client, planned: minimalPlanned(plan), action: "continue", confirmations: 2 }),
     { code: "UNCONFIRMED_STATE" },
   );
+  assert.equal(client.captured.some((row) => row.method === "eth_simulateV1"), false);
+  assert.equal(client.captured.some((row) => row.method === "eth_call" && row.params[0].data.slice(0, 10) === selectorOf(launchLifecycleAbi, "tokenFactory")), false, "A head-only terminal observation cannot bypass the confirmation gate");
 });
 
 /** F5: resimulation inherits the submitted receipt evidence and confirmation depth. */

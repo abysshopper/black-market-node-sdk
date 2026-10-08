@@ -4,7 +4,7 @@ import {
   marketLiveStateV1Components, positionIdentityV1Components, preparedMarketV1Components,
   profileRegistrationV1Components, profileTopologyV1Components, launchEnvelopeV2Components, sourceTermsV3Components,
 } from "./schema.js";
-import { poolBoundHookParametersV1Components, v4LifecycleMarketComponents } from "./markets.js";
+import { poolBoundHookParametersV1Components, poolBoundHookParametersV2Components, v4LifecycleMarketComponents } from "./markets.js";
 
 const planInput = { name: "plan", type: "tuple", components: launchPlanV1Components } as const;
 export const launchLifecycleAbi = [
@@ -155,17 +155,29 @@ export const poolMarketAdapterV1Abi = [
     { name: "salt", type: "bytes32" }, { name: "predictedHook", type: "address" },
   ] },
 ] as const;
-const boundParametersInput = { name: "parameters", type: "tuple", components: poolBoundHookParametersV1Components } as const;
-export const poolHookDeployerV1Abi = [
+const boundParametersV1Input = { name: "parameters", type: "tuple", components: poolBoundHookParametersV1Components } as const;
+const boundParametersV2Input = { name: "parameters", type: "tuple", components: poolBoundHookParametersV2Components } as const;
+const poolHookDeployerMetadataAbi = [
   { type: "constructor", stateMutability: "nonpayable", inputs: [{ name: "creationCode", type: "bytes" }] },
   { type: "function", name: "creationCodeHash", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
   { type: "function", name: "codeChunk0", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "codeChunk1", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "deployedCodeHash", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "bytes32" }] },
-  { type: "function", name: "initCodeHash", stateMutability: "view", inputs: [boundParametersInput], outputs: [{ type: "bytes32" }] },
-  { type: "function", name: "predict", stateMutability: "view", inputs: [boundParametersInput, { name: "salt", type: "bytes32" }], outputs: [{ type: "address" }] },
   { type: "function", name: "validHookAddress", stateMutability: "pure", inputs: [{ type: "address" }], outputs: [{ type: "bool" }] },
-  { type: "function", name: "deploy", stateMutability: "nonpayable", inputs: [boundParametersInput, { name: "salt", type: "bytes32" }], outputs: [{ name: "hook", type: "address" }] },
+] as const;
+/** Reviewed config5 holder with the exact 18-word PoolBoundHookParametersV1 tuple. */
+export const poolHookDeployerV1Abi = [
+  ...poolHookDeployerMetadataAbi,
+  { type: "function", name: "initCodeHash", stateMutability: "view", inputs: [boundParametersV1Input], outputs: [{ type: "bytes32" }] },
+  { type: "function", name: "predict", stateMutability: "view", inputs: [boundParametersV1Input, { name: "salt", type: "bytes32" }], outputs: [{ type: "address" }] },
+  { type: "function", name: "deploy", stateMutability: "nonpayable", inputs: [boundParametersV1Input, { name: "salt", type: "bytes32" }], outputs: [{ name: "hook", type: "address" }] },
+] as const;
+/** Config6 source holder with the exact 20-word PoolBoundHookParametersV2 tuple. */
+export const poolHookDeployerConfigV6Abi = [
+  ...poolHookDeployerMetadataAbi,
+  { type: "function", name: "initCodeHash", stateMutability: "view", inputs: [boundParametersV2Input], outputs: [{ type: "bytes32" }] },
+  { type: "function", name: "predict", stateMutability: "view", inputs: [boundParametersV2Input, { name: "salt", type: "bytes32" }], outputs: [{ type: "address" }] },
+  { type: "function", name: "deploy", stateMutability: "nonpayable", inputs: [boundParametersV2Input, { name: "salt", type: "bytes32" }], outputs: [{ name: "hook", type: "address" }] },
 ] as const;
 export const sharedHookDeployerV1Abi = [
   { type: "constructor", stateMutability: "nonpayable", inputs: [{ name: "creationCode", type: "bytes" }] },
@@ -206,10 +218,7 @@ export const lifecycleV4HookAbi = [
   { type: "function", name: "pendingFees", stateMutability: "view", inputs: [{ type: "bytes32" }, { type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "settledFees", stateMutability: "view", inputs: [{ type: "bytes32" }, { type: "address" }], outputs: [{ type: "uint256" }] },
 ] as const;
-/** Complete mined FixedFeePoolHookV1 ABI (pool-launch-v1, 20261005T053747Z-b5a7b88).
- * Compiler-only internalType annotations are omitted; the constructor is one 18-field tuple. */
-export const fixedFeePoolHookV1Abi = [
-  { type: "constructor", inputs: [boundParametersInput], stateMutability: "nonpayable" },
+const fixedFeePoolHookCommonAbi = [
   { type: "function", name: "ALL_HOOK_MASK", inputs: [], outputs: [{ name: "", type: "uint160" }], stateMutability: "view" },
   { type: "function", name: "MAX_ORACLE_CARDINALITY", inputs: [], outputs: [{ name: "", type: "uint16" }], stateMutability: "view" },
   { type: "function", name: "PIPS_DENOMINATOR", inputs: [], outputs: [{ name: "", type: "uint24" }], stateMutability: "view" },
@@ -279,21 +288,41 @@ export const fixedFeePoolHookV1Abi = [
   { type: "error", name: "Reentrancy", inputs: [] },
   { type: "error", name: "Unauthorized", inputs: [] },
 ] as const;
+/** Reviewed config5 hook. No configurable minimum/sensitivity constructor or getters. */
+export const fixedFeePoolHookV1Abi = [
+  { type: "constructor", inputs: [boundParametersV1Input], stateMutability: "nonpayable" },
+  ...fixedFeePoolHookCommonAbi,
+] as const;
+/** Config6 source ABI; usable only with its separately certified V2-constructor graph. */
+export const fixedFeePoolHookConfigV6Abi = [
+  { type: "constructor", inputs: [boundParametersV2Input], stateMutability: "nonpayable" },
+  ...fixedFeePoolHookCommonAbi,
+  { type: "function", name: "minimumHookFeePips", inputs: [], outputs: [{ name: "", type: "uint24" }], stateMutability: "view" },
+  { type: "function", name: "feeSensitivityPipsSecondsPerTick", inputs: [], outputs: [{ name: "", type: "uint32" }], stateMutability: "view" },
+] as const;
 export const lifecycleV4LockerAbi = [
   { type: "function", name: "poolManager", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "launcher", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "positionCount", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "isSealed", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "bool" }] },
 ] as const;
-export const poolFeeCollectorFactoryV1Abi = [
+const poolFeeCollectorFactoryCommonAbi = [
   { type: "function", name: "collectorDeployer", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
-  { type: "function", name: "poolBoundHookParameters", stateMutability: "view", inputs: [
-    { name: "registrar", type: "address" }, { name: "token", type: "address" }, { name: "market", type: "tuple", components: lifecycleMarketComponents },
-  ], outputs: [boundParametersInput, { name: "salt", type: "bytes32" }] },
   { type: "function", name: "decodeAndValidate", stateMutability: "view", inputs: [{ type: "address" }, { type: "address" }, { type: "tuple", components: lifecycleMarketComponents }], outputs: [{ type: "tuple", components: v4LifecycleMarketComponents }] },
   { type: "function", name: "poolBoundDeploymentMetadata", stateMutability: "view", inputs: [{ type: "address" }, { type: "address" }, { type: "tuple", components: lifecycleMarketComponents }], outputs: [{ type: "address" }, { type: "bytes32" }, { type: "bytes32" }, { type: "address" }] },
   { type: "function", name: "dependencyDigest", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "bytes32" }] },
   { type: "function", name: "create", stateMutability: "nonpayable", inputs: [{ type: "address" }, { type: "address" }, { type: "tuple", components: lifecycleV4PoolKeyComponents }, { type: "uint256" }], outputs: [{ type: "address" }] },
+] as const;
+const boundFactoryInputs = [
+  { name: "registrar", type: "address" }, { name: "token", type: "address" }, { name: "market", type: "tuple", components: lifecycleMarketComponents },
+] as const;
+export const poolFeeCollectorFactoryV1Abi = [
+  ...poolFeeCollectorFactoryCommonAbi,
+  { type: "function", name: "poolBoundHookParameters", stateMutability: "view", inputs: boundFactoryInputs, outputs: [boundParametersV1Input, { name: "salt", type: "bytes32" }] },
+] as const;
+export const poolFeeCollectorFactoryConfigV6Abi = [
+  ...poolFeeCollectorFactoryCommonAbi,
+  { type: "function", name: "poolBoundHookParameters", stateMutability: "view", inputs: boundFactoryInputs, outputs: [boundParametersV2Input, { name: "salt", type: "bytes32" }] },
 ] as const;
 export const lifecycleDirectoryAbi = [
   { type: "function", name: "core", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },

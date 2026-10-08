@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { isAddress, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { LaunchApiClient } from "../../dist/index.js";
+import { getAddresses, LaunchApiClient } from "../../dist/index.js";
 
 export function createLaunchApiTestContext({ signed = false } = {}) {
   const configuredUrl = process.env.LAUNCH_API_TEST_URL;
@@ -13,7 +13,7 @@ export function createLaunchApiTestContext({ signed = false } = {}) {
   assert.equal(url.search + url.hash, "", "LAUNCH_API_TEST_URL must not contain a query or fragment.");
   const chainId = Number(process.env.LAUNCH_API_TEST_CHAIN_ID ?? "4663");
   assert.ok(Number.isSafeInteger(chainId) && chainId > 0, "LAUNCH_API_TEST_CHAIN_ID must be a positive safe integer.");
-  const orchestrator = process.env.LAUNCH_API_TEST_ORCHESTRATOR ?? "0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E";
+  const orchestrator = process.env.LAUNCH_API_TEST_ORCHESTRATOR ?? getAddresses(4663).launchOrchestrator;
   assert.ok(isAddress(orchestrator) && orchestrator.toLowerCase() !== zeroAddress, "LAUNCH_API_TEST_ORCHESTRATOR must be a nonzero EVM address.");
   let account;
   if (signed) {

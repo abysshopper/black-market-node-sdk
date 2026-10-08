@@ -27,7 +27,7 @@ test("automatic recipes deterministically derive current market-cap vectors", ()
     liquidity: 34_709_866_153_747_871_271_353n,
     launchedTokenAmountMaximum: 1_000_000_000_000_000_000_000_000_000n,
     pairedTokenAmountMaximum: 0n,
-    tickLower: -887_160, tickUpper: 205_380,
+    tickLower: -887_220, tickUpper: 205_380,
   });
   assert.deepEqual(recipeFor(true), {
     launchTick: -205_380,

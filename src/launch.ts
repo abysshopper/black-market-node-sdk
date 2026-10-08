@@ -31,6 +31,53 @@ export type LaunchPoolRecipe = {
   tickLower: number; tickUpper: number;
 };
 
+export type LaunchPositionRangesInput = {
+  /** Exact, spacing-aligned opening ratio, as returned by deriveLaunchPoolRecipe. */
+  launchSqrtPriceX96: bigint;
+  /** Existing launch convention: true means the launched token is token0. */
+  launchedTokenIsQuote: boolean;
+  /** Raw launch-token units allocated to ONE pool, not the entire launch supply. */
+  tokenBudget: bigint;
+  tickSpacing: number;
+  venue: "abyss" | "uniswap-v4";
+  /** Source-defined Black Market inventory weights, widths and gaps. */
+  distributionPreset: "early-scarcity" | "staircase" | "smooth-ramp";
+  positionCount?: number;
+  /** Defaults to source-gaps; adjacent removes only Staircase's empty shelf gaps. */
+  staircaseBoundaries?: "source-gaps" | "adjacent";
+  /** Defaults to false; extends only the final band's far endpoint. */
+  extendFinalRangeToBoundary?: boolean;
+};
+
+export type LaunchPositionRange = {
+  tickLower: number;
+  tickUpper: number;
+  sqrtPriceLowerX96: bigint;
+  sqrtPriceUpperX96: bigint;
+  inventoryBps: number;
+  /** Intended inventory allocation, including any rounding dust burned before buys. */
+  allocatedTokenAmount: bigint;
+  liquidity: bigint;
+  /** Admitted maximum: equals allocatedTokenAmount, not the smaller actual mint debit. */
+  maxTokenAmount: bigint;
+  maxQuoteAmount: 0n;
+};
+
+export type LaunchPositionRanges = {
+  launchTick: number;
+  launchSqrtPriceX96: bigint;
+  boundaryTick: number;
+  boundarySqrtPriceX96: bigint;
+  positions: readonly LaunchPositionRange[];
+  tokenAmountMaximum: bigint;
+  /** Expected rounding residual burned before buys; not an unallocated creator reserve. */
+  unspentTokenAmount: bigint;
+  totalLiquidity: bigint;
+  openingActiveLiquidity: bigint;
+  buySideLiquidity: bigint;
+  maxLiquidityPerTick: bigint;
+};
+
 export type LaunchBuySqrtPriceLimitInput = {
   launchSqrtPriceX96: bigint;
   launchedTokenIsQuote: boolean;
@@ -40,6 +87,7 @@ export type LaunchBuySqrtPriceLimitInput = {
 const Q32 = 1n << 32n;
 const Q96 = 1n << 96n;
 const MAX_UINT128 = (1n << 128n) - 1n;
+const MAX_INT128 = (1n << 127n) - 1n;
 const MAX_UINT160 = (1n << 160n) - 1n;
 const MAX_UINT256 = (1n << 256n) - 1n;
 const MIN_INT24 = -(1 << 23);
@@ -130,7 +178,8 @@ function integerSqrt(value: bigint): bigint {
   return x0;
 }
 
-function getSqrtRatioAtTick(tick: number): bigint {
+/** Canonical Q64.96 endpoint ratio, rounded up; MAX is not a usable swap limit. */
+export function getSqrtRatioAtTick(tick: number): bigint {
   if (!Number.isInteger(tick) || tick < MIN_TICK || tick > MAX_TICK) {
     throw new Error("Tick is outside the canonical TickMath range");
   }
@@ -163,15 +212,13 @@ function getTickAtSqrtRatio(sqrtPriceX96: bigint): number {
   return low;
 }
 
-// Signed-remainder alignment matches the canonical Solidity range geometry.
+// Usable endpoints require mathematical floor/ceil, including negative ticks.
 function alignDown(tick: number, tickSpacing: number): number {
-  const remainder = tick % tickSpacing;
-  return remainder === 0 ? tick : tick - remainder;
+  return Math.floor(tick / tickSpacing) * tickSpacing;
 }
 
 function alignUp(tick: number, tickSpacing: number): number {
-  const remainder = tick % tickSpacing;
-  return remainder === 0 ? tick : tick + (tickSpacing - remainder);
+  return Math.ceil(tick / tickSpacing) * tickSpacing;
 }
 
 function launchBand(
@@ -201,6 +248,18 @@ function liquidityForAmount0(amount0: bigint, sqrtLowerX96: bigint, sqrtUpperX96
 
 function liquidityForAmount1(amount1: bigint, sqrtLowerX96: bigint, sqrtUpperX96: bigint): bigint {
   return (amount1 * Q96) / (sqrtUpperX96 - sqrtLowerX96);
+}
+
+function divideRoundingUp(numerator: bigint, denominator: bigint): bigint {
+  return (numerator + denominator - 1n) / denominator;
+}
+
+// Canonical SqrtPriceMath.getAmount0Delta(..., true) uses two ceiling divisions.
+function amount0ForLiquidityRoundingUp(liquidity: bigint, sqrtLowerX96: bigint, sqrtUpperX96: bigint): bigint {
+  return divideRoundingUp(
+    divideRoundingUp((liquidity << 96n) * (sqrtUpperX96 - sqrtLowerX96), sqrtUpperX96),
+    sqrtLowerX96,
+  );
 }
 
 /**
@@ -253,6 +312,154 @@ export function deriveLaunchPoolRecipe(
     launchedTokenAmountMaximum: tokenBudget,
     pairedTokenAmountMaximum: 0n,
     tickLower, tickUpper,
+  };
+}
+
+// Black Market apps/web/src/lib/launch.ts uses cumulative rounding for both
+// preset inventory weights (10,000 bps) and active widths (64 spacing steps).
+function apportionLaunchInventory(total: number, scores: readonly number[]): number[] {
+  const sum = scores.reduce((value, score) => value + score, 0);
+  let cumulative = 0;
+  let allocated = 0;
+  return scores.map((score) => {
+    cumulative += score;
+    const next = Math.round((total * cumulative) / sum);
+    const share = next - allocated;
+    allocated = next;
+    return share;
+  });
+}
+
+/**
+ * Source-defined one-sided Black Market presets, ordered toward higher launch-token
+ * prices. The first position starts at launch; later bands are contiguous or leave
+ * the preset's intentional gaps. Only an explicit final-tail adaptation reaches
+ * the usable protocol boundary; no equal-tick extrapolation is applied.
+ * Supply allocation across pools belongs to the caller: pass each pool's share.
+ * Budget caps floor all but the final allocation, which receives the remainder.
+ * Exact rational funding floors guarantee canonical rounded-up mint debits fit
+ * their caps, without a percentage liquidity reserve or creator allocation.
+ * Gross liquidity is checked at each endpoint, including adjacent shared ticks.
+ * Active liquidity follows [lower, upper); the first downward token1 buy crosses
+ * the opening upper endpoint and activates only the first reachable band.
+ * Boundary ratios are position endpoints, not exclusive swap-price guards.
+ */
+export function deriveLaunchPositionRanges(input: LaunchPositionRangesInput): LaunchPositionRanges {
+  assertCanonicalSqrtPrice(input.launchSqrtPriceX96, "launchSqrtPriceX96");
+  assertPositiveUint(input.tokenBudget, MAX_UINT256, "tokenBudget");
+  if (typeof input.launchedTokenIsQuote !== "boolean") throw new Error("launchedTokenIsQuote must be a boolean");
+  const { tickSpacing, venue, distributionPreset } = input;
+  if (!Number.isInteger(tickSpacing) || tickSpacing < 1 || tickSpacing > 32767) throw new Error("tickSpacing must be 1..32767");
+  if (venue !== "abyss" && venue !== "uniswap-v4") throw new Error("venue must be abyss or uniswap-v4");
+  if (distributionPreset !== "early-scarcity" && distributionPreset !== "staircase" && distributionPreset !== "smooth-ramp") {
+    throw new Error("distributionPreset must be early-scarcity, staircase or smooth-ramp");
+  }
+  const positionCount = input.positionCount ?? 5;
+  if (!Number.isInteger(positionCount) || positionCount < 2 || positionCount > 16) throw new Error("positionCount must be 2..16");
+  const extendFinalRangeToBoundary = input.extendFinalRangeToBoundary ?? false;
+  if (typeof extendFinalRangeToBoundary !== "boolean") throw new Error("extendFinalRangeToBoundary must be a boolean");
+  const staircaseBoundaries = input.staircaseBoundaries === undefined ? "source-gaps" : input.staircaseBoundaries;
+  if (staircaseBoundaries !== "source-gaps" && staircaseBoundaries !== "adjacent") {
+    throw new Error("staircaseBoundaries must be source-gaps or adjacent");
+  }
+  if (input.staircaseBoundaries !== undefined && distributionPreset !== "staircase") {
+    throw new Error("staircaseBoundaries is only valid for the staircase preset");
+  }
+  const launchTick = getTickAtSqrtRatio(input.launchSqrtPriceX96);
+  if (launchTick % tickSpacing !== 0 || getSqrtRatioAtTick(launchTick) !== input.launchSqrtPriceX96) {
+    throw new Error("Opening sqrt price must be an exact spacing-aligned tick");
+  }
+  const band = launchBand(launchTick, tickSpacing, input.launchedTokenIsQuote);
+  const boundaryTick = input.launchedTokenIsQuote ? band.tickUpper : band.tickLower;
+  const inventoryBps = apportionLaunchInventory(10_000, Array.from({ length: positionCount }, (_, index) => {
+    if (distributionPreset === "early-scarcity") return (positionCount - 1) ** 2 + 15 * index ** 2;
+    if (distributionPreset === "staircase") return (Math.floor((index * 4) / positionCount) + 1) ** 2;
+    return positionCount + 2 * index;
+  }));
+  const widths = apportionLaunchInventory(64, inventoryBps.map((_, index) => {
+    if (distributionPreset === "early-scarcity") return positionCount - 1 + 3 * index;
+    if (distributionPreset === "staircase") return Math.floor((index * 4) / positionCount) + 1;
+    return 2 * positionCount - index;
+  }));
+
+  // V4 Pool.sol floors the negative tick INDEX; Abyss Tick.sol truncates toward
+  // zero, equivalent to ceil here. The resulting canonical capacities differ.
+  const minimumTickIndex = venue === "uniswap-v4" ? Math.floor(MIN_TICK / tickSpacing) : Math.ceil(MIN_TICK / tickSpacing);
+  const maximumTickIndex = Math.floor(MAX_TICK / tickSpacing);
+  const maxLiquidityPerTick = MAX_UINT128 / BigInt(maximumTickIndex - minimumTickIndex + 1);
+  const positions: LaunchPositionRange[] = [];
+  const grossLiquidityByTick = new Map<number, bigint>();
+  const direction = input.launchedTokenIsQuote ? 1 : -1;
+  let distance = 0;
+  let allocated = 0n;
+  let totalLiquidity = 0n;
+  let tokenAmountMaximum = 0n;
+  let tokenAmountSpent = 0n;
+  let openingActiveLiquidity = 0n;
+  for (let index = 0; index < positionCount; index += 1) {
+    const weight = inventoryBps[index]!;
+    const allocatedTokenAmount = index === positionCount - 1
+      ? input.tokenBudget - allocated
+      : (input.tokenBudget * BigInt(weight)) / 10_000n;
+    if (allocatedTokenAmount <= 0n) throw new Error("Every position must have a positive allocated token cap");
+    allocated += allocatedTokenAmount;
+    if (index > 0) {
+      if (distributionPreset === "early-scarcity") {
+        distance += 2 + Math.floor((4 * index) / (positionCount - 1));
+      } else if (distributionPreset === "staircase" && staircaseBoundaries === "source-gaps" &&
+        Math.floor((index * 4) / positionCount) !== Math.floor(((index - 1) * 4) / positionCount)) {
+        distance += 3;
+      }
+    }
+    const start = launchTick + direction * distance * tickSpacing;
+    distance += widths[index]!;
+    const canonicalEnd = launchTick + direction * distance * tickSpacing;
+    if (Math.min(start, canonicalEnd) < band.tickLower || Math.max(start, canonicalEnd) > band.tickUpper) {
+      throw new Error("The launch tick leaves too little room for this distribution preset");
+    }
+    const end = extendFinalRangeToBoundary && index === positionCount - 1 ? boundaryTick : canonicalEnd;
+    const tickLower = Math.min(start, end);
+    const tickUpper = Math.max(start, end);
+    const sqrtLowerX96 = tickLower === launchTick ? input.launchSqrtPriceX96 : getSqrtRatioAtTick(tickLower);
+    const sqrtUpperX96 = tickUpper === launchTick ? input.launchSqrtPriceX96 : getSqrtRatioAtTick(tickUpper);
+    // For integer caps, flooring the exact rational inverse guarantees the
+    // two-ceiling amount0 debit (or one-ceiling amount1 debit) cannot exceed cap.
+    const liquidity = input.launchedTokenIsQuote
+      ? (allocatedTokenAmount * sqrtLowerX96 * sqrtUpperX96) / (Q96 * (sqrtUpperX96 - sqrtLowerX96))
+      : liquidityForAmount1(allocatedTokenAmount, sqrtLowerX96, sqrtUpperX96);
+    if (liquidity <= 0n || liquidity > MAX_INT128) throw new Error("Derived position liquidity is outside the positive int128 mint range");
+    const mintDebit = input.launchedTokenIsQuote
+      ? amount0ForLiquidityRoundingUp(liquidity, sqrtLowerX96, sqrtUpperX96)
+      : divideRoundingUp(liquidity * (sqrtUpperX96 - sqrtLowerX96), Q96);
+    if (mintDebit <= 0n || mintDebit > allocatedTokenAmount || (venue === "uniswap-v4" && mintDebit > MAX_INT128)) {
+      throw new Error("Derived position mint debit exceeds its budget or settlement range");
+    }
+    const lowerGross = (grossLiquidityByTick.get(tickLower) ?? 0n) + liquidity;
+    const upperGross = (grossLiquidityByTick.get(tickUpper) ?? 0n) + liquidity;
+    if (lowerGross > maxLiquidityPerTick || upperGross > maxLiquidityPerTick) {
+      throw new Error(`Gross position liquidity exceeds the tick capacity at ${lowerGross > maxLiquidityPerTick ? tickLower : tickUpper}`);
+    }
+    grossLiquidityByTick.set(tickLower, lowerGross);
+    grossLiquidityByTick.set(tickUpper, upperGross);
+    totalLiquidity += liquidity;
+    tokenAmountMaximum += allocatedTokenAmount;
+    tokenAmountSpent += mintDebit;
+    if (tickLower <= launchTick && launchTick < tickUpper) openingActiveLiquidity += liquidity;
+    positions.push({ tickLower, tickUpper, sqrtPriceLowerX96: sqrtLowerX96, sqrtPriceUpperX96: sqrtUpperX96,
+      inventoryBps: weight, allocatedTokenAmount, liquidity, maxTokenAmount: allocatedTokenAmount, maxQuoteAmount: 0n });
+  }
+  return {
+    launchTick,
+    launchSqrtPriceX96: input.launchSqrtPriceX96,
+    boundaryTick,
+    boundarySqrtPriceX96: getSqrtRatioAtTick(boundaryTick),
+    positions,
+    tokenAmountMaximum,
+    unspentTokenAmount: input.tokenBudget - tokenAmountSpent,
+    totalLiquidity,
+    openingActiveLiquidity,
+    buySideLiquidity: positions[0]!.liquidity,
+    maxLiquidityPerTick,
   };
 }
 

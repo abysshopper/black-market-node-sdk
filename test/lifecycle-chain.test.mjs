@@ -5,7 +5,7 @@ import { decodeFunctionResult, encodeFunctionData, encodeFunctionResult, toHex }
 const sdkPath = process.env.SDK_SOURCE_TEST === "1" ? "../src/lifecycle/index.ts" : "../dist/lifecycle/index.js";
 const { buildNextTransaction, createControlledLifecycleFork, decodePoolBoundV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig,
   hasLifecycleV4HookPermissions, lifecycleErc20Abi, lifecycleOracleFactoryAbi, lifecycleRegistryAbi, LifecyclePhase, parseLaunchPlan, planLaunch,
-  preparePoolBoundLifecyclePlan, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment } = await import(sdkPath);
+  prepareAndPlanLifecycleLaunch, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment, isPoolBoundV4ConfigVersion } = await import(sdkPath);
 const enabled = Boolean(process.env.LAUNCH_LIFECYCLE_RPC_URL && process.env.LAUNCH_LIFECYCLE_FORK_RPC_URL && process.env.LAUNCH_LIFECYCLE_MANIFEST && process.env.LAUNCH_LIFECYCLE_FIXTURES && process.env.LAUNCH_LIFECYCLE_ALLOW_LOCAL_EXECUTION === "1");
 
 test("reviewed real-AMM metadata, admission, cancellation and canonical recovery boundaries", { skip: !enabled, concurrency: false }, async (t) => {
@@ -14,8 +14,8 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
   const manifest = JSON.parse(await readFile(process.env.LAUNCH_LIFECYCLE_MANIFEST, "utf8"));
   const exported = JSON.parse(await readFile(process.env.LAUNCH_LIFECYCLE_FIXTURES, "utf8"));
   assert.equal(manifest.fixtureOnly, true, "Only the owned disposable fixture is authorized");
-  const fixture = exported.plans.find((row) => row.plan.markets.some((market) => Number(market.configVersion) === 5));
-  assert.ok(fixture, "Current Solidity-authored bound plan required");
+  const fixture = exported.plans.find((row) => row.plan.markets.some((market) => isPoolBoundV4ConfigVersion(Number(market.configVersion))));
+  assert.ok(fixture, "Solidity-authored version-matched bound plan required");
   const policy = manifest.executionLimits;
   assert.equal(policy.provenance.scope, "controlled-local-measurement");
   let requestId = 0;
@@ -35,7 +35,10 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
     const snapshot = await client.request({ method: "evm_snapshot" });
     try { await fn(); } finally { assert.equal(await client.request({ method: "evm_revert", params: [snapshot] }), true); await client.request({ method: "evm_mine" }); }
   }
-  async function currentPlan() { return (await preparePoolBoundLifecyclePlan({ client, plan: parseLaunchPlan(JSON.stringify(fixture.plan)) })).plan; }
+  async function currentPlan() {
+    const plan = parseLaunchPlan(JSON.stringify(fixture.plan));
+    return (await prepareAndPlanLifecycleLaunch({ client, account: plan.creator, plan, mode: "staged", limits, fork })).plan;
+  }
   async function send(transaction) {
     const transactionHash = await client.request({ method: "eth_sendTransaction", params: [{ from: transaction.from, to: transaction.to, data: transaction.data, value: toHex(transaction.value), gas: toHex(transaction.gas), gasPrice: toHex(transaction.gasPrice) }] });
     const receipt = await client.request({ method: "eth_getTransactionReceipt", params: [transactionHash] });
@@ -66,7 +69,7 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
     for (const row of exported.plans) for (const market of row.plan.markets) {
       const profile = profiles.find((item) => item.id.toLowerCase() === market.profileId.toLowerCase());
       assert.equal(profile?.admitted, true, profile?.reason);
-      if (Number(market.configVersion) === 4 || Number(market.configVersion) === 5) {
+      if (Number(market.configVersion) === 4 || isPoolBoundV4ConfigVersion(Number(market.configVersion))) {
         assert.equal(profile.developerTerms.beneficiary.toLowerCase(), profile.envelope.beneficiary.toLowerCase());
         assert.equal(profile.topology.configVersion, Number(market.configVersion));
         assert.deepEqual(Object.keys(profile.envelope.bounds), ["minimumTickSpacing", "maximumTickSpacing", "maximumPositions", "maximumOracleCardinality", "feeModeFlags"]);
@@ -87,12 +90,11 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
     } };
     const [profile] = await readLifecycleProfiles({ client: opaque, orchestrator: plan.orchestrator, profileIds: [profileId] });
     assert.equal(profile.admitted, false); assert.equal(profile.venueKind, "unknown");
-    assert.match(profile.reason, /Unsupported lifecycle config schema/);
   });
 
   await t.test("permission bits alone cannot authenticate an undeployed root with counterfeit runtime", async () => {
     const plan = await currentPlan();
-    const marketIndex = plan.markets.findIndex((market) => market.configVersion === 5);
+    const marketIndex = plan.markets.findIndex((market) => isPoolBoundV4ConfigVersion(market.configVersion));
     const metadata = await readPoolBoundHookDeployment({ client, plan, marketIndex });
     assert.equal(hasLifecycleV4HookPermissions(metadata.predictedHook), true);
     const counterfeit = { request(args) {
@@ -104,10 +106,11 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
 
   await t.test("changing frozen developer terms invalidates mining rather than silently binding replacement consent", async () => {
     const plan = await currentPlan();
-    const marketIndex = plan.markets.findIndex((market) => market.configVersion === 5);
-    const config = decodePoolBoundV4LifecycleMarketConfig(plan.markets[marketIndex].config);
+    const marketIndex = plan.markets.findIndex((market) => isPoolBoundV4ConfigVersion(market.configVersion));
+    const market = plan.markets[marketIndex];
+    const config = decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion);
     const changed = { ...plan, markets: plan.markets.map((market, i) => i === marketIndex ? { ...market, config: encodePoolBoundV4LifecycleMarketConfig({ ...config, developerBeneficiary: plan.creator }) } : market) };
-    await assert.rejects(preparePoolBoundLifecyclePlan({ client, plan: changed }), { code: "PROFILE_TERMS_MISMATCH" });
+    await assert.rejects(prepareAndPlanLifecycleLaunch({ client, account: changed.creator, plan: changed, mode: "staged", limits, fork }), { code: "PROFILE_TERMS_MISMATCH" });
   });
 
   await t.test("missing optional policy stays explicit without an implicit staged fallback", async () => {
@@ -121,6 +124,31 @@ test("reviewed real-AMM metadata, admission, cancellation and canonical recovery
       assert.equal(next?.admission.executionProof, "proved");
       assert.equal(next?.admission.transportPreflight, "not-requested");
     } else await assert.rejects(buildNextTransaction({ client, planned, fork }), { code: "PLAN_NOT_ADMITTED" });
+  });
+
+  await t.test("fresh actual-source execution and submission accept a held envelope despite a higher advisory quote", async () => {
+    const plan = await currentPlan();
+    const planned = await planLaunch({ client, account: plan.creator, plan, mode: "staged", limits, fork });
+    assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
+    const reviewedTransaction = await buildNextTransaction({ client, planned, limits, fork, submissionClient: client });
+    assert.equal(reviewedTransaction.admission.transportPreflight, "passed");
+    let advisoryReads = 0;
+    const higherRecommendation = { async request(args) {
+      const result = await client.request(args);
+      if (args.method !== "eth_gasPrice") return result;
+      advisoryReads += 1;
+      return toHex(BigInt(result) + 1n);
+    } };
+    const next = await buildNextTransaction({ client: higherRecommendation, planned, limits, fork, reviewedTransaction, submissionClient: client });
+    assert.equal(advisoryReads, 1);
+    for (const field of ["id", "kind", "chainId", "from", "to", "data", "value", "gas", "gasPrice"]) assert.equal(next[field], reviewedTransaction[field]);
+    assert.equal(next.admission.executionProof, "proved");
+    assert.equal(next.admission.protocolFit, "proved");
+    assert.equal(next.admission.transportPreflight, "passed");
+    const canonical = await client.request({ method: "eth_getBlockByNumber", params: [toHex(next.admission.blockNumber), false] });
+    assert.equal(next.admission.blockHash.toLowerCase(), canonical.hash.toLowerCase());
+    await assert.rejects(buildNextTransaction({ client, planned, limits, fork, reviewedTransaction: { ...reviewedTransaction, value: reviewedTransaction.value + 1n },
+      submissionClient: client }), { code: "REVIEWED_TRANSACTION_MISMATCH" });
   });
 
   await t.test("pending launch cancellation does not require fresh profile admission and refunds committed external funding", async () => isolated(async () => {

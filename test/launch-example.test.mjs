@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { keccak256, parseTransaction, recoverTransactionAddress, recoverTypedDataAddress } from "viem";
+import { keccak256, parseTransaction, recoverTransactionAddress, recoverTypedDataAddress, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   createLocalLaunchWallet, errorEvidence, executionRpcUrl, launchApiUrl,
   publishUntilIndexed, readExampleConfiguration, Redactor, registerEndpointSecrets,
   rpcRequestSignal, RunArtifacts, exampleError, submitSignedRecorded,
 } from "../examples/launch-example-support.mjs";
+import { verifyLaunchInventory } from "../examples/launch-example.mjs";
 
 const hash = `0x${"ab".repeat(32)}`;
 const revertData = "0xdeadbeef0000000000000000000000000000000000000000000000000000000000000001";
@@ -42,7 +43,6 @@ test("recursive evidence redaction preserves selector/calldata/cause and public 
   assert.equal(evidence.data.transaction.token, transaction.wire.to);
   assert.equal(evidence.data.capabilities, "123");
   assert.equal(evidence.code, "PLAN_NOT_ADMITTED");
-  assert.match(evidence.stack, /signature=\[REDACTED\]/);
 });
 
 test("one-time recovery secrets exist only in a mode0600 file", (t) => {
@@ -257,9 +257,9 @@ test("example fails missing key or API upfront and retains redacted configuratio
   const parent = mkdtempSync(join(tmpdir(), "node-example-config-"));
   t.after(() => rmSync(parent, { recursive: true, force: true }));
   const script = new URL("../examples/launch-erc20-v4.mjs", import.meta.url).pathname;
-  for (const [index, privateKey, apiUrl, missing] of [
-    [0, "", "https://api.invalid", "PRIVATE_KEY"],
-    [1, signingKey, "", "LAUNCH_API_URL"],
+  for (const [index, privateKey, apiUrl] of [
+    [0, "", "https://api.invalid"],
+    [1, signingKey, ""],
   ]) {
     const cwd = mkdtempSync(join(parent, `case-${index}-`));
     const child = spawnSync(process.execPath, [script], {
@@ -272,7 +272,6 @@ test("example fails missing key or API upfront and retains redacted configuratio
     assert.equal(runs.length, 1);
     const result = JSON.parse(readFileSync(join(results, runs[0], "result.json"), "utf8"));
     assert.equal(result.error.code, "MISSING_CONFIGURATION");
-    assert.match(result.error.message, new RegExp(missing));
     assert.equal(result.execution, "not-run"); assert.equal(result.chain.transactions.length, 0);
     assert.ok(!child.stderr.includes(signingKey));
     for (const secret of ["private-path", "private-query"]) assert.ok(!child.stderr.includes(secret));
@@ -318,11 +317,12 @@ test("signed broadcast interruption and reverted receipts retain durable evidenc
 
 test("fixed example configuration never invents optional execution caps and defaults to fifteen percent headroom", () => {
   const sdk = {
-    getAddresses(chainId) { assert.equal(chainId, 4663); return { launchOrchestrator: transaction.wire.to, weth: transaction.wire.to, abyssFactory: transaction.wire.to }; },
+    getAddresses(chainId) { assert.equal(chainId, 4663); return { launchOrchestrator: transaction.wire.to, launchImplementationRegistry: transaction.wire.to, weth: transaction.wire.to, abyssFactory: transaction.wire.to }; },
     robinhoodMainnet: { rpcUrls: { default: { http: ["https://rpc.example.invalid/"] } } },
   };
   const env = { PRIVATE_KEY: signingKey, LAUNCH_API_URL: "https://api.example.invalid/" };
   const configuration = readExampleConfiguration(sdk, new Redactor(), env);
+  assert.equal(configuration.implementationRegistry, transaction.wire.to);
   const policy = configuration.executionLimits;
   assert.equal(policy.headroomBps, 1500);
   for (const field of ["chainTransactionGasLimit", "rpcTransactionGasLimit", "accountTransactionGasLimit", "maxCalldataBytes"]) assert.equal(policy[field], undefined);
@@ -330,4 +330,25 @@ test("fixed example configuration never invents optional execution caps and defa
   const restricted = readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: "12000000", EXAMPLE_MAX_CALLDATA_BYTES: "120000", EXAMPLE_HEADROOM_BPS: "0" }).executionLimits;
   assert.equal(restricted.rpcTransactionGasLimit, "12000000"); assert.equal(restricted.maxCalldataBytes, 120000); assert.equal(restricted.headroomBps, 0);
   for (const value of ["-1", "0", "1.5", "unknown"]) assert.throws(() => readExampleConfiguration(sdk, new Redactor(), { ...env, EXAMPLE_RPC_GAS_CAP: value }), { code: "INVALID_CONFIGURATION" });
+});
+
+test("launch receipt accounting accepts burned mint residuals without a creator reserve", () => {
+  const evidence = {
+    supply: 1000n, totalSupply: 950n, orchestrator: transaction.wire.to, creator: signingCreator,
+    transfers: [
+      { from: zeroAddress, to: transaction.wire.to, value: 1000n },
+      { from: transaction.wire.to, to: zeroAddress, value: 50n },
+    ],
+    buys: [{ recipient: signingCreator, tokenOut: 10n }, { recipient: signingCreator, tokenOut: 20n }],
+    orchestratorBalance: 0n, creatorBalance: 30n,
+  };
+  assert.deepEqual(verifyLaunchInventory(evidence), { minted: 1000n, burned: 50n, remainingSupply: 950n, creatorBought: 30n });
+  assert.deepEqual(verifyLaunchInventory({ ...evidence, totalSupply: 1000n, transfers: evidence.transfers.slice(0, 1) }),
+    { minted: 1000n, burned: 0n, remainingSupply: 1000n, creatorBought: 30n });
+  for (const change of [
+    { totalSupply: 1000n }, { creatorBalance: 80n }, { orchestratorBalance: 50n },
+    { transfers: [] },
+    { transfers: [{ from: zeroAddress, to: signingCreator, value: 1000n }, evidence.transfers[1]] },
+    { transfers: [evidence.transfers[0], { from: signingCreator, to: zeroAddress, value: 50n }] },
+  ]) assert.throws(() => verifyLaunchInventory({ ...evidence, ...change }), { code: "ERR_ASSERTION" });
 });

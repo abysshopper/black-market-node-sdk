@@ -1,15 +1,17 @@
 # Examples
 
 The launch examples use the installed public `@black-market/sdk` package and viem,
-including when copied into a consumer project. The deployed chain-4663 graph uses
-pool-bound V4 config 5 and canonical Abyss config 1. Discovery is read-only; running
-a fixed launch example with configured wallet/API deliberately executes real writes.
+including when copied into a consumer project. The current chain-4663 graph is the
+October8 mined pool-bound V4 config6/V2 and canonical Abyss config1 deployment.
+Historical October5 config5 evidence is not relabeled as the new graph. Discovery
+is read-only; running a fixed launch example with configured wallet/API deliberately
+executes real writes.
 
 | Script | Behavior |
 | --- | --- |
 | `quickstart.mjs` | Reads the current mainnet orchestrator, checks its registry binding, and discovers admitted profiles. No wallet or writes. |
-| `launch.mjs` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config-5 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
-| `generate-lifecycle-commitment-fixture.mjs` | Independent offline ABI reference for current config-4/Abyss commitment bytes/hash/identity, not a deployment or executable launch. |
+| `launch.mjs` | Reviews/reconstructs an explicit saved plan and selected atomic/staged mode; optional offchain config6/V2 salt mining. Prints simulation, progress, and an admitted unsigned next transaction when evidence permits. |
+| `generate-lifecycle-commitment-fixture.mjs` | Frozen independent historical config4/Abyss ABI bytes/hash/identity vector. Its pre-cutover allocations are not an executable 0.7.0 plan. |
 | `launch-lifecycle-smoke.mjs` | Actual SDK launch/recovery/custody/fee operations, only on an explicitly authorized owned disposable loopback graph. |
 | `launch-erc20-*.mjs`, `launch-erc404-*.mjs` | Eight independent zero-parameter launch cases with actual SDK admission, local signing, chain verification and mandatory API publication/indexing. |
 
@@ -37,10 +39,13 @@ node examples/launch.mjs \
   --plan plan.json --rpc https://rpc.mainnet.chain.robinhood.com/ --mode staged --mine
 ```
 
-`--mine` finalizes config-5 salts offchain and prints the final plan. Persist that exact
-commitment before begin. `--receipts receipts.json` and `--confirmations N` restore
-canonical recovery context. The CLI never signs, submits source-chain transactions,
-uploads metadata, or publishes a launch. Modes never fall back silently.
+`--mine` uses `prepareAndPlanLifecycleLaunch` to finalize config6/V2 salts and admit the
+requested mode in one SDK-owned invocation. Persist its exact returned plan before
+begin. `--receipts receipt-references.json` takes a JSON array of SDK receipt
+references, with bigint block numbers encoded as decimal strings; `--confirmations N`
+restores the selected canonical recovery depth. The CLI checks source chain identity
+before discovery. It never signs, submits source-chain transactions, uploads metadata,
+or publishes a launch. Modes never fall back silently.
 
 Executable admission requires actual stateful measurement and exact validated replay.
 `--limits current-limits.json` is optional tightening policy, not a required backend:
@@ -52,6 +57,14 @@ generic EVM, not as a Nitro metering substitute. Unsigned review reports
 `transportPreflight: "not-requested"` unless a consumer supplies its active submission
 RPC to build-next. See the
 [lifecycle guide](../docs/launch-lifecycle.md#execution-constraints-and-stateful-simulation).
+
+For a real new graph, create the saved plan using `readLifecycleProfiles` with its
+explicit chain/core and admitted pool-bound config6 profile. Supply that graph's RPC
+to `launch.mjs`; do not substitute the historical known preset. Applications may use
+the existing `LAUNCH_ORCHESTRATOR`, `LAUNCH_IMPLEMENTATION_REGISTRY`, and
+`LAUNCH_FEE_OWNER_REGISTRY` overrides from the same authentic deployment evidence.
+The SDK certifies actual registry/creation-code/runtime/constructor bindings and
+requires real execution proof; setting configuration does not certify a graph.
 
 ## Real HTTP metadata sessions
 
@@ -106,9 +119,17 @@ loaded once using Node's native `process.loadEnvFile`. No shell interpolation is
 Blank `RPC_URL` uses the SDK official Robinhood chain-4663 mainnet endpoint; HTTPS
 providers and explicit owned loopback HTTP execution RPCs are supported.
 The creator is derived locally from the key, and the deployment/WETH addresses come
-from `getAddresses(4663)`. The runner checks chain identity, EOA and deployed core,
-discovers admitted profiles, verifies the actual wrapped-native binding and reads
-the registered P1 `(1,4096)` oracle configuration. No fixture defines these facts.
+from `getAddresses(4663)`. The runner checks chain identity, EOA, deployed core and
+its configured registry binding, discovers admitted profiles, verifies the funding
+escrow core/wrapped-native binding and reads the registered P1 `(1,4096)` oracle
+configuration. No fixture defines these facts. V4 fixed cases require config6/V2;
+an old config5 profile is not silently selected instead.
+V4 fixed cases now encode max `10000`, min `1000` pips and sensitivity `7654321`
+fee-pips × seconds/tick; all are immutable. The current defaults resolve the matching
+October8 mined config6 graph. Position maxima exactly cover market budgets and budgets
+exactly cover minted supply. Actual unused inventory burns before buys, never to the
+creator. Verification accounts for burn `Transfer` logs, reduced `totalSupply`, an
+empty core token balance, and creator balance equal only to paid opening-buy output.
 Optional `NFT_BASE_URI` supplies your actually hosted ERC404 NFT metadata base URI.
 Blank uses an empty base URI: NFT units/mirror behavior remain real, but the example
 does not claim hosted NFT metadata exists.
@@ -117,9 +138,10 @@ The fixed Robinhood examples require native sequential Nitro `eth_simulateV1`, i
 an isolated pinned ArbOS capability probe and exact fee-bearing replay. Generic
 Anvil/Hardhat forks cannot certify Nitro compute/poster metering and are not a fallback.
 Unsupported native simulation, insufficient funds or failed admission stop before API
-staging/broadcast. Each immediate next envelope is additionally preflighted read-only
-through the same execution RPC before signing. There is no mode fallback, admission
-override, automatic submission replay or reduced case.
+staging/broadcast. Each immediate next envelope is additionally proved afresh against
+the saved `reviewedTransaction` and preflighted read-only through the same execution
+RPC before signing. Calldata, value, gas and gas price must remain exactly as reviewed.
+There is no mode fallback, admission override, automatic submission replay or reduced case.
 
 ### Commands and fixed cases
 
@@ -147,10 +169,22 @@ node examples/launch-erc404-dividends-mixed.mjs
 
 ERC20 supply is `1_000_000e18`; ERC404 supply is `10_000e18`, NFT unit `100e18`.
 Positions retain `1000e18` liquidity and the case's exact ranges. Each ordered buy
-spends up to `0.001 ETH` through native-wrap funding. Rewards use 4000 bps where
-selected; token-only burn is 3000 bps in the burn case. V4 uses frozen registered
+spends up to `0.001 ETH` through native-wrap funding. The unified SDK invocation sets
+every ordered buy's minimum from its actual stateful diagnostic output with **50 bps
+(0.5%) slippage**, then proves and saves only the final protected commitment. The draft's
+one-wei minima are diagnostic inputs, never the submitted protection.
+Rewards use 4000 bps where selected; token-only burn is 3000 bps in the burn case.
+V4 uses frozen registered
 treasury/author terms with developer rate `0`; executor fee is 275 bps.
-Hook salts/random identities are finalized and saved before execution.
+Hook salts/random identities are finalized and saved before execution. The shared
+runner uses the combined preparation/admission result without an immediate second
+planning pass. Staged cases simulate only staged work, never an unused atomic launch.
+
+These are deliberately simple fixed-geometry consumer cases, not an FDV recipe:
+equal position maxima partition each market budget exactly, while fixed liquidity
+can spend less than those maxima. Consequently actual unused inventory can be
+substantial, not merely one rounding unit. It burns; it is not creator inventory.
+Use SDK pool/position recipe helpers when you need valuation-driven allocation.
 
 ### Optional execution restrictions
 
@@ -185,6 +219,20 @@ relaunches, cancels or rolls back the source chain. **Do not blindly rerun after
 ambiguous broadcast**: inspect the durable transaction hash on chain first.
 See [chain/API invariants](../docs/launch-lifecycle.md#individual-token-creation-examples).
 
+After interruption, timeout, replacement or reorg, preserve the original identity,
+final `plan.json`, selected mode, confirmation policy and every signed hash. Do not
+deserialize diagnostic `planning.json` as a trusted `PlannedLaunch`, remine salts,
+recalibrate buys or restart a wrapper. Reconstruct the exact saved commitment with
+`planLaunch`, then use `readLaunchProgress` and fresh `buildNextTransaction` on the
+intended source RPC. Supply receipt references including observed block number/hash;
+when a replacement is known retain both `transactionHash` (original) and
+`replacementHash` (effective). A same-nonce cancellation is not successful activation;
+a missing receipt alone does not prove a reorg. No replacement is adopted or retried
+automatically by these local-signing cases: a timed-out original hash requires manual
+reconciliation. `launch.mjs` provides the unsigned reload/review path. Recovery of API
+publication uses the original private session/capability and canonical activation
+hash, never another launch.
+
 ### Owned-local wallet verification helpers
 
 `launch-example-support.mjs` exports
@@ -201,6 +249,48 @@ The shared `runLaunchExample(caseObject)` in `launch-example.mjs` takes the same
 case objects as the eight files, loads environment and auto-creates its output.
 Offline diagnostic tests are in `test/launch-example.test.mjs`; they do not claim
 real launch or API-indexer proof.
+
+## Relationship to the application flows
+
+The examples have been reviewed against `abyss-app`'s `scripts/launch-node.mjs`,
+`launch-node-deploy.mjs`, `launch-browser-wallet.mjs`, `launch-staged-smoke.mjs`,
+`launch-review-smoke.mjs`, and `src/lib/creation` / `src/lib/lifecycle` authoring,
+funding, execution and recovery modules. These are behavioral references, not SDK
+dependencies. That application's `black-market-sdk-0.7.0-local-20261007.tgz` pin and
+October5 address literals are **not** current deployment authority. The mined graph
+is recorded in the contracts repository at
+`contracts/deployments/launch/pool-launch-v1/20261008T000141Z-e174ce6/manifest.json`;
+examples resolve its SDK presets and certify live bindings, rather than copying
+addresses from an application script.
+
+| Flow | Shared contract / intentional difference |
+| --- | --- |
+| Eight fixed launch wrappers | Unified preparation/admission, explicit mode, exact allocations, immutable config6 max/min/sensitivity, protected ordered buys, reviewed next envelopes and canonical Active/custody verification. All eight remain independent no-argument cases. |
+| App Node launch/deploy | Uses valuation-driven recipe positions and native-to-ERC20 conversion quotes. Fixed cases intentionally use one registered wrapped-native quote and `NativeWrap`; there is no conversion API, router calldata or quote-expiry dependency. |
+| Browser wallet | Browser account/provider authority and explicit UI review are application-owned. The examples instead derive an EOA locally, hold one source/submission RPC, recheck chain before signing/sending, and preserve computed signed hashes before one raw send. A browser integration must bind the active account/provider/chain again after review and pass that provider's RPC adapter as `submissionClient`; read proof alone does not authorize wallet submission. |
+| App creation funding | Native wrapping needs ETH value, not an ERC20 approval. Direct ERC20 funding needs balance/allowance to the **actual core-owned funding escrow**, not an arbitrary router/core. ERC20-input conversions additionally need registry-admitted inputs, a registered target/spender/runtime, exact receiver/calldata/minimum/precision, and a fresh unexpired quote. Use SDK prerequisites and fresh `approve-reset` / `approve` next steps; do not extend the fixed runner's native-only signing allowlist blindly. |
+| App metadata/image | Fixed cases sign the same chain/core/wallet-bound attribution and stage metadata only: `image: null`, session `ready_to_launch`, no image upload claim. For a real image, hash the actual bytes, sign its descriptor, use `putImage` with the issued upload URL/headers, and `completeUpload` before launch. App legal consent, API catalogs and keystore handling are not generic SDK implementations to copy. |
+| App publication/recovery | Pending HTTP 202 is not success. Fixed cases honor `LaunchPublishPending`/`Retry-After` within a bounded deadline and require ready metadata plus the indexed token/creator/activation DTO. The app's Query polling/UI, two-confirmation policy and replacement tracking are intentionally different from the fixed examples' one-confirmation, stop-and-reconcile local signer. |
+| App review/staged smoke | These app scripts exercise read-only browser review and large matrices, not permission to deploy. SDK `quickstart.mjs` and `launch.mjs` remain read-only on the source chain. SDK `launch-lifecycle-smoke.mjs` is a different, explicitly authorized owned-loopback execution proof, including real ERC20 approval prerequisites when supplied by fixture plans. |
+| Historical commitment generator | Retains original independent config4 bytes/hashes for codec regression evidence; no addresses or allocations in that vector should be used to construct the current graph. |
+
+### Safe verification without a funded launch
+
+After rebuilding the package, run the ordinary offline suite (including
+`test/launch-example.test.mjs`) and typecheck. The example tests retain endpoint,
+chain/account, exact-signing, redaction, pre-broadcast durability, pending-publication
+and no-retry behavior, plus residual-burn/no-creator-reserve accounting; they do not
+claim an actual chain launch or indexer proof.
+
+For CLI proof, run `node examples/launch.mjs` without required arguments (usage refusal,
+no RPC/signing) and `node examples/generate-lifecycle-commitment-fixture.mjs` without
+output paths (offline historical vector to stdout). Read-only deployed discovery is
+`node examples/quickstart.mjs`. With a reviewed exact saved current plan, use
+`launch.mjs --plan ... --rpc ... --mode ...` and retained receipt-reference JSON;
+`--mine` performs only local mining and read-only native simulation on the source.
+Do **not** run any of the eight configured wallet/API wrappers to verify this review.
+Real metadata-session integration needs an owned disposable HTTP service; full custody,
+receipt and fee execution proof needs the separately authorized owned fixture below.
 
 
 ## Actual owned-fixture proof

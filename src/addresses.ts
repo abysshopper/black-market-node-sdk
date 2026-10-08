@@ -177,11 +177,11 @@ export const robinhoodAbyssInfrastructure: AbyssInfrastructureAddresses = {
   abyssFeeRouter: "0x2c3B1b6fe0EDa8e10C0445567b47e66E825B34cd",
 };
 
-/** Mined pool-launch-v1 deployment, 20261005T053747Z-b5a7b88 (manifest.json). */
+/** Mined pool-launch-v1 deployment, 20261008T000141Z-e174ce6 (manifest.json). */
 export const robinhoodLaunchApplication: LaunchApplicationAddresses = {
-  launchOrchestrator: "0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E",
-  launchImplementationRegistry: "0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
-  launchFeeOwnerRegistry: "0x15778Aad08e12D458B2848F035860e2a8c2a0725",
+  launchOrchestrator: "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+  launchImplementationRegistry: "0xB2B0f9F36617810D67b8fC175153Aa10024C1358",
+  launchFeeOwnerRegistry: "0x64b5ca1f21B8E84305b0e4D847924dca39Eb1fcb",
 };
 
 

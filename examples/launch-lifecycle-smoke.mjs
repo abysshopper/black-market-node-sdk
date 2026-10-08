@@ -7,10 +7,10 @@ import {
   createControlledLifecycleFork, decodeDeveloperClaimReceipt, decodePoolBoundV4LifecycleMarketConfig,
   encodeLaunchPlan, encodePoolBoundV4LifecycleMarketConfig, hashLaunchIdentity, hashLaunchPlan,
   launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFeeHubAbi,
-  LifecyclePhase, parseLaunchPlan, planLaunch, predictLifecycleToken, preparePoolBoundLifecyclePlan,
+  LifecyclePhase, parseLaunchPlan, planLaunch, predictLifecycleToken, prepareAndPlanLifecycleLaunch,
   readAuthorHubs, readDeveloperFees, readLaunchProgress, readLifecycleProfiles, readPoolBoundHookDeployment,
-  simulateLaunchPlan,
-} from "../dist/lifecycle/index.js";
+  simulateLaunchPlan, isPoolBoundV4ConfigVersion,
+} from "@black-market/sdk/lifecycle";
 const [manifestFile, plansFile] = process.argv.slice(2);
 if (!manifestFile || !plansFile) throw new Error("Usage: node examples/launch-lifecycle-smoke.mjs manifest.json sdk-plans.json");
 const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
@@ -42,6 +42,7 @@ async function readContract(to, abi, functionName, args = []) {
 }
 async function send(transaction) {
   assert.equal(BigInt(transaction.chainId), chainId);
+  assert.equal(BigInt(await client.request({ method: "eth_chainId" })), chainId, "Owned execution RPC must remain on the reviewed chain");
   const gasPrice = transaction.gasPrice ?? BigInt(await client.request({ method: "eth_gasPrice" }));
   const head = await client.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
   const ceiling = [BigInt(head.gasLimit), BigInt(policy.chainTransactionGasLimit), BigInt(policy.rpcTransactionGasLimit), BigInt(policy.accountTransactionGasLimit)].reduce((a, b) => a < b ? a : b);
@@ -77,21 +78,21 @@ for (const row of exported.plans) for (const mode of ["atomic", "staged"]) {
     assert.equal(hashLaunchPlan(plan).toLowerCase(), row.planHash.toLowerCase());
     assert.equal(hashLaunchIdentity(plan).toLowerCase(), row.launchId.toLowerCase());
     assert.equal((await predictLifecycleToken({ client, plan })).toLowerCase(), row.predictedToken.toLowerCase());
-    const draft = { ...plan, markets: plan.markets.map((market) => market.configVersion === 5 ? {
-      ...market, config: encodePoolBoundV4LifecycleMarketConfig({ ...decodePoolBoundV4LifecycleMarketConfig(market.config), hookSalt: zeroHash }),
+    const draft = { ...plan, markets: plan.markets.map((market) => isPoolBoundV4ConfigVersion(market.configVersion) ? {
+      ...market, config: encodePoolBoundV4LifecycleMarketConfig({ ...decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion), hookSalt: zeroHash }),
     } : market) };
-    const prepared = await preparePoolBoundLifecyclePlan({ client, plan: draft });
-    plan = prepared.plan;
+    let planned = await prepareAndPlanLifecycleLaunch({ client, account: draft.creator, plan: draft, mode, limits, fork });
+    plan = planned.plan;
     assert.equal(hashLaunchPlan(plan).toLowerCase(), row.planHash.toLowerCase(), "Offchain mining reproduces the independent constructor/salt vector");
-    if (mode === "staged") for (const deployment of prepared.deployments) {
+    if (mode === "staged") for (const deployment of planned.hookDeployments) {
       const unsigned = await buildPoolBoundHookDeploymentTransaction({ client, plan, marketIndex: deployment.marketIndex });
       await send({ chainId: Number(chainId), from: plan.creator, ...unsigned });
       const actual = await readPoolBoundHookDeployment({ client, plan, marketIndex: deployment.marketIndex });
       assert.equal(actual.predictedHook.toLowerCase(), deployment.predictedHook.toLowerCase());
     }
-    const planned = await planLaunch({ client, account: plan.creator, plan, mode, limits, fork });
+    if (mode === "staged" && planned.hookDeployments.length > 0) planned = await planLaunch({ client, account: plan.creator, plan, mode, limits, fork });
     assert.equal(planned.simulation.admitted, true, planned.simulation.reason);
-    const atomicReceipt = planned.atomicAttempt.steps.find((step) => step.transactionId === "atomic")?.returnData;
+    const atomicReceipt = planned.simulation.steps.find((step) => step.transactionId === "atomic")?.returnData;
     if (atomicReceipt) {
       const decoded = decodeFunctionResult({ abi: launchLifecycleAbi, functionName: "launchAtomic", data: atomicReceipt });
       assert.equal(decoded.planHash.toLowerCase(), planned.planHash.toLowerCase());
@@ -102,8 +103,9 @@ for (const row of exported.plans) for (const mode of ["atomic", "staged"]) {
     const receipts = [];
     let activationReceipt;
     for (let guard = 0; guard < 64; ++guard) {
-      const next = await buildNextTransaction({ client, planned, receipts, limits, fork });
+      const next = await buildNextTransaction({ client, planned, receipts, limits, fork, submissionClient: client });
       if (!next) break;
+      assert.equal(next.admission?.transportPreflight, "passed");
       const submitted = await send(next);
       receipts.push(submitted.reference);
       if (["atomic", "activate"].includes(next.kind)) activationReceipt = submitted.receipt;
