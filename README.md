@@ -1,4 +1,4 @@
-![Abyss](https://raw.githubusercontent.com/abysshopper/black-market-node-sdk/main/assets/abyss-social.webp)
+![Abyss](https://raw.githubusercontent.com/abysshopper/black-market-node-sdk/main/assets/abyss-ziggurat-v3-pale-text-1500x500.png)
 
 # Abyss TypeScript SDK
 
