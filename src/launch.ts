@@ -558,6 +558,12 @@ export function estimateLaunchInitialBuy(
   assertPositiveUint(input.liquidity, MAX_UINT128, "liquidity");
   assertUint(input.pairedTokenAmountIn, MAX_UINT256, "pairedTokenAmountIn");
   if (!Number.isInteger(input.fee) || input.fee < 0 || input.fee >= 1000000) throw new Error("fee must be pips below 1000000");
+  if (input.sqrtPriceLimitX96 !== undefined) {
+    assertUint(input.sqrtPriceLimitX96, MAX_UINT160, "sqrtPriceLimitX96");
+    if (input.launchedTokenIsQuote ? input.sqrtPriceLimitX96 < input.launchSqrtPriceX96 : input.sqrtPriceLimitX96 > input.launchSqrtPriceX96) {
+      throw new Error("sqrtPriceLimitX96 is on the wrong side of the launch price for this buy");
+    }
+  }
   const fee = BigInt(input.fee);
   const amountAfterFee =
     (input.pairedTokenAmountIn * (1_000_000n - fee)) / 1_000_000n;
