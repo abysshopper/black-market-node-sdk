@@ -9,18 +9,19 @@ import { buildLifecycleCommand, LIFECYCLE_CAPACITY_PADDING_BPS, preparationCalld
 import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile, ufgPlanPrincipal, type UfgLaunchConfig } from "./ufg-config.js";
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBounds, type LifecycleLimitSource, type LifecycleOpeningBuyQuote, type LifecyclePlanningAssessment, type LifecycleRpcClient, type LifecycleTransaction, type PlannedLaunch } from "./types.js";
 import { isHmmProfile } from "./hmm.js";
+import { isRaetoProfile } from "./raeto.js";
 
-export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v3";
+export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v4";
 export type NextTransactionEnvelope = Readonly<{ gas: bigint; gasPrice: bigint }>;
 const ceil = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor;
 const approval = (transaction: LifecycleTransaction) => transaction.kind === "approve" || transaction.kind === "approve-reset";
-type MarketGas = { abyss: boolean; hmm: boolean; ufgHook: boolean; positions: number };
+type MarketGas = { abyss: boolean; hmm: boolean; ufgHook: boolean; raeto: boolean; autoCompound: boolean; positions: number };
 
 function marketGas(plan: LaunchPlanV1): MarketGas[] {
   return plan.markets.map((market) => {
     const abyss = market.configVersion === 1;
     const config = abyss ? decodeAbyssLifecycleMarketConfig(market.config) : decodePoolBoundV4LifecycleMarketConfig(market.config, 6);
-    return { abyss, hmm: isHmmProfile(market.profileId), ufgHook: isUfgProfile(market.profileId), positions: config.positions.length };
+    return { abyss, hmm: isHmmProfile(market.profileId), ufgHook: isUfgProfile(market.profileId), raeto: isRaetoProfile(market.profileId), autoCompound: isAutoCompoundProfile(market.profileId), positions: config.positions.length };
   });
 }
 
@@ -51,6 +52,8 @@ const activationCosts = {
   call: 1_500_000n,
   abyss: { market: 500_000n, position: 1_250_000n },
   v4: { market: 250_000n, position: 500_000n },
+  raeto: { market: 500_000n, position: 500_000n },
+  autoCompound: { market: 750_000n, position: 500_000n },
   hmm: 1_000_000n,
   ufg: 250_000n,
   // Fork Abyss32: 64 buys78.44M minimum versus one buy47.49M;
@@ -62,17 +65,26 @@ const activationCosts = {
 /** Measured-max template budgets, never gas-limit sizing or execution evidence. */
 function capacityBasis(plan: LaunchPlanV1, transaction: LifecycleTransaction, markets: readonly MarketGas[], quotes: readonly LifecycleOpeningBuyQuote[], ufgRoute: boolean): bigint {
   const atomic = transaction.kind === "atomic";
-  let gas = atomic ? 22_000_000n + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n)
+  // template-gas-matrix.json: Raeto/auto-compound atomic1 <=19.60M,
+  // atomic8 <=23.99M; atomic32 exceeds32M. The18M calibration base plus
+  // position/buy work and25% padding bounds compute and forwarding envelopes.
+  let gas = atomic ? (markets[0]!.raeto || markets[0]!.autoCompound ? 18_000_000n : 22_000_000n) + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n)
     : activationCosts.call + (ufgRoute ? activationCosts.ufg : 0n);
   for (const market of markets) {
     if (atomic) gas += (market.hmm ? 7_000_000n : market.ufgHook ? 1_000_000n : market.abyss ? 500_000n : 0n) +
       (market.abyss ? 1_500_000n : 600_000n) * BigInt(market.positions - 1);
     else {
-      const cost = market.abyss ? activationCosts.abyss : activationCosts.v4;
+      const cost = market.abyss ? activationCosts.abyss : market.raeto ? activationCosts.raeto : market.autoCompound ? activationCosts.autoCompound : activationCosts.v4;
       gas += cost.market + cost.position * BigInt(market.positions) + (market.hmm ? activationCosts.hmm : market.ufgHook ? activationCosts.ufg : 0n);
     }
   }
   gas += activationCosts.buy * BigInt(quotes.length);
+  // These collectors revalidate the prepared position set for each buy. At32
+  // positions the measured marginal exceeds1M/buy; flat0.5M is insufficient.
+  for (const quote of quotes) {
+    const market = markets[quote.marketIndex]!;
+    if (market.raeto || market.autoCompound) gas += 25_000n * BigInt(market.positions);
+  }
   if (plan.token.kind === LifecycleTokenKind.ERC404) for (const quote of quotes) gas += activationCosts.nft * ceil(quote.tokenOut, plan.token.nftUnit);
   return gas + 24n * BigInt((transaction.data.length - 2) / 2) + 100_000n * BigInt(plan.feeAssets.length);
 }
@@ -87,8 +99,6 @@ export type ProfiledLaunchCapacity = {
 export function deriveLifecycleLaunchCapacity(options: CapacityOptions, openingBuys?: readonly LifecycleOpeningBuyQuote[]): ProfiledLaunchCapacity | undefined {
   const { plan, ufg } = options;
   if (!hasProfiledOpeningMath(plan) || (plan.creator.toLowerCase() === UFG_LAUNCH_PROXY_ADDRESS.toLowerCase()) !== (ufg !== undefined)) return undefined;
-  // Auto-compounding templates have no measured gas yet; never invent their budgets.
-  if (plan.markets.some((market) => isAutoCompoundProfile(market.profileId))) return undefined;
   const headroomBps = options.headroomBps ?? 1500;
   if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and 10000 basis points");
   const initialBuys = openingBuys ?? computeLifecycleOpeningBuys(options);

@@ -1,0 +1,494 @@
+{
+  "schemaVersion": 1,
+  "chainId": 4663,
+  "forkBlock": 101180179,
+  "forkBlockHash": "0xe778e5d89ca2cab5843eedeb8c27b10f5463313d4b95b8971986ac72e297933c",
+  "forkTimestamp": "1793305706",
+  "clientVersion": "anvil/v1.6.0",
+  "archiveProvider": "alchemy",
+  "caveat": "Anvil Cancun EVM compute gas, NOT native ArbOS/poster-gas proof. 100M characterization envelopes; 32M eth_call fit recorded separately. Budget prices use pinned native ArbGasInfo; read-only Lens smokes map ArbSys L2 number/hash views to actual Anvil NUMBER/BLOCKHASH via eth_call-only override. Launch contracts and execution state are not mocked.",
+  "nativePrices": {
+    "blockNumber": 101180179,
+    "to": "0x000000000000000000000000000000000000006c",
+    "data": "0x41b247a8",
+    "result": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000604edd82000000000000000000000000000000000000000000000000000000000001312d0000000000000000000000000000000000000000000000000000000000000a681000000000000000000000000000000000000000000000000000000000013b9510"
+  },
+  "economics": "Synthetic deterministic fixtures: supply 1M, FDV $5000, WETH $3000 / USDG $1; not current market valuations. Adjacent staircase bands with a permanent tail.",
+  "setup": {
+    "funder": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    "available": "34517895914973",
+    "amount": "100000000",
+    "transferHash": "0xda1845f85747a630fc1c44f6991b6a852d82eb9c01f3d13a7eb303db57f70bc5",
+    "approvalHash": "0x9520a907b03c38be5847439d40ffabef50250523209e77d763b9374a586822e7"
+  },
+  "cases": [
+    {
+      "scenario": {
+        "key": "v4-raeto-fixed-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 0,
+        "mode": "atomic"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 0,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-raeto-fixed-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 0,
+        "mode": "staged"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 0,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-raeto-fixed-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 1,
+        "mode": "atomic"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 18,
+        "launchId": "0x790d440510099c871d5c044b14a04ab8cedc347e1f39521af9eaf028e092c34f",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-raeto-fixed-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 1,
+        "mode": "staged"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 18,
+        "launchId": "0x790d440510099c871d5c044b14a04ab8cedc347e1f39521af9eaf028e092c34f",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-raeto-dynamic-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 0,
+        "mode": "atomic"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 42,
+        "launchId": "0x399795a31f22a5c9a6b3b39241f8010e6ba3949b8db4b98b712bcb8a0e27f632",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-raeto-dynamic-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 0,
+        "mode": "staged"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 42,
+        "launchId": "0x399795a31f22a5c9a6b3b39241f8010e6ba3949b8db4b98b712bcb8a0e27f632",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-raeto-dynamic-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 1,
+        "quoteIndex": 1,
+        "mode": "atomic"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 60,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-raeto-dynamic-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 1,
+        "quoteIndex": 1,
+        "mode": "staged"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 60,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-auto-compound-static-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 0,
+        "mode": "atomic"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 64,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-auto-compound-static-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 0,
+        "mode": "staged"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 64,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-auto-compound-static-pool",
+        "marketCount": 1,
+        "positions": 8,
+        "buyCount": 4,
+        "quoteIndex": 1,
+        "feeMode": 0,
+        "mode": "atomic"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 72,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-auto-compound-static-pool",
+        "marketCount": 1,
+        "positions": 8,
+        "buyCount": 4,
+        "quoteIndex": 1,
+        "feeMode": 0,
+        "mode": "staged"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 72,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-auto-compound-dynamic-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 0,
+        "mode": "atomic"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 74,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-auto-compound-dynamic-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 0,
+        "mode": "staged"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 74,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-auto-compound-dynamic-pool",
+        "marketCount": 1,
+        "positions": 8,
+        "buyCount": 4,
+        "quoteIndex": 1,
+        "feeMode": 0,
+        "mode": "atomic"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 82,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-auto-compound-dynamic-pool",
+        "marketCount": 1,
+        "positions": 8,
+        "buyCount": 4,
+        "quoteIndex": 1,
+        "feeMode": 0,
+        "mode": "staged"
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v4",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 82,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    }
+  ]
+}

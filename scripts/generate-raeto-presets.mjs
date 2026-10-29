@@ -26,6 +26,8 @@ if (capture && !root) throw new Error('Pass the read-only protocol checkout path
 const evidenceUrl = new URL('../test/fixtures/raeto-registry-readback.json', import.meta.url);
 const registry = '0xB2B0f9F36617810D67b8fC175153Aa10024C1358';
 const orchestrator = '0x91560876033d568d25CDe98C78c33ff8FC43962c';
+// registry-deploy/registry.json, sealed from the successful 20261029T065559Z deployment.
+const payoutRegistryCodeHash = '0x76a4933f68909b5905d52efc8c0fb8de6daf28185bf44e17ae930ab76ef9f3a3';
 const specs = [
   { variant: 'fixed', directory: '20261029T065911Z-raeto-fixed', profileId: RAETO_FIXED_PROFILE_ID, adapterId: RAETO_FIXED_ADAPTER_ID, adapter: '0x995Da3cB2b643A9D986f28179F62511BE8757e58', collectorFactory: '0xb2f84D9f31cBCfA75E998852B1dCcF176BeaAeDC', collectorDeployer: '0xb07558776a71C0b58779F1CAF89775d8E466c173', locker: '0x12985Fa618974b45a5de8fA40c1DE90d15E9c5c8', hookDeployer: '0xfdB07076Cab21715244Bc9699A381b4F461157ea', creationCode: fixedFeePoolHookV1CreationCode, transactionHash: '0x99089e4418bcf59fc4a2efb5dd36c95f92331a079401dcfaae36d1c94a08326a' },
   { variant: 'dynamic', directory: '20261029T070544Z-raeto-dynamic', profileId: RAETO_DYNAMIC_PROFILE_ID, adapterId: RAETO_DYNAMIC_ADAPTER_ID, adapter: '0xfc1502090D8326AB9b70aa93a01c93bEBb6f4910', collectorFactory: '0x3E201A0d72221A9F8c0AEd06EdAE850E27226166', collectorDeployer: '0x796E8899824999f6Da8740f712A709dBC65cbEd7', locker: '0xBF9005094bDa89d5a119A324d6e609A2d8217C1C', hookDeployer: '0x788B88e46BE3051633792896F3000eb2CA57F97E', creationCode: dynamicFeePoolHookV1CreationCode, transactionHash: '0x3148a6696c36bb1de00f8142b2aa6480681ded86203ffa6486a44c4e985c3b31' },
@@ -46,6 +48,9 @@ const equalHex = (actual, expected) => assert.equal(actual.toLowerCase(), expect
 const decode = (raw) => Object.fromEntries(Object.entries(components).map(([name, fields]) => [name, decodeAbiParameters([{ type: 'tuple', components: fields }], raw[name])[0]]));
 let evidence;
 if (capture) {
+  const payoutRecord = JSON.parse(await readFile(resolve(root, 'contracts/deployments/launch/raeto/20261029T065559Z-registry-deploy/registry.json'), 'utf8'));
+  equalHex(payoutRecord.registry, RAETO_PAYOUT_REGISTRY_ADDRESS);
+  equalHex(payoutRecord.registryCodehash, payoutRegistryCodeHash);
   const client = createPublicClient({ transport: http('https://rpc.mainnet.chain.robinhood.com/') });
   assert.equal(await client.getChainId(), 4663);
   const block = await client.getBlock(), blockNumber = block.number;
@@ -153,6 +158,7 @@ for (const spec of specs) {
   equalHex(creationCode, spec.creationCode);
   equalHex(adapter.codeHash, observed.codeHashes.adapter);
   equalHex(observed.codeHashes.registry, observed.config.registryCodehash);
+  equalHex(observed.codeHashes.payoutRegistry, payoutRegistryCodeHash);
   for (const name of ['core', 'manager', 'oracleFactory', 'locker', 'collectorFactory', 'collectorDeployer', 'hookDeployer']) equalHex(observed.codeHashes[name], envelope.graph[`${name}CodeHash`]);
   for (const name of ['artifactDigest', 'reviewManifestDigest', 'termsDigest', 'beneficiary']) equalHex(envelope[name], observed.config[name]);
   equalHex(observed.terms.artifactDigest, envelope.artifactDigest);
