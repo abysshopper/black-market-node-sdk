@@ -108,6 +108,26 @@ for (const key of keys) {
     assert.throws(() => sdk.validateRaetoLaunchPlan({ ...plan, markets: [] }), { code: 'INVALID_RAETO_PLAN' });
     assert.throws(() => sdk.validateV4LifecycleMarket({ market: invalidMarkets[0], config, token: testToken, profile: preset.profile }), { code: 'INVALID_RAETO_CONFIG' });
   });
+  test(`${key}: known-preset planning, combined preparation and continuation enforce Raeto before RPC`, async () => {
+    const { plan, config } = makeRaetoPlan(key);
+    const malformed = [
+      { ...plan.markets[0], quoteAsset: '0x0000000000000000000000000000000000000001' },
+      ...[{ feeMode: 0 }, { lpFeePips: 1 }, { developerFeeBps: 1 }, { raetoLaunchConfig: { shareBps: 10000 } }].map((changes) => {
+        const invalid = { ...config, ...changes };
+        return { ...plan.markets[0], config: concatHex([prefix(invalid), rawTail(invalid.raetoLaunchConfig.shareBps)]) };
+      }),
+    ];
+    for (const market of malformed) for (const mode of ['atomic', 'staged']) {
+      const unsafe = { ...plan, markets: [market] };
+      const client = { request: async () => { throw new Error('Invalid Raeto economics must reject before RPC'); } };
+      const options = { client, plan: unsafe, mode, account: plan.creator };
+      await assert.rejects(sdk.planLaunch(options), { code: 'INVALID_RAETO_CONFIG' });
+      await assert.rejects(sdk.prepareAndPlanLifecycleLaunch(options), { code: 'INVALID_RAETO_CONFIG' });
+      const planned = { plan: unsafe, account: plan.creator, chainId: plan.chainId, mode,
+        planHash: sdk.hashLaunchPlan(unsafe), launchId: sdk.hashLaunchIdentity(unsafe), predictedToken: testToken };
+      await assert.rejects(sdk.buildNextTransaction({ client, planned }), { code: 'INVALID_RAETO_CONFIG' });
+    }
+  });
   test(`${key}: share changes bind the plan, but do not change the deployed hook's prefix-only commitment`, () => {
     const { config, plan } = makeRaetoPlan(key);
     const changed = (updates) => ({ ...plan, markets: [{ ...plan.markets[0], config: sdk.encodePoolBoundV4LifecycleMarketConfig({ ...config, ...updates }) }] });

@@ -2,7 +2,7 @@ import { encodeFunctionData, keccak256, toHex, zeroAddress, type Address, type H
 import { ABYSS_FEE_TIERS } from "../abyss.js";
 import { assertLaunchTopologyCoverage, getTickAtSqrtRatio } from "../launch.js";
 import { launchLifecycleAbi, lifecycleAdapterAbi, lifecycleErc20Abi } from "./abi.js";
-import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, LIFECYCLE_MAX_ERC404_SUPPLY, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1 } from "./schema.js";
+import { hashLaunchIdentity, hashLaunchPlan, LifecycleFundingKind, LifecyclePhase, LifecycleRewardMode, LifecycleTokenKind, LIFECYCLE_MAX_ERC404_SUPPLY, LIFECYCLE_MAX_REWARD_ERC20_SUPPLY, parseLaunchPlan, serializeLaunchPlan, type LaunchPlanV1, type MarketConfigV1 } from "./schema.js";
 import { readLaunchProgress, readLifecycleExecutionProgress, readLifecycleHeadProgress, readLifecycleProfiles, readLifecycleTokenAtBlock, readPoolBoundHookDeployment } from "./progress.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, encodePoolBoundV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion, type AbyssLifecycleMarketConfig, type V4LifecycleMarketConfig, type V4PoolBoundLifecycleMarketConfig } from "./markets.js";
 import { lifecyclePinnedRpc, lifecycleStaticRpc, lifecycleStage, nitroPosterGasBound, readLifecycleChainId, readLifecycleContract, readNitroPrices, registerLifecycleFinalCheck, resolveLifecycleLimits, rpcHex, rpcQuantity, withLifecycleReadClient } from "./rpc.js";
@@ -18,6 +18,7 @@ import { mineLifecycleHooks } from "./mining.js";
 import { computeLifecycleOpeningBuys, hasProfiledOpeningMath } from "./opening-buys.js";
 import { assessLifecycleTransactions, deriveLifecycleLaunchCapacity, type NextTransactionEnvelope, type ProfiledLaunchCapacity } from "./gas-profile.js";
 import type { LifecycleOpeningBuyQuote } from "./types.js";
+import { isRaetoProfile, RAETO_QUOTE_ASSETS } from "./raeto.js";
 
 type ValidatedPlanShape = {
   commitment: Hex;
@@ -53,6 +54,20 @@ async function preparationBatches(plan: LaunchPlanV1, prepared: number, ufg: Pla
   return packPreparationBatches(plan, prepared, limits.executionGasCeiling - poster, limits.headroomBps);
 }
 
+/** Preserve Raeto's outer quote/profile binding even on known-preset recovery. */
+function validateRaetoMarketContext(market: MarketConfigV1, config?: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig): void {
+  if (!isRaetoProfile(market.profileId)) return;
+  if (market.configVersion !== 6 || !RAETO_QUOTE_ASSETS.some((quote) => quote.toLowerCase() === market.quoteAsset.toLowerCase())) {
+    throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto requires config6 and a WETH or USDG quote");
+  }
+  // Normal planning supplies its already decoded config. Continuation must also
+  // reject malformed fee/share tails before reading or building its next command.
+  const decoded = config ?? decodePoolBoundV4LifecycleMarketConfig(market.config, 6);
+  if (decoded.version !== 6 || decoded.profileId.toLowerCase() !== market.profileId.toLowerCase()) {
+    throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto config must bind its market's Raeto profile");
+  }
+}
+
 function validatePlanShape(plan: LaunchPlanV1): ValidatedPlanShape {
   // Encoding checks all exact integer widths, addresses, byte strings and tuple fields.
   const commitment = hashLaunchPlan(plan);
@@ -85,6 +100,7 @@ function validatePlanShape(plan: LaunchPlanV1): ValidatedPlanShape {
     if (market.configVersion !== 1 && market.configVersion !== 4 && !isPoolBoundV4ConfigVersion(market.configVersion)) throw new LifecyclePlanningError("UNSUPPORTED_CONFIG_VERSION", "Encode reviewed SharedV4 version 4 or pool-bound version 5/6 only on its exact matching deployment");
     if (market.configVersion === 4) config = decodeV4LifecycleMarketConfig(market.config);
     else if (isPoolBoundV4ConfigVersion(market.configVersion)) config = decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion);
+    validateRaetoMarketContext(market, config);
     if (config !== undefined) {
       if (config.profileId.toLowerCase() !== market.profileId.toLowerCase()) throw new LifecyclePlanningError("PROFILE_TERMS_MISMATCH", "Inner config profile differs from the committed market profile");
       const quote = market.quoteAsset.toLowerCase();
@@ -455,6 +471,7 @@ function finalizeNextTransaction(options: BuildNextTransactionOptions, next: Lif
 /** Recovery observes actual canonical receipts, then constructs and budgets only
  * the next command. No launch transaction is executed during planning. */
 export async function buildNextTransaction(options: BuildNextTransactionOptions): Promise<LifecycleTransaction | undefined> {
+  if (options.action !== "cancel") for (const market of options.planned.plan.markets) validateRaetoMarketContext(market);
   const original = options.planned, matches = observedFields(original);
   const assertInput = () => {
     if (options.planned !== original || !matches()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored launch context changed while constructing its next transaction");
