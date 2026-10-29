@@ -14,6 +14,9 @@ import { UFG_FIXED_PROFILE_ID, UFG_DYNAMIC_PROFILE_ID } from "./ufg-config.js";
 import { autoCompoundStaticEnvelope, autoCompoundStaticAdapter, autoCompoundStaticRegistration, autoCompoundStaticCreationCode } from "./deployments/auto-compound-static-pool-v1-20261028.js";
 import { autoCompoundDynamicEnvelope, autoCompoundDynamicAdapter, autoCompoundDynamicRegistration, autoCompoundDynamicCreationCode } from "./deployments/auto-compound-dynamic-pool-v1-20261028.js";
 import { AUTO_COMPOUND_STATIC_V1_PROFILE_ID, AUTO_COMPOUND_DYNAMIC_V1_PROFILE_ID } from "./auto-compound.js";
+import { raetoFixedEnvelope, raetoFixedAdapter, raetoFixedRegistration } from "./deployments/raeto-fixed-pool-v1-20261029.js";
+import { raetoDynamicEnvelope, raetoDynamicAdapter, raetoDynamicRegistration } from "./deployments/raeto-dynamic-pool-v1-20261029.js";
+import { RAETO_FIXED_PROFILE_ID, RAETO_DYNAMIC_PROFILE_ID } from "./raeto.js";
 
 export enum KnownLifecycleProfile {
   Abyss0 = "abyss-0",
@@ -28,6 +31,8 @@ export enum KnownLifecycleProfile {
   V4UfgDynamicPool = "v4-ufg-dynamic-pool",
   V4AutoCompoundStaticPool = "v4-auto-compound-static-pool",
   V4AutoCompoundDynamicPool = "v4-auto-compound-dynamic-pool",
+  V4RaetoFixedPool = "v4-raeto-fixed-pool",
+  V4RaetoDynamicPool = "v4-raeto-dynamic-pool",
 }
 
 export enum KnownLifecycleHook {
@@ -360,6 +365,8 @@ const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
     poolBoundPreset(KnownLifecycleProfile.V4UfgDynamicPool, UFG_DYNAMIC_PROFILE_ID, ufgDynamicEnvelope, ufgDynamicAdapter, ufgDynamicRegistration, dynamicFeePoolHookV1CreationCode),
     poolBoundPreset(KnownLifecycleProfile.V4AutoCompoundStaticPool, AUTO_COMPOUND_STATIC_V1_PROFILE_ID, autoCompoundStaticEnvelope, autoCompoundStaticAdapter, autoCompoundStaticRegistration, autoCompoundStaticCreationCode),
     poolBoundPreset(KnownLifecycleProfile.V4AutoCompoundDynamicPool, AUTO_COMPOUND_DYNAMIC_V1_PROFILE_ID, autoCompoundDynamicEnvelope, autoCompoundDynamicAdapter, autoCompoundDynamicRegistration, autoCompoundDynamicCreationCode),
+    poolBoundPreset(KnownLifecycleProfile.V4RaetoFixedPool, RAETO_FIXED_PROFILE_ID, raetoFixedEnvelope, raetoFixedAdapter, raetoFixedRegistration, fixedFeePoolHookV1CreationCode),
+    poolBoundPreset(KnownLifecycleProfile.V4RaetoDynamicPool, RAETO_DYNAMIC_PROFILE_ID, raetoDynamicEnvelope, raetoDynamicAdapter, raetoDynamicRegistration, dynamicFeePoolHookV1CreationCode),
   ]),
   provenance: Object.freeze({ sourceCommit: "e174ce695c7010f50ca9211b07b9f178c990beac", deploymentBlock: 82880546n }),
 });
@@ -389,7 +396,7 @@ export function getKnownLifecycleProfile(options: KnownLifecycleDeploymentIdenti
   return undefined;
 }
 
-/** Stable, frozen order: Abyss, fixed/dynamic V4, HMM, UFG, then auto-compounding. */
+/** Stable, frozen order: Abyss, fixed/dynamic V4, HMM, UFG, auto-compounding, then Raeto. */
 export function listKnownLifecycleProfiles(options: KnownLifecycleDeploymentIdentity): readonly LifecycleProfilePreset[] {
   return getKnownLifecycleDeployment(options)?.profiles ?? noProfiles;
 }
