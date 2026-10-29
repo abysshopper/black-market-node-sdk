@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, encodeFunctionData, encodeFunctionResult, keccak256, parseAbi, stringToHex, toHex, zeroAddress, zeroHash } from "viem";
 import { MULTICALL3, MULTICALL3_CODE, emulateMulticall3 } from "./fixtures/multicall3.mjs";
@@ -86,7 +88,7 @@ function clientFor(plan, settings = {}) {
     assert.equal(method, "eth_call");
     assert.ok((state.allowedTags ?? ["0x2a"]).includes(params[1]), "Every read uses an explicit L2 pin");
     const { to, data } = params[0], target = to.toLowerCase();
-    if (known && target === known.tokenFactory.toLowerCase()) return encodeAbiParameters([{ type: "address" }], [TOKEN]);
+    if (known && target === known.tokenFactory.toLowerCase()) return encodeAbiParameters([{ type: "address" }], [state.predictedToken ?? TOKEN]);
     if (known?.hookSaltMiner !== undefined && target === known.hookSaltMiner.toLowerCase()) {
       const { args } = decodeFunctionData({ abi: hookSaltMinerAbi, data });
       const mined = await Promise.all(args[0].map((search) => minePoolBoundHookSalt(search)));
@@ -103,7 +105,7 @@ function clientFor(plan, settings = {}) {
     for (const candidate of abis) { try { call = decodeFunctionData({ abi: candidate, data }); abi = candidate; break; } catch {} }
     assert.ok(call, `Unexpected contract calldata ${target} ${data.slice(0, 10)}`);
     switch (call.functionName) {
-      case "predictToken": return output(abi, call.functionName, TOKEN);
+      case "predictToken": return output(abi, call.functionName, state.predictedToken ?? TOKEN);
       case "tokenFactory": return output(abi, call.functionName, ADAPTER);
       case "fundingEscrow": return output(abi, call.functionName, escrow);
       case "registry": return output(abi, call.functionName, REGISTRY);
@@ -199,6 +201,22 @@ test("atomic is restricted to a single non-conversion market with known headroom
     assert.equal(planned.transactions[0].gas, ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT);
     assert.equal(economicRequests(client).length, 0);
   }
+});
+
+test("canonical16 issue21 refuses review and build-next without execution fallback", async () => {
+  const bytes = readFileSync(new URL("./fixtures/canonical16-issue21.json", import.meta.url));
+  assert.equal(createHash("sha256").update(bytes).digest("hex"), "547b928cf2eac4b30493018486805bba0b7d72b32b4f1233c5357dd9bc10878f");
+  const { parseLaunchPlan } = await import(sdkPath);
+  const plan = parseLaunchPlan(JSON.stringify(JSON.parse(bytes).plan));
+  const predictedToken = plan.feeAssets.find(({ asset }) => !plan.markets.some(({ quoteAsset }) => quoteAsset.toLowerCase() === asset.toLowerCase())).asset;
+  const client = clientFor(plan, { predictedToken });
+  const planned = await planLaunch({ client, plan, account: plan.creator, mode: "staged" });
+  assert.equal(planned.assessment.ready, false);
+  assert.equal(planned.assessment.code, "ACTIVATION_GAS_LIMIT");
+  assert.equal(planned.assessment.capacityConstraint, "activation");
+  assert.equal(planned.assessment.failedTransactionId, "activate");
+  await assert.rejects(buildNextTransaction({ client, planned }), { code: "ACTIVATION_GAS_LIMIT" });
+  assert.equal(economicRequests(client).length, 0);
 });
 
 test("activation over the known ceiling refuses before begin and exposes the public capacity bound", async () => {

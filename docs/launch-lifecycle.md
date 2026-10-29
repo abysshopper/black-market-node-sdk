@@ -338,20 +338,18 @@ Do not serialize the entire `PlannedLaunch`, which can contain live limit callba
 Every launch step uses the native total transaction ceiling:32M on4663, including
 poster gas. Approvals omit gas/fees for wallet preparation. Covered Robinhood
 ArbOS61 templates use capacity bounds and exact local ordered-buy math, never
-component-sized gas limits. Their evidence is `profiled` / `not-run`, not a receipt.
-Conversion-carrying begin/atomic and consuming activation require exact native
-execution. Unknown coverage or uncertain activation gets full-sequence execution
-before begin. Explicit `simulateLaunchPlan` always executes; a generic fork is not Nitro proof.
-
-Review checks the complete sequence, not just a successful prefix. There is no
-SDK-invented 50M aggregate cap. A caller `maxSimulationGas` still tightens policy;
-incomplete execution proof refuses admission. A refused full review cannot begin
-a new launch. Only the immediate command receives final gas/price/estimate/admission.
-Suffix metrics remain provisional; build-next admits only the canonical next command
-at its fresh native-ceiling budget, never reusing a provisional estimate.
+component-sized gas limits. `planned.assessment.ready` reports input/capacity readiness, not execution proof.
+Multiple markets or conversion funding always stage. Atomic requires one non-conversion
+market with known headroom. Planning/build-next never simulate launch calldata or select
+an execution/fork fallback. Unknown coverage returns `UNKNOWN_GAS_PROFILE`; activation
+bounds plus poster above the ceiling return `ACTIVATION_GAS_LIMIT` before begin.
+Staging cannot split activation. Read `assessment.estimate` for the immediate command;
+removed simulation/proof fields and `maxSimulationGas` are not current admission APIs.
+Build-next constructs and budgets only the canonical next command at a fresh pin,
+using the native ceiling rather than a provisional execution estimate.
 
 See [capacity, native/fork evidence and migration](lifecycle-gas-profiles.md)
-for exact proof fields, upfront affordability and the public capacity-bound helper.
+for assessment fields, upfront affordability and the public capacity-bound helper.
 
 Review the returned final plan/hash, aligned price, burn, retained supply, fees,
 ordered buy outputs/minima, funding, refunds, and complete gas envelope. A fresh
@@ -695,7 +693,8 @@ launch-token fees and uses quote fees to buy and compound. Every post-opening sw
 performs compounding in `afterSwap`; insufficient gas reverts with
 `CompoundOutOfGas()` rather than silently skipping work. Do not cap swap gas below
 `eth_estimateGas`. Launch transactions retain the SDK's native ceiling; these new
-templates require exact execution admission, not uncalibrated fixed-hook capacity bounds.
+templates lack calibrated capacity coverage and refuse with `UNKNOWN_GAS_PROFILE`,
+not an exact-execution fallback or uncalibrated fixed-hook capacity bounds.
 
 <a id="0100-release-hmm-v2-only"></a>
 ## Configure HMM V2

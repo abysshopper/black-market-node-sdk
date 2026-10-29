@@ -207,16 +207,18 @@ NodeInterface oracle. See [capacity and poster evidence](lifecycle-gas-profiles.
 `computeLifecycleLaunchGasBounds({ plan, predictedToken, ufg? })` returns conservative
 atomic/activation compute upper bounds, excluding poster, or undefined for unknown
 coverage. These select modes, not gas limits. Atomic is a preference that may select
-staged; persist returned `planned.mode`. A large upper bound is uncertain, not
-proof of overflow. Unknown activation gets full-sequence execution before begin.
-Conversion-carrying commands/consuming activation always retain exact execution.
+staged; persist returned `planned.mode`. Multiple markets or conversion funding
+always stage. Activation bound plus poster above the ceiling refuses with
+`ACTIVATION_GAS_LIMIT`; unknown coverage refuses with `UNKNOWN_GAS_PROFILE`.
+Planning/build-next never simulate launch calldata or select an execution fallback.
+These empirical bounds are not proof of successful execution or actual overflow.
 
 Only an immediate launch command receives a final gas/price/estimate/admission.
-Suffix execution metrics stay provisional; build-next constructs only the canonical
+No suffix execution proof is produced; build-next constructs only the canonical
 next command at the same native ceiling with fresh fees and required admission.
 There are no sizing passes or funds-only retries. Balance must cover value plus
-the entire ceiling fee even when actual execution uses less gas. Incomplete proof
-cannot authorize begin; explicit aggregate policies still refuse excessive work.
+the entire ceiling fee even when actual execution uses less gas. A refused input
+or capacity assessment cannot authorize begin; there is no execution-proof fallback.
 
 On Nitro, `estimate.posterGas` / `posterFee` are buffered allocations **inside**
 `gasLimit`; `dataFeeIncludedInGas` is true, `dataFee` is zero, and `totalFee` equals

@@ -10,7 +10,7 @@ import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile, ufgPlanPrincipal, type UfgLaunc
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBounds, type LifecycleLimitSource, type LifecycleOpeningBuyQuote, type LifecyclePlanningAssessment, type LifecycleRpcClient, type LifecycleTransaction, type PlannedLaunch } from "./types.js";
 import { isHmmProfile } from "./hmm.js";
 
-export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v3";
+export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v4";
 export type NextTransactionEnvelope = Readonly<{ gas: bigint; gasPrice: bigint }>;
 const ceil = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor;
 const approval = (transaction: LifecycleTransaction) => transaction.kind === "approve" || transaction.kind === "approve-reset";
@@ -49,8 +49,12 @@ function tokenCreationGas(token: LaunchPlanV1["token"]): bigint {
 // Native mixed HMM8/Abyss8/HMM8 activation23,883,893 (0xf05e…fe98).
 const activationCosts = {
   call: 1_500_000n,
-  abyss: { market: 500_000n, position: 1_250_000n },
-  v4: { market: 250_000n, position: 500_000n },
+  // Restore the per-market allowances from capacity-v2 (29e1445).
+  // Issue #21 motivates conservative breadth policy pending native calibration.
+  // Its empty activation revert does not establish the exact failure cause.
+  // These restored allowances are not a measured successful gas bound.
+  abyss: { market: 1_000_000n, position: 1_250_000n },
+  v4: { market: 500_000n, position: 500_000n },
   hmm: 1_000_000n,
   ufg: 250_000n,
   // Fork Abyss32: 64 buys78.44M minimum versus one buy47.49M;
@@ -59,7 +63,7 @@ const activationCosts = {
   nft: 100_000n,
 } as const;
 
-/** Measured-max template budgets, never gas-limit sizing or execution evidence. */
+/** Conservative empirical template budgets, never gas-limit sizing or execution evidence. */
 function capacityBasis(plan: LaunchPlanV1, transaction: LifecycleTransaction, markets: readonly MarketGas[], quotes: readonly LifecycleOpeningBuyQuote[], ufgRoute: boolean): bigint {
   const atomic = transaction.kind === "atomic";
   let gas = atomic ? 22_000_000n + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n)
