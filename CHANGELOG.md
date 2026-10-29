@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0
+
+- Add supported Robinhood Raeto fixed/dynamic pool-bound templates, generated from preserved go-live records and pinned registry readback. Reuse the byte-identical ordinary fixed and zero-royalty dynamic hook creation code, with the distinct Raeto adapter/collector/locker graph.
+- Export Raeto profile/adapter/payout identities, frozen WETH/USDG quote and 500/1000/2500/5000/7500-bps share menus, config validators/codecs, an exclusive all-markets plan validator and the verified collector read/write/event ABI from `@black-market/sdk/lifecycle`. Preserve the deployed five-share menu, not the wider range in later undeployed contract source.
+- Add typed config6 `raetoLaunchConfig` tails (one canonical uint16 word). Reject mixed tails, wrong profiles/quotes, non-QuoteOnly mode and nonzero LP/developer fees. Bind the full tail in the plan hash while preserving the deployed prefix-only hook-constructor commitment. Raeto uses normal lifecycle funding, not the UFG proxy.
+- Extend measured launch capacity and deterministic preparation costs to Raeto fixed/dynamic and the current re-admitted auto-compounding static/dynamic profiles. Bump the model to `robinhood-4663-capacity-v4`; these templates no longer refuse with `UNKNOWN_GAS_PROFILE`. Keep the 32M native total ceiling, poster allowance and all other templates' economics unchanged.
+- Retain an owned pinned-fork matrix of 84 real launches / 186 successful launch transactions, full plans and 32M call-fit results at block 101,180,179. Profiled SDK planning/build-next smokes reuse executed plans read-only, without replaying any recorded launch. Deterministic tests require every observation to fit its capacity/preparation bound with margin. Anvil compute is empirical evidence, not native ArbOS execution/poster-gas proof; the read-only Lens smoke bridges missing native number/hash views to real local block metadata.
+- Verify exact local opening-buy outputs against real fork receipts. Auto-compounding defers through all opening buys until opening completion, so its post-opening `CompoundOutOfGas` guard requires no launch-compounding forwarding reserve. Postlaunch swap gas is not a launch-capacity estimate.
+
 ## 0.15.1
 
 - Remove every launch planning/build-next simulation, including aggregator-funded launches, exact proofs, buy-output diagnostics and controlled-fork execution. No `eth_simulateV1` or launch-calldata execution occurs before or between wallet transactions. Routers enforce their committed conversion output floors/deadlines on-chain.
