@@ -103,8 +103,6 @@ for (const key of keys) {
       assert.equal(transactions.length, mode === 'atomic' ? 1 : 3);
       for (const transaction of transactions) assert.equal(decodeFunctionData({ abi: sdk.launchLifecycleAbi, data: transaction.data }).args[0].markets[0].config, plan.markets[0].config);
     }
-    assert.equal(sdk.computeLifecycleLaunchGasBounds({ plan, predictedToken: testToken }), undefined,
-      'New templates require exact execution, not uncalibrated fixed-hook capacity evidence');
   });
 }
 test('auto-compound opening math uses static maximum and dynamic minimum like the corresponding ordinary hook', () => {

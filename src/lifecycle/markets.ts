@@ -4,6 +4,7 @@ import { LifecyclePlanningError, type LifecycleProfile, type PoolBoundHookSaltPr
 import { decodeHmmLaunchTail, encodeHmmLaunchTail, isHmmProfile, type HmmLaunchConfig } from "./hmm.js";
 import { decodeUfgLaunchConfig, encodeUfgLaunchConfig, isUfgProfile, type UfgLaunchConfig } from "./ufg-config.js";
 import { decodeAutoCompoundTail, encodeAutoCompoundTail, isAutoCompoundProfile, validateAutoCompoundConfig, type AutoCompoundConfigV1 } from "./auto-compound.js";
+import { decodeRaetoLaunchTail, encodeRaetoLaunchTail, isRaetoProfile, RAETO_QUOTE_ASSETS, validateRaetoLaunchConfig, type RaetoLaunchConfigV1 } from "./raeto.js";
 
 export type V4LifecyclePositionConfig = {
   tickLower: number; tickUpper: number; liquidity: bigint; salt: Hex; maxTokenAmount: bigint;
@@ -48,6 +49,7 @@ export type V4PoolBoundLifecycleMarketConfigV6 = Omit<V4LifecycleMarketConfig, "
   hmmLaunchConfig?: HmmLaunchConfig;
   ufgLaunchConfig?: UfgLaunchConfig;
   autoCompoundConfig?: AutoCompoundConfigV1;
+  raetoLaunchConfig?: RaetoLaunchConfigV1;
 };
 export type V4PoolBoundLifecycleMarketConfig = V4PoolBoundLifecycleMarketConfigV5 | V4PoolBoundLifecycleMarketConfigV6;
 export const V4_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"));
@@ -96,15 +98,27 @@ function assertV1HookFeeShape(config: object): void {
 
 function validateAutoCompoundMarket(config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig): asserts config is V4PoolBoundLifecycleMarketConfigV6 & { autoCompoundConfig: AutoCompoundConfigV1 } {
   if (config.version !== 6 || config.autoCompoundConfig === undefined) throw new LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compounding profiles require config6 and an explicit autoCompoundConfig");
-  if (config.hmmLaunchConfig !== undefined || config.ufgLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compounding profiles cannot carry HMM or UFG tails");
+  if (config.hmmLaunchConfig !== undefined || config.ufgLaunchConfig !== undefined || config.raetoLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compounding profiles cannot carry HMM, UFG or Raeto tails");
   if (config.lpFeePips !== 0) throw new LifecyclePlanningError("INVALID_HOOK_FEES", "Auto-compounding profiles require zero LP fee");
   if (config.developerFeeBps !== 0) throw new LifecyclePlanningError("DEVELOPER_FEE_CEILING", "Auto-compounding profiles require zero developer fee");
   validateAutoCompoundConfig(config.autoCompoundConfig);
 }
 
+function validateRaetoMarket(config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig): asserts config is V4PoolBoundLifecycleMarketConfigV6 & { raetoLaunchConfig: RaetoLaunchConfigV1 } {
+  if (config.version !== 6 || config.raetoLaunchConfig === undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles require config6 and an explicit raetoLaunchConfig");
+  if (config.hmmLaunchConfig !== undefined || config.ufgLaunchConfig !== undefined || config.autoCompoundConfig !== undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles cannot carry HMM, UFG or auto-compounding tails");
+  if (config.feeMode !== 1 || config.lpFeePips !== 0 || config.developerFeeBps !== 0) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto requires QuoteOnly feeMode 1, zero LP fee and zero developer fee");
+  validateRaetoLaunchConfig(config.raetoLaunchConfig);
+}
+
 /** Auxiliary launch profiles require their typed tail and append it automatically. */
 export function encodePoolBoundV4LifecycleMarketConfig(config: V4PoolBoundLifecycleMarketConfig): Hex {
   const prefix = encodePoolBoundV4Prefix(config);
+  if (isRaetoProfile(config.profileId)) {
+    validateRaetoMarket(config);
+    return concatHex([prefix, encodeRaetoLaunchTail(config.raetoLaunchConfig)]);
+  }
+  if (config.version === 6 && config.raetoLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "A Raeto tail requires a Raeto profile");
   if (isAutoCompoundProfile(config.profileId)) {
     validateAutoCompoundMarket(config);
     return concatHex([prefix, encodeAutoCompoundTail(config.autoCompoundConfig)]);
@@ -145,6 +159,10 @@ export function decodePoolBoundV4LifecycleMarketConfig(encoded: Hex, expectedVer
   const config = version === 5
     ? decodeAbiParameters([{ type: "tuple", components: poolBoundV4LifecycleMarketComponentsV5 }], encoded)[0] as V4PoolBoundLifecycleMarketConfigV5
     : decodeAbiParameters([{ type: "tuple", components: poolBoundV4LifecycleMarketComponentsV6 }], encoded)[0] as V4PoolBoundLifecycleMarketConfigV6;
+  if (isRaetoProfile(config.profileId)) {
+    if (config.version !== 6) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles require config6");
+    config.raetoLaunchConfig = decodeRaetoLaunchTail(`0x${encoded.slice(encodePoolBoundV4Prefix(config).length)}`);
+  }
   if (isAutoCompoundProfile(config.profileId)) {
     if (config.version !== 6) throw new LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compounding profiles require config6");
     config.autoCompoundConfig = decodeAutoCompoundTail(`0x${encoded.slice(encodePoolBoundV4Prefix(config).length)}`);
@@ -180,6 +198,10 @@ export function validateV4LifecycleMarket(options: {
   if (config.version === 6) validatePoolBoundHookFees(config);
   else if (config.version === 5) assertV1HookFeeShape(config);
   if (isAutoCompoundProfile(config.profileId)) validateAutoCompoundMarket(config);
+  if (isRaetoProfile(config.profileId)) {
+    validateRaetoMarket(config);
+    if (!RAETO_QUOTE_ASSETS.some((quote) => quote.toLowerCase() === market.quoteAsset.toLowerCase())) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto quote asset must be WETH or USDG");
+  } else if (config.version === 6 && config.raetoLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "A Raeto tail requires a Raeto profile");
   const { envelope, developerTerms: terms, protocolMaximumDeveloperFeeBps: protocolCeiling } = profile;
   if (envelope === undefined || terms === undefined || protocolCeiling === undefined || !terms.enabled ||
     profile.topology.hookTopology !== (config.version === 4 ? 1 : 2) || market.configVersion !== config.version ||

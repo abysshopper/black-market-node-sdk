@@ -47,12 +47,12 @@ function openingState(plan: LaunchPlanV1, marketIndex: number): OpeningState {
     price = config.openingSqrtPriceX96; spacing = tier.tickSpacing; lpFee = BigInt(config.fee); positions = config.positions;
   } else {
     // All current release-owned V4 offerings use config6. Dynamic first buys
-    // share the opening block's minimum fee; HMM strategy work starts onOpened,
-    // after the ordered initial buys, never during this unopened curve.
+    // share the opening block's minimum fee. HMM work starts onOpened and
+    // auto-compounding defers until openingCompletedAt, after all opening buys.
     const config = decodePoolBoundV4LifecycleMarketConfig(market.config, 6);
     if (config.profileId.toLowerCase() !== market.profileId.toLowerCase()) throw new LifecyclePlanningError("INVALID_MARKET", "V4 opening config differs from the selected profile");
     price = config.sqrtPriceX96; spacing = config.tickSpacing; lpFee = BigInt(config.lpFeePips); positions = config.positions;
-    const dynamic = preset.key === KnownLifecycleProfile.V4DynamicFeePool || preset.key === KnownLifecycleProfile.V4HmmDynamicPool || preset.key === KnownLifecycleProfile.V4UfgDynamicPool || preset.key === KnownLifecycleProfile.V4AutoCompoundDynamicPool;
+    const dynamic = preset.key === KnownLifecycleProfile.V4DynamicFeePool || preset.key === KnownLifecycleProfile.V4HmmDynamicPool || preset.key === KnownLifecycleProfile.V4UfgDynamicPool || preset.key === KnownLifecycleProfile.V4AutoCompoundDynamicPool || preset.key === KnownLifecycleProfile.V4RaetoDynamicPool;
     hookFee = BigInt(dynamic ? config.minimumHookFeePips! : config.hookFeePips);
   }
   const tick = getTickAtSqrtRatio(price), liquidityNet = new Map<number, bigint>();

@@ -7,6 +7,8 @@ import { ufgLaunchProxyV1Abi } from "./ufg-abi.js";
 import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile } from "./ufg-config.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion } from "./markets.js";
 import { isHmmProfile } from "./hmm.js";
+import { isRaetoProfile } from "./raeto.js";
+import { isAutoCompoundProfile } from "./auto-compound.js";
 import type { UfgLaunchConfig } from "./ufg-config.js";
 
 // Native9,723,187 Abyss3 (0x679d…e77), fork32-position10,900,786;
@@ -16,6 +18,10 @@ const preparationCosts = {
   v4: { market: 9_000_000n, position: 40_000n },
   ufg: { market: 10_000_000n, position: 70_000n },
   hmm: { market: 15_000_000n, position: 50_000n },
+  // template-gas-matrix.json: Raeto1 <=9.13M,32 <=11.23M.
+  raeto: { market: 9_300_000n, position: 70_000n },
+  // Same matrix: auto-compound1 <=8.71M,32 <=10.76M.
+  autoCompound: { market: 8_900_000n, position: 70_000n },
 } as const;
 export const LIFECYCLE_CAPACITY_PADDING_BPS = 2500;
 /** Full single-market observations include call overhead. Add conservative full
@@ -30,7 +36,8 @@ export function preparationGasEstimate(plan: LaunchPlanV1, first: number, count:
       : isPoolBoundV4ConfigVersion(market.configVersion) ? decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion).positions.length
       : decodeV4LifecycleMarketConfig(market.config).positions.length;
     const cost = market.configVersion === 1 ? preparationCosts.abyss : isHmmProfile(market.profileId) ? preparationCosts.hmm
-      : isUfgProfile(market.profileId) ? preparationCosts.ufg : preparationCosts.v4;
+      : isUfgProfile(market.profileId) ? preparationCosts.ufg : isRaetoProfile(market.profileId) ? preparationCosts.raeto
+      : isAutoCompoundProfile(market.profileId) ? preparationCosts.autoCompound : preparationCosts.v4;
     gas += cost.market + cost.position * BigInt(positions - 1);
   }
   return gas;

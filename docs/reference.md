@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-lifecycle.md) for the end-to-end flow and the
 [runner reference](../examples/README.md) for environment and recovery artifacts.
-This page covers SDK **0.14.1** addresses, limits, wire formats, fees, and diagnostics.
+This page covers SDK **0.16.0** addresses, limits, wire formats, fees, and diagnostics.
 
 ## Deployed infrastructure
 
@@ -20,6 +20,7 @@ start historical log queries there, in chunks of at most **10M blocks**.
 | `UFG_TREASURY_FACTORY_ADDRESS` | `0x26Aa5D52134c8E6c4C01E9fb53A7568c0C64901F` |
 | `UFG_UPSTREAM_FACTORY_ADDRESS` | `0xA170b5A58C111334A7237F2Ea2c428ec5022f68E` |
 | Known deployment `launchLens` | `0xcb4bb3caca71fe52eace8170cf83e901418646f8` |
+| `RAETO_PAYOUT_REGISTRY_ADDRESS` | `0xBEC2C0e91612090F82df6743F31CDF18B4386b50` |
 
 `getKnownLifecycleDeployment`, `getKnownLifecycleProfile`, and
 `listKnownLifecycleProfiles` are pure selectors keyed by chain/core. Unknown
@@ -134,8 +135,8 @@ UFG adds a canonical dynamic tuple via `encodeUfgLaunchConfig`:
 `decodeUfgLaunchConfig` rejects alternate encodings and extra bytes;
 `hashUfgLaunchConfig` hashes the tuple. Config6 appends typed `ufgLaunchConfig`
 for UFG profiles only; Abyss carries no UFG tail. Full plan hashes bind every
-auxiliary tail. HMM/UFG constructor economics hash the zero-salt prefix; the
-auto-compounding profiles below hash the zero-salt prefix **and** their tail.
+auxiliary tail. HMM/UFG/Raeto constructor economics hash the zero-salt prefix;
+auto-compounding profiles hash the zero-salt prefix **and** their tail.
 
 ## Auto-compounding profiles
 
@@ -160,7 +161,7 @@ The disabled `0x1e41…1d68` / `0x53dd…e0d7` profiles are not supported.
 `AUTO_COMPOUND_CONFIG_VERSION = keccak256("black-market.auto-compound.config.v1")`.
 The decoder requires the exact version, length and canonical narrow-integer
 padding. Config6's typed `autoCompoundConfig` selects this tail only for these
-two profiles; HMM and UFG tails cannot be combined with it.
+two profiles; HMM, UFG and Raeto tails cannot be combined with it.
 `validateAutoCompoundConfig`, the market codec and `validateV4LifecycleMarket`
 reject invalid shares; the market boundaries also require zero LP/developer fees.
 Both InputToken and QuoteOnly fee modes are supported.
@@ -169,6 +170,60 @@ Both InputToken and QuoteOnly fee modes are supported.
 for these profiles. Never mine against a prefix-only commitment or append a share
 after mining. Use [the launch guide](launch-lifecycle.md#configure-auto-compounding)
 for selection and gas behavior.
+
+## Raeto profiles
+
+All of the following are exported from `@black-market/sdk/lifecycle` (and the
+root). These presets are supported on the known Robinhood 4663 deployment.
+
+| Profile key / identity constant | Profile ID |
+| --- | --- |
+| `V4RaetoFixedPool` / `RAETO_FIXED_PROFILE_ID` | `0x9161833b162e7ca8160b11c64aedb307561e19a9136fd32f99cd797aab6da3ca` |
+| `V4RaetoDynamicPool` / `RAETO_DYNAMIC_PROFILE_ID` | `0x08387d00ee4f75f860810cc8fb434087328592c2f39ea3321109e589039f80e1` |
+
+`RAETO_FIXED_ADAPTER_ID` is
+`0x911d7ecefe56489d329235e3484829717dc00400d4181902f0f2de45f9338615`;
+`RAETO_DYNAMIC_ADAPTER_ID` is
+`0x8ab9c8c9b8fd4c8bbf12b780d9474463fa0fa52e3b450f0d5f68fd067dc1674d`.
+`isRaetoProfile(profileId)` compares IDs case-insensitively.
+`RAETO_PAYOUT_REGISTRY_ADDRESS` identifies the controller-managed payout registry.
+`RAETO_QUOTE_ASSETS` is the frozen checksummed `[WETH, USDG]` tuple:
+`0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73`,
+`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`.
+
+`RAETO_SHARE_BPS_OPTIONS` is readonly `[500, 1000, 2500, 5000, 7500]`.
+`RaetoLaunchConfigV1 = { shareBps: number }`, `validateRaetoLaunchConfig`,
+`encodeRaetoLaunchTail` and `decodeRaetoLaunchTail` enforce exactly that menu and
+exactly `abi.encode(uint16 shareBps)` (one 32-byte word). Noncanonical uint16
+padding, extra/missing bytes, zero and non-menu shares throw
+`INVALID_RAETO_CONFIG`. V6 `raetoLaunchConfig` is mutually exclusive with all
+other tails; Raeto requires QuoteOnly, zero LP/developer fees and allowed quotes.
+`validateRaetoLaunchPlan(plan)` checks **every** market and throws
+`INVALID_RAETO_PLAN`, including for wrong profiles/adapters, schemas or quotes.
+It adds no UFG token/reward/proxy restrictions.
+
+`raetoFeeCollectorV1Abi` is generated from verified standard-output and includes
+`shareBps()`, `owed(address)`, `launchToken()`, `quoteAsset()`,
+`setShareBps(uint16)`, `claimRaeto(address)` and the exact three Raeto events.
+See [fee ownership and collection semantics](launch-lifecycle.md#configure-raeto).
+
+`test/fixtures/raeto-registry-readback.json` preserves admission bytes/receipts,
+runtime hashes, factory metadata, verified ABI provenance and real factory
+`eth_call` share-menu results at **101,180,179**
+(`0xe778e5d89ca2cab5843eedeb8c27b10f5463313d4b95b8971986ac72e297933c`).
+The deployed source commit is `a39c958` (go-live record `02e5cf3`), **not** the
+later local `80ea8c8` share-range change. The generator proves hook creation bytes
+equal the SDK's existing fixed and zero-royalty dynamic bytecode.
+
+```sh
+# Offline, deterministic regeneration from saved evidence (Node 24+):
+node --experimental-transform-types scripts/generate-raeto-presets.mjs
+# Explicit read-only refresh, checking the preserved go-live records:
+node --experimental-transform-types scripts/generate-raeto-presets.mjs \
+  --readback /path/to/black-market
+pnpm build
+node --test test/integration/raeto.live.test.mjs
+```
 
 ## Choose a fee tier
 

@@ -1,6 +1,6 @@
 # Run the examples
 
-These commands use the checkout's built `@black-market/sdk` **0.15.1** and viem.
+These commands use the checkout's built `@black-market/sdk` **0.16.0** and viem.
 Use **Node 24+** for direct TypeScript execution. Start with the one-market
 `launch-erc20-abyss.ts`; larger cases require staged preparation and a bounded activation.
 For valuation, token ordering, ranges, and buy protection, read the
@@ -20,7 +20,7 @@ chmod 600 .env
 Launch wrappers load `.env` from the working directory with `process.loadEnvFile`.
 Existing environment values take precedence. Values are literal; shell interpolation
 is not applied. Use the matching SDK version when copying wrappers into a consumer project:
-`pnpm add @black-market/sdk@0.14.1 viem`.
+`pnpm add @black-market/sdk@0.16.0 viem`.
 Copy `launch-example.ts`, `launch-example-support.ts`, and `launch-example-kyber.ts` with the wrapper.
 
 ### Configure the environment
