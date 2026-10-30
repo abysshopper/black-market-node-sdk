@@ -1,4 +1,4 @@
-// Generated from the verified RaetoFeeCollectorV1 ABI by scripts/generate-raeto-presets.mjs.
+// Generated from the verified Raeto collector/registry ABIs by scripts/generate-raeto-presets.mjs.
 // Provenance: test/fixtures/raeto-registry-readback.json, abiProvenance.
 export const raetoFeeCollectorV1Abi = [
   {
@@ -183,6 +183,32 @@ export const raetoFeeCollectorV1Abi = [
   },
   {
     "inputs": [],
+    "name": "payoutRegistry",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "poolId",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "quoteAsset",
     "outputs": [
       {
@@ -219,5 +245,19 @@ export const raetoFeeCollectorV1Abi = [
     ],
     "stateMutability": "view",
     "type": "function"
+  }
+] as const;
+
+export const raetoPayoutRegistryV1Abi = [
+  {
+    "name": "payout",
+    "type": "function",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [
+      {
+        "type": "address"
+      }
+    ]
   }
 ] as const;

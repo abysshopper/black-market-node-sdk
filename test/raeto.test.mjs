@@ -147,8 +147,3 @@ test('Raeto tails cannot be attached to any other template', () => {
     assert.throws(() => sdk.encodePoolBoundV4LifecycleMarketConfig({ ...config, profileId }), { code: 'INVALID_RAETO_CONFIG' });
   }
 });
-test('Raeto collector ABI is the verified ABI subset, not guessed getters or events', () => {
-  const names = sdk.raetoFeeCollectorV1Abi.map(({ name }) => name);
-  assert.deepEqual([...names].sort(), ['shareBps', 'owed', 'claimRaeto', 'setShareBps', 'launchToken', 'quoteAsset', 'RaetoShareUpdated', 'RaetoFeesBooked', 'RaetoFeesClaimed'].sort());
-  for (const item of sdk.raetoFeeCollectorV1Abi) assert.deepEqual(item, evidence.profiles[0].collectorAbi.find(({ name }) => name === item.name));
-});

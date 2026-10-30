@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.2
+
+- Extend `raetoFeeCollectorV1Abi` with the deployed `poolId` and `payoutRegistry` getters, and export `raetoPayoutRegistryV1Abi` from `@black-market/sdk/lifecycle` for its `payout` read. Consumers can bind a collector's reserved inference credit to the canonical registry before calling `claimRaeto`; a zero payout address is not claim-ready.
+
 ## 0.16.1
 
 - Allow atomic conversion funding for one known-profile market when its conservative capacity budget plus Nitro poster allocation fits the unchanged 32M native total gas envelope. Planning and fresh build-next use the same rule; explicit staged and multi-market launches remain staged.
