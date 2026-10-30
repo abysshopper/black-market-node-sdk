@@ -1,6 +1,6 @@
 # Launch a token with the TypeScript SDK
 
-Use SDK **0.16.0** on Robinhood Chain mainnet (**4663**). For a first launch, run
+Use SDK **0.16.1** on Robinhood Chain mainnet (**4663**). For a first launch, run
 [`launch-erc20-abyss.ts`](../examples/launch-erc20-abyss.ts): one market, one position,
 one buy. [Runner setup](../examples/README.md) covers its environment and commands.
 This guide explains the economics and the public APIs for your own integration.
@@ -312,24 +312,23 @@ uses **now + 300 seconds**, at most 1,200 seconds and never beyond plan expiry.
 Staging can outlive the conversion even while the plan is valid. Do not edit a
 saved deadline or replace committed conversion bytes after begin.
 
-## Prepare and simulate
+## Prepare and plan
 
 | Mode | Transactions after any approvals | Choose when |
 | --- | --- | --- |
-| `atomic` | One transaction creates, prepares, mints, locks, buys, and opens. | The exact full launch fits the execution envelope. |
-| `staged` | Begin → prepare batches → one activation that mints, locks, buys, and opens all markets. | Preparation needs separate transactions. |
+| `atomic` | One transaction funds (including conversion), creates, prepares, mints, locks, buys, and opens. | One known-profile market's padded compute plus poster allocation fits the native envelope. |
+| `staged` | Begin funds and creates → prepare batches → one activation that mints, locks, buys, and opens all markets. | Multiple markets or the conservative atomic budget requires separate preparation. |
 
 Staging is not rollback. A begun plan remains begun after its deadline until cancelled.
 Activation cannot be split into separate position mints or buys.
-An atomic request is a preference: conservative capacity bounds or an actual atomic capacity failure may select staged. Explicit staged stays staged. No markets or buys are removed. Review and persist returned `planned.mode`.
+An atomic request is a preference: multiple markets or an atomic capacity bound above the native envelope select staged. The atomic basis includes an empirical2M compute reserve per `Swap` funding entry before at-least-25% padding; this is not a universal bound on arbitrary router code. Explicit staged stays staged. No markets or buys are removed. Review and persist returned `planned.mode`.
 
 | Operation | Options type / purpose |
 | --- | --- |
-| `prepareAndPlanLifecycleLaunch` | `PrepareAndPlanLifecycleLaunchOptions`: `client`, `account`, `plan`, `mode`; optional `ufg: { config }`, `buySlippageBps`, `limits`, `fork`, `receipts`, `confirmations`, `signal`, `onProgress`, topology opt-outs. |
-| `planLaunch` | `PlanLaunchOptions`: same execution context, including optional `ufg: { config }` and `signal`; re-admits an already-finalized plan without changing salts/minima. |
-| `simulateLaunchPlan` | `client`, `planned`; optional `limits`, `fork`, `receipts`, `confirmations`, `signal`. |
+| `prepareAndPlanLifecycleLaunch` | `PrepareAndPlanLifecycleLaunchOptions`: `client`, `account`, `plan`, `mode`; optional `ufg: { config }`, `buySlippageBps`, `limits`, `receipts`, `confirmations`, `signal`, `onProgress`, topology opt-outs. |
+| `planLaunch` | `PlanLaunchOptions`: same execution context, including optional `ufg: { config }` and `signal`; checks an already-finalized plan without changing salts/minima. |
 | `readLaunchProgress` | `client`, `planned`; optional `receipts`, `confirmations`, `signal`. |
-| `buildNextTransaction` | Progress options, plus optional `action`, `limits`, `fork`, `reviewedTransaction`. |
+| `buildNextTransaction` | Progress options, plus optional `action`, `limits`, `reviewedTransaction`. |
 
 `buildLaunchTransactions` compiles unsigned commands; it does not prove execution.
 Persist `serializeLaunchPlan(planned.plan)`, returned `planned.mode`, confirmation policy,
@@ -338,32 +337,30 @@ Do not serialize the entire `PlannedLaunch`, which can contain live limit callba
 
 Every launch step uses the native total transaction ceiling:32M on4663, including
 poster gas. Approvals omit gas/fees for wallet preparation. Covered Robinhood
-ArbOS61 templates use capacity bounds and exact local ordered-buy math, never
-component-sized gas limits. Their evidence is `profiled` / `not-run`, not a receipt.
-Conversion-carrying begin/atomic and consuming activation require exact native
-execution. Unknown coverage or uncertain activation gets full-sequence execution
-before begin. Explicit `simulateLaunchPlan` always executes; a generic fork is not Nitro proof.
+templates use deterministic capacity bounds and exact local ordered-buy math,
+never component-sized gas limits or launch simulation. This includes conversion:
+the router enforces committed output floors and deadlines only on submission.
+Unknown coverage refuses `UNKNOWN_GAS_PROFILE`; oversized unsplittable activation
+refuses `ACTIVATION_GAS_LIMIT` before begin. There is no execution fallback.
 
-Review checks the complete sequence, not just a successful prefix. There is no
-SDK-invented 50M aggregate cap. A caller `maxSimulationGas` still tightens policy;
-incomplete execution proof refuses admission. A refused full review cannot begin
-a new launch. Only the immediate command receives final gas/price/estimate/admission.
-Suffix metrics remain provisional; build-next admits only the canonical next command
-at its fresh native-ceiling budget, never reusing a provisional estimate.
+Only the immediate command receives fresh gas/price/estimate/assessment.
+Build-next checks the canonical next command against its fresh native-ceiling
+budget, current inputs and poster prices. A ready assessment is not a receipt or
+execution proof; no successful prefix authorizes an over-budget activation.
 
 See [capacity, native/fork evidence and migration](lifecycle-gas-profiles.md)
-for exact proof fields, upfront affordability and the public capacity-bound helper.
+for the reserve assumptions, upfront affordability and public capacity-bound helper.
 
 Review the returned final plan/hash, aligned price, burn, retained supply, fees,
 ordered buy outputs/minima, funding, refunds, and complete gas envelope. A fresh
-`buildNextTransaction` admits the immediate next step as canonical progress advances.
+`buildNextTransaction` checks the immediate next step as canonical progress advances.
 The wallet owns sending-RPC preparation; `submissionClient` has been removed.
 
 `planned.transactions[0]` contains exact immediate `from/to/data/value` and, for
 launch commands, native-ceiling `gas` and current `gasPrice`. Approvals omit both.
 There is no fixed wallet nonce; the wallet assigns it. The plan identity nonce is unchanged.
-The envelope is reusable, but its block-bound admission is historical, not permission
-to sign later. Pass it as `reviewedTransaction` for fresh immediate admission after
+The envelope is reusable, but its block-bound assessment is historical, not permission
+to sign later. Pass it as `reviewedTransaction` for fresh immediate checks after
 review or recovery. This is not a second user review gate.
 Reuse `planned.progress` for the same result's display instead of reading progress
 independently beside the plan.
@@ -374,25 +371,25 @@ never silently rewrite it. A lower caller complete-envelope cap refuses rather t
 shrinking gas. Held prices below the pinned fee floor also refuse without bumping.
 On Nitro the floor is max(ArbGasInfo L2 price, header base fee); twice base fee is
 fresh recommendation headroom only. Reserve value plus ceiling×price, without
-adding poster fees again. Actual activation capacity refusal asks the user to
-reduce positions/pools; a large conservative bound alone is not such a refusal.
+adding poster fees again. An activation budget above the ceiling asks the user to
+reduce positions/pools; this conservative refusal is not proof of actual overflow.
 
 On chain4663, one RPC L2 header pins the invocation. Token prediction, native/token
 balances, allowances, launch progress, Nitro getters and prices share one Multicall3 call
 at that explicit L2 block. Further independent stages use one aggregate, even for
 one or two reads. Multicall3's block-number/hash getters expose L1 values on Nitro
 and must not select the L2 pin.
-The same pin survives salt mining and buy calibration; there are no final chain or
+The same pin survives salt mining and buy protection; there are no final chain or
 canonical-header guard reads. Receipt confirmation/reorg checks remain.
 
-Required native execution validates the exact calldata once; there is no later
-exact-gas replay. Poster allocation comes from the same-review price tuple and a
-local size bound, not a per-transaction oracle. Build-next encodes only its canonical
-next command, preserving normal/UFG calldata and original/clipped batch spans.
+Poster allocation comes from the same-review price tuple and a local size bound,
+not a per-transaction oracle. Build-next encodes only its canonical next command,
+preserving normal/UFG calldata and original/clipped batch spans. It does not
+execute conversion or activation calldata or read/assign a wallet nonce.
 
-Multicall3 runtime, Nitro backend capability and account-code observations are
-retained for the caller's session. Chain identity is observed once per bound client;
-recreate the client on chain changes. Financial state and required proof stay fresh.
+Multicall3 runtime and static preset observations are retained for the caller's
+session. Chain identity is observed once per bound client; recreate the client
+on chain changes. Financial state, funding allowances and capacity checks stay fresh.
 The 4663 preset uses the deployed `hookSaltMiner`; returned salts are verified
 locally. Its deployed `launchLens` supplies dependent progress, market, balance
 and hook-mining reads in the same initial aggregate. Callers need no lens
@@ -761,7 +758,7 @@ buys**, so the local ordered opening-buy curve remains exact. Post-opening swaps
 can compound in `afterSwap`; the hook's low-gas guard reverts `CompoundOutOfGas()`.
 Do not cap swap gas below `eth_estimateGas` or treat launch bounds as swap limits.
 Launch transactions now have measured static/dynamic capacity and preparation
-costs in `robinhood-4663-capacity-v4`, not ordinary fixed-hook guesses. They retain
+costs retained in `robinhood-4663-capacity-v5`, not ordinary fixed-hook guesses. They retain
 the native 32M total gas ceiling and never execute calldata during planning.
 See [the fork matrix and ArbOS caveat](lifecycle-gas-profiles.md#raeto-and-auto-compounding-v4-evidence).
 

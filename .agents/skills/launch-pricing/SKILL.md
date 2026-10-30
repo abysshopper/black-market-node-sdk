@@ -133,19 +133,19 @@ console.log({ fdvX18: fdvX18.toString(), bands: bands.positions });
    this is separate from output slippage. On a multi-band or sizable buy, an overly
    tight guard can stop execution early. Review partial fills and retained quote.
 4. For an unstarted launch, use `prepareAndPlanLifecycleLaunch` with explicit
-   `buySlippageBps`. Covered templates use exact local ordered curve math; other
-   templates use native diagnostic output. Each minimum is
-   `floor(output * (10000 - bps) / 10000)`. The final commitment receives its
-   required profile or exact execution; conversion and dependent activation stay
-   exact-native. Never sign a diagnostic candidate. Omission preserves minima.
-   Each executable minimum must be positive. If flooring produces zero, refuse or
-   resize/reprove the buy; do not silently substitute `1` to pass validation.
+   `buySlippageBps`. Covered templates use exact local ordered curve math; unknown
+   coverage refuses rather than executing a diagnostic launch. Each minimum is
+   `floor(output * (10000 - bps) / 10000)`. Planning and build-next never execute
+   conversion or activation calldata. Atomic capacity includes an empirical2M
+   compute reserve per Swap before padding, not arbitrary-router execution proof.
+   Omission preserves minima. Each executable minimum must be positive. If flooring
+   produces zero, refuse or resize/review the buy; never silently substitute `1`.
 5. A desired percentage purchase is a sizing objective: use estimates for a candidate,
    then verify actual net output against retained supply, all fees and earlier buys.
    Do not equate $250/$5,000 with buying exactly 5% of supply along an AMM curve.
 6. Freeze the returned plan/hash and review conversion floor, available escrow per
    quote, each net buy output/spend, unused-input/quote refunds and gas/data costs.
-   Sign only the freshly proved immediate envelope, without repadding its reviewed
+   Sign only the freshly checked immediate envelope, without repadding its reviewed
    gas/price. After submission, never regenerate minima, salts or economics.
 
 ## 5. Kyber calldata funds the launch; it does not replace the opening buy
@@ -204,8 +204,10 @@ Swap with native input uses zero `inputAsset`. They are not interchangeable shap
 Funding rows are unique/sorted by output asset: aggregate buys sharing a quote and
 do not insert duplicate conversion rows or assume one build yields many quotes.
 
-Get executable calldata late enough to avoid expiry, then statefully prove the
-complete selected-mode launch including conversion and buys. If the quote changes
+Get executable calldata late enough to avoid expiry, then review the complete
+selected-mode launch, conversion floors, buys and deterministic capacity budget.
+The SDK does not simulate the router; output floors and deadlines remain on-chain
+guards, and a ready assessment is not execution proof. If the quote changes
 before submission, rebuild/review the unstarted commitment; if already started,
 recover its exact plan rather than refreshing opaque funding bytes. An expired
 staged conversion can require cancellation, not mutation of the committed plan.

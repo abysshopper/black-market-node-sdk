@@ -25,8 +25,8 @@ description: Integrate the Abyss TypeScript SDK using the correct deployment gra
    `listKnownLifecycleProfiles` for shipped profiles and deployment wiring. Profiles
    registered after the SDK release need not appear until the next SDK update.
 2. Use `readLifecycleProfiles({ client, orchestrator })` only for explicit live
-   registry inspection. Normal planning uses presets plus covered template profiles
-   or required exact execution; it does not crawl registries or mirror contract guards.
+   registry inspection. Normal planning uses presets and covered template budgets;
+   it does not crawl registries, execute launch calldata or mirror contract guards.
 3. Build the complete `LaunchPlanV1`: explicit creator/core/nonce, token behavior,
    fee policies, funding, all markets/positions and ordered buys. Read the sibling
    `token-launch/SKILL.md` and `launch-pricing/SKILL.md` before choosing economics.
@@ -49,9 +49,11 @@ There is one pin, no planning nonce read and at most one chain observation per b
 on chain changes. The wallet owns nonce assignment and sending-RPC preparation.
 Do not resurrect `preparePoolBoundLifecyclePlan` or `PlannedLaunch.atomicAttempt`.
 
-Multiple markets or conversion funding always select staged. Atomic requires one
-non-conversion market with known headroom; explicit staged stays staged. Never
-remove positions, buys or hooks to fit a budget. Preparation chunks deterministically;
+Multiple markets always select staged. Atomic requires one known-profile market
+whose padded compute, including an empirical2M reserve per Swap funding entry,
+plus poster allocation fits; explicit staged stays staged. This is not a bound
+on arbitrary router code or execution proof. Never remove positions, buys or
+hooks to fit a budget. Preparation chunks deterministically;
 activation cannot split and an excessive bound refuses before begin. Launch commands
 use32M total including poster on4663; approvals omit gas. Caller caps refuse oversized
 envelopes, never resize them. `assessment.ready` is not execution proof.

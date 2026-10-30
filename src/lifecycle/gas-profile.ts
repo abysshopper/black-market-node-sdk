@@ -11,7 +11,7 @@ import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBou
 import { isHmmProfile } from "./hmm.js";
 import { isRaetoProfile } from "./raeto.js";
 
-export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v4";
+export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v5";
 export type NextTransactionEnvelope = Readonly<{ gas: bigint; gasPrice: bigint }>;
 const ceil = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor;
 const approval = (transaction: LifecycleTransaction) => transaction.kind === "approve" || transaction.kind === "approve-reset";
@@ -70,6 +70,9 @@ function capacityBasis(plan: LaunchPlanV1, transaction: LifecycleTransaction, ma
   // position/buy work and25% padding bounds compute and forwarding envelopes.
   let gas = atomic ? (markets[0]!.raeto || markets[0]!.autoCompound ? 18_000_000n : 22_000_000n) + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n)
     : activationCosts.call + (ufgRoute ? activationCosts.ufg : 0n);
+  // Escrow executes each Swap during begin, including within atomic. This
+  // empirical2M reserve is padded below, not a proof for arbitrary router code.
+  if (atomic) for (const funding of plan.funding) if (funding.kind === LifecycleFundingKind.Swap) gas += 2_000_000n;
   for (const market of markets) {
     if (atomic) gas += (market.hmm ? 7_000_000n : market.ufgHook ? 1_000_000n : market.abyss ? 500_000n : 0n) +
       (market.abyss ? 1_500_000n : 600_000n) * BigInt(market.positions - 1);
@@ -103,8 +106,7 @@ export function deriveLifecycleLaunchCapacity(options: CapacityOptions, openingB
   if (!Number.isSafeInteger(headroomBps) || headroomBps < 0 || headroomBps > 10000) throw new LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and 10000 basis points");
   const initialBuys = openingBuys ?? computeLifecycleOpeningBuys(options);
   const route = ufg === undefined ? undefined : { account: ufgPlanPrincipal(plan), config: ufg.config };
-  const atomic = plan.markets.length === 1 && !plan.funding.some((funding) => funding.kind === LifecycleFundingKind.Swap)
-    ? buildLifecycleCommand(plan, { kind: "atomic" }, route) : undefined;
+  const atomic = plan.markets.length === 1 ? buildLifecycleCommand(plan, { kind: "atomic" }, route) : undefined;
   const activation = buildLifecycleCommand(plan, { kind: "activate" }, route);
   const markets = marketGas(plan), reserve = hmmV2ForwardingReserve(plan);
   const bound = (transaction: LifecycleTransaction) => {

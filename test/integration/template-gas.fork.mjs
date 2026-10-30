@@ -256,7 +256,7 @@ try {
         const retained = saved.cases[matrixCase], plan = sdk.parseLaunchPlan(JSON.stringify(retained.plan));
         const planned = await sdk.planLaunch({ client: planningClient, account: principal, plan, mode: scenario.mode });
         assert.equal(planned.assessment.ready, true, planned.assessment.reason);
-        assert.equal(planned.assessment.gasProfile.version, 'robinhood-4663-capacity-v4');
+        assert.equal(planned.assessment.gasProfile.version, 'robinhood-4663-capacity-v5');
         const next = await sdk.buildNextTransaction({ client: planningClient, planned });
         assert.ok(next);
         assert.equal(next.gas, 32_000_000n);

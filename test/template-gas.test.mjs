@@ -35,7 +35,7 @@ test('committed fork evidence covers every requested template, depth, quote, pat
   }
 });
 
-for (const [index, row] of matrix.cases.entries()) test(`measured gas + forwarding estimate fit v4 bounds with margin: ${index + 1} ${row.scenario.key}/${row.scenario.mode}/${row.scenario.positions}/${row.scenario.buyCount}`, () => {
+for (const [index, row] of matrix.cases.entries()) test(`measured gas + forwarding estimate fit current capacity bounds with margin: ${index + 1} ${row.scenario.key}/${row.scenario.mode}/${row.scenario.positions}/${row.scenario.buyCount}`, () => {
   const plan = sdk.parseLaunchPlan(JSON.stringify(row.plan));
   const bounds = sdk.computeLifecycleLaunchGasBounds({ plan, predictedToken: row.predictedToken });
   assert.ok(bounds, 'Every measured Raeto/auto-compound plan must have known capacity');
@@ -77,7 +77,7 @@ test('read-only fork smoke profiles every template/quote without replaying retai
     const row = smoke.cases.find(({ scenario: s }) => s.key === key && s.quoteIndex === quoteIndex && s.mode === mode);
     assert.ok(row, `${key}: missing ${mode}/${quoteIndex} profiled smoke`);
     assert.equal(row.assessment.ready, true);
-    assert.equal(row.assessment.version, 'robinhood-4663-capacity-v4');
+    assert.equal(row.assessment.version, 'robinhood-4663-capacity-v4', 'Retain the recorded model version; never rewrite historical smoke evidence');
     assert.equal(row.readOnly, true);
     assert.equal(BigInt(row.next.gasLimit), ceiling);
     const retained = matrix.cases[row.retainedExecution.matrixCase];

@@ -1,6 +1,6 @@
 # Run the examples
 
-These commands use the checkout's built `@black-market/sdk` **0.16.0** and viem.
+These commands use the checkout's built `@black-market/sdk` **0.16.1** and viem.
 Use **Node 24+** for direct TypeScript execution. Start with the one-market
 `launch-erc20-abyss.ts`; larger cases require staged preparation and a bounded activation.
 For valuation, token ordering, ranges, and buy protection, read the
@@ -20,7 +20,7 @@ chmod 600 .env
 Launch wrappers load `.env` from the working directory with `process.loadEnvFile`.
 Existing environment values take precedence. Values are literal; shell interpolation
 is not applied. Use the matching SDK version when copying wrappers into a consumer project:
-`pnpm add @black-market/sdk@0.16.0 viem`.
+`pnpm add @black-market/sdk@0.16.1 viem`.
 Copy `launch-example.ts`, `launch-example-support.ts`, and `launch-example-kyber.ts` with the wrapper.
 
 ### Configure the environment
@@ -126,7 +126,10 @@ be combined or duplicated. Resume is an execution authorization; omit `--broadca
 
 Every launch transaction uses the native ceiling,32M total on4663. Capacity profiles
 only choose mode/chunks and reject oversized activation; exact local ordered math
-protects opening buys. Multiple markets or conversion funding always stage.
+protects opening buys. Multiple markets always stage; a single known-profile market
+can stay atomic when its padded compute, including an empirical2M reserve per Swap,
+plus poster allocation fits. Explicit staged stays staged; the conversion reserve
+does not prove arbitrary router execution.
 There is no launch simulation, including Kyber. Routers enforce conversion minima
 and deadlines on-chain; `assessment.ready` is not a receipt or guaranteed execution.
 See [coverage and migration](../docs/lifecycle-gas-profiles.md).

@@ -3,13 +3,13 @@
 # Abyss TypeScript SDK
 
 Use `@black-market/sdk` with [viem](https://viem.sh) to launch tokens, swap, and read lending markets.
-This guide targets SDK **0.16.0** on Robinhood Chain mainnet (**4663**).
+This guide targets SDK **0.16.1** on Robinhood Chain mainnet (**4663**).
 The package supports Node 20+; running the checkout's TypeScript examples requires **Node 24+**.
 
 ## Install
 
 ```sh
-pnpm add @black-market/sdk@0.16.0 viem
+pnpm add @black-market/sdk@0.16.1 viem
 ```
 
 To run the examples, use a checkout:
@@ -97,7 +97,7 @@ quotes are WETH unless USDG is listed. Positions are permanently locked.
 ## Choose an offering for your integration
 
 Use `listKnownLifecycleProfiles` for the release's supported offerings and deployment wiring.
-Planning batches pinned current state, checks native-ceiling capacity budgets and computes exact local opening-buy quotes. It never simulates a launch transaction, including conversions. Multiple markets or conversion funding always select staged; atomic requires one non-conversion market with known capacity headroom. On4663 every launch step uses32M total gas including poster; approvals leave gas to the wallet. Retain returned `planned.mode` and check `planned.assessment.ready`, not removed simulation/proof fields.
+Planning batches pinned current state, checks native-ceiling capacity budgets and computes exact local opening-buy quotes. It never simulates a launch transaction, including conversions. Multiple markets always select staged; one known-profile market can remain atomic when its padded budget, including 2M compute per Swap funding entry, plus poster allocation fits. Explicit staged stays staged. On4663 every launch step uses32M total gas including poster; approvals leave gas to the wallet. The empirical conversion reserve is not proof for arbitrary router code. Retain returned `planned.mode` and check `planned.assessment.ready`, not removed simulation/proof fields.
 
 | Offering | Choose it for | Guide |
 | --- | --- | --- |

@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-lifecycle.md) for the end-to-end flow and the
 [runner reference](../examples/README.md) for environment and recovery artifacts.
-This page covers SDK **0.16.0** addresses, limits, wire formats, fees, and diagnostics.
+This page covers SDK **0.16.1** addresses, limits, wire formats, fees, and diagnostics.
 
 ## Deployed infrastructure
 
@@ -261,17 +261,20 @@ NodeInterface oracle. See [capacity and poster evidence](lifecycle-gas-profiles.
 
 `computeLifecycleLaunchGasBounds({ plan, predictedToken, ufg? })` returns conservative
 atomic/activation compute upper bounds, excluding poster, or undefined for unknown
-coverage. These select modes, not gas limits. Atomic is a preference that may select
-staged; persist returned `planned.mode`. A large upper bound is uncertain, not
-proof of overflow. Unknown activation gets full-sequence execution before begin.
-Conversion-carrying commands/consuming activation always retain exact execution.
+coverage. These select modes, not gas limits. Atomic is a preference: one known-profile
+market may fit, including an empirical2M compute reserve per Swap before at-least-25%
+padding, full encoded-calldata costs and poster allocation. That reserve is not a
+universal bound on arbitrary router execution. Multiple markets and explicit staged
+remain staged; persist returned `planned.mode`. Unknown coverage refuses, and an
+oversized unsplittable activation budget refuses before begin. A large conservative
+bound is not proof of actual overflow. No launch calldata is simulated.
 
-Only an immediate launch command receives a final gas/price/estimate/admission.
-Suffix execution metrics stay provisional; build-next constructs only the canonical
-next command at the same native ceiling with fresh fees and required admission.
-There are no sizing passes or funds-only retries. Balance must cover value plus
-the entire ceiling fee even when actual execution uses less gas. Incomplete proof
-cannot authorize begin; explicit aggregate policies still refuse excessive work.
+Only an immediate launch command receives fresh gas/price/estimate/assessment.
+Build-next constructs only the canonical next command at the same native ceiling
+with fresh inputs, capacity and fees. There are no sizing passes or funds-only
+retries. Balance must cover value plus the entire ceiling fee even when actual
+execution uses less gas. Routers enforce conversion floors/deadlines on-chain;
+`assessment.ready` does not establish execution.
 
 On Nitro, `estimate.posterGas` / `posterFee` are buffered allocations **inside**
 `gasLimit`; `dataFeeIncludedInGas` is true, `dataFee` is zero, and `totalFee` equals
