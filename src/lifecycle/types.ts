@@ -86,7 +86,7 @@ export type LifecycleOpeningBuyQuote = {
   tokenOut: bigint; sqrtPriceAfterX96: bigint;
 };
 /** Versioned compute budgets with headroom, never transaction gas-limit sizing.
- * Atomic budget is absent when conversion work is outside the template model. */
+ * Atomic budget is absent for launches with more than one market. */
 export type LifecycleLaunchGasBounds = {
   atomicComputeGasUpperBound?: bigint; activationComputeGasUpperBound: bigint;
 };
@@ -164,7 +164,7 @@ export type PlannedLaunch = {
 };
 export type PlanLaunchOptions = {
   client: LifecycleRpcClient; account: Address; plan: LaunchPlanV1;
-  /** Atomic requires one market, no conversion and a known budget fitting with headroom.
+  /** Atomic requires one market and a known budget, including conversions, fitting with headroom.
    * All other unstarted launches are staged; started launches retain canonical mode. */
   mode: LaunchExecutionMode; limits?: LifecycleLimitSource; receipts?: readonly LifecycleReceiptReference[];
   confirmations?: number; signal?: AbortSignal;

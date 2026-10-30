@@ -1,6 +1,6 @@
 # Lifecycle gas, capacity, execution evidence and RPC budgets
 
-Version **0.16.0**, model **`robinhood-4663-capacity-v4`**, separates the native transaction ceiling, conservative capacity bounds, exact opening-curve quotes and actual transaction receipts. A ready assessment is not execution proof.
+Version **0.16.1**, model **`robinhood-4663-capacity-v5`**, separates the native transaction ceiling, conservative capacity bounds, exact opening-curve quotes and actual transaction receipts. A ready assessment is not execution proof.
 
 ## One native ceiling, not component-sized gas
 
@@ -12,11 +12,43 @@ A reviewed launch gas differing from the ceiling is stale and refuses with `STAL
 
 ## Capacity selects the mode, not the gas limit
 
-`computeLifecycleLaunchGasBounds({ plan, predictedToken, ufg?, headroomBps? })` returns conservative `atomicComputeGasUpperBound` and `activationComputeGasUpperBound`, excluding poster gas, or undefined for unknown coverage. The v4 model covers Raeto fixed/dynamic and current auto-compounding static/dynamic in addition to the existing Abyss, V4, HMM and UFG templates. It accounts for token/reward creation, actual UFG proxy/treasury route, measured market/position work, ordered buys, NFT minting and HMM forwarding overhead. UFG route overhead is independent of market profile names.
+`computeLifecycleLaunchGasBounds({ plan, predictedToken, ufg?, headroomBps? })` returns conservative `atomicComputeGasUpperBound` and `activationComputeGasUpperBound`, excluding poster gas, or undefined for unknown coverage. The v5 model retains v4 coverage for Raeto fixed/dynamic and current auto-compounding static/dynamic in addition to the existing Abyss, V4, HMM and UFG templates. It accounts for token/reward creation, actual UFG proxy/treasury route, measured market/position work, ordered buys, NFT minting and HMM forwarding overhead, and adds atomic conversion work. UFG route overhead is independent of market profile names.
 
-An atomic request is a preference. Multiple markets or conversion funding always select staged; one non-conversion market can remain atomic only when its conservative bound plus poster allocation fits. Explicit staged remains staged. Review and persist returned `planned.mode`, not the requested mode. No positions, markets or buys are dropped, and the gas envelope is never resized.
+An atomic request is a preference. Multiple markets always select staged; one known-profile market can remain atomic, including conversion funding, only when its padded compute bound plus poster allocation fits. Explicit staged remains staged. Review and persist returned `planned.mode`, not the requested mode. No positions, markets or buys are dropped, and the gas envelope is never resized.
 
 Preparation greedily packs contiguous markets using measured per-template/per-position costs, full calldata processing and padding. Activation cannot split. An activation bound plus poster allocation above 32M refuses before begin with `ACTIVATION_GAS_LIMIT`; an unknown profile refuses with `UNKNOWN_GAS_PROFILE`. A conservative refusal is not proof the actual transaction would overflow, but there is no simulation or execution fallback.
+
+### Atomic conversion reserve (v5)
+
+Funding escrow executes every `Swap` during begin, including the begin inside
+`launchAtomic`. For an atomic command, add **2,000,000 compute gas per Swap funding
+entry** to the existing template basis. Count entries independently, regardless
+of input token, native input or router address. Then apply the existing rule:
+
+```text
+basis = existing template work + 2,000,000 × Swap funding count
+compute bound = max(
+  ceil(basis × (10,000 + max(2,500, headroomBps)) / 10,000),
+  basis + existing HMM forwarding reserve
+)
+```
+
+Existing full encoded-calldata processing, token/reward creation, fee-asset,
+position and buy costs remain in the basis. Nitro poster allocation is added
+only for the fit comparison; it remains inside the unchanged32M envelope.
+Staged activation excludes the conversion reserve because its funding already
+executed during begin; begin still uses the full native ceiling. ERC20-input
+approvals remain wallet-prepared and are refreshed before the atomic command.
+
+The2M coefficient is a bounded empirical planning reserve for the current
+conversion path, not a universal upper bound on arbitrary admitted router code,
+route complexity or future upgrades. Calldata's structural bound alone does not
+bound external execution work. A fit is not simulation or execution proof.
+Input/target/spender admission, exact funding value, committed output floors and
+deadlines remain wallet/on-chain responsibilities. Unknown launch templates
+still refuse; larger atomic budgets select staged, and oversized unsplittable
+activation budgets refuse before begin. Planning and fresh build-next apply the
+same model and never simulate launch calldata or read wallet nonces.
 
 ## What planning does, and does not prove
 
@@ -28,7 +60,7 @@ Planning and build-next read one pinned input/progress snapshot, compute exact l
 | Begin | Check inputs, complete activation capacity and full-ceiling affordability. |
 | Prepare markets/hooks | Pack deterministic contiguous batches and check their budgets. |
 | Activate and opening buys | Check unsplittable activation capacity and exact local ordered-buy floors. |
-| Atomic launch | Require one non-conversion market with known capacity headroom. |
+| Atomic launch | Require one known-profile market whose padded compute, including each Swap reserve, plus poster fits. |
 | Cancel | Build from canonical progress; no new profile capacity requirement. |
 
 Check `planned.assessment.ready`, `code`, `reason`, optional `capacityConstraint`,
@@ -41,7 +73,7 @@ it is never selected as a planning backend.
 
 ## Retained empirical evidence
 
-`robinhood-4663-capacity-v4` extends the retained release-template budgets with [Raeto and auto-compounding measurements](#raeto-and-auto-compounding-v4-evidence). These are empirical capacity bounds, not gas-limit sizing, a promise about arbitrary upgrades/future ArbOS rules, or native execution proof. Currency admission is separate: only Raeto imposes its deployed WETH/USDG quote allowlist.
+The v5 model retains the v4 [Raeto and auto-compounding measurements](#raeto-and-auto-compounding-v4-evidence) and adds the conversion reserve described above. Recorded v4 smoke evidence keeps its original version and is not rewritten as new execution evidence. These are empirical capacity bounds, not gas-limit sizing, a promise about arbitrary upgrades/future ArbOS rules, or native execution proof. Currency admission is separate: only Raeto imposes its deployed WETH/USDG quote allowlist.
 
 Research retained176 lifecycle receipts, including75 successful current-template atomic/activation observations with opening buys. Isolated forks extend depth, buys and combinations; failed CREATE2 cases were not counted as successful coverage. One Abyss and one fixed-V4 historical native/fork calibration matched compute exactly (19,272,603 and18,130,251 gas), while minimum successful envelopes were higher (20,527,230 and19,356,279). These two calibrations do not establish general Anvil/Nitro equivalence. Compute and poster components remain separate. Profiles are empirical capacity bounds, never transaction gas sizing or proof about arbitrary upgrades/future ArbOS rules.
 

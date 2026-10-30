@@ -11,7 +11,7 @@ const { ABYSS_LIFECYCLE_CONFIG_SCHEMA, abyssLifecycleAdapterAbi, buildNextTransa
   launchLifecycleAbi, lifecycleAdapterAbi, lifecycleDirectoryAbi, lifecycleErc20Abi, lifecycleFundingEscrowAbi,
   lifecycleRegistryAbi, LifecyclePhase, LIFECYCLE_REQUIRED_CAPABILITIES, LIFECYCLE_MULTI_POSITION_CAPABILITY,
   planLaunch, prepareAndPlanLifecycleLaunch, readLifecycleProfiles, readLaunchProgress, hookSaltMinerAbi,
-  minePoolBoundHookSalt, computeLifecycleLaunchGasBounds, packPreparationBatches, preparationGasEstimate, LIFECYCLE_CAPACITY_PADDING_BPS,
+  buildLaunchTransactions, minePoolBoundHookSalt, computeLifecycleLaunchGasBounds, packPreparationBatches, preparationGasEstimate, LIFECYCLE_CAPACITY_PADDING_BPS, RAETO_QUOTE_ASSETS,
   buildUfgFeeAssetPolicies, UFG_LAUNCH_PROXY_ADDRESS, UFG_ORCHESTRATOR_ADDRESS, ufgLaunchNonce,
   ufgLaunchProxyV1Abi, ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT } = await import(sdkPath);
 const { ABYSS_FEE_TIERS, deriveLaunchPoolRecipe, deriveLaunchPositionRanges } = await import(sdkPath.replace("lifecycle/index.", "index."));
@@ -170,6 +170,27 @@ function tazeShape() {
   return plan;
 }
 
+function raetoConversionPlan({ positionCount = 6, inputAsset = zeroAddress } = {}) {
+  const plan = knownAbyssPlan(), unit = 10n ** 18n, quote = RAETO_QUOTE_ASSETS[1];
+  const preset = getKnownLifecycleProfile({ ...plan, key: KnownLifecycleProfile.V4RaetoDynamicPool }), envelope = preset.profile.envelope;
+  plan.token = { ...plan.token, supply: 1_000_000n * unit, rewardMode: 2 };
+  const ranges = deriveLaunchPositionRanges({ launchSqrtPriceX96: 1n << 96n, launchedTokenIsQuote: true,
+    tokenBudget: plan.token.supply, tickSpacing: 60, venue: "uniswap-v4", distributionPreset: "staircase", positionCount, positionGaps: "adjacent" });
+  plan.markets = [{ adapterId: preset.profile.registration.adapterId, profileId: preset.profile.id, quoteAsset: quote,
+    tokenBudget: plan.token.supply, configVersion: 6,
+    config: encodePoolBoundV4LifecycleMarketConfig({ version: 6, lpFeePips: 0, tickSpacing: 60, sqrtPriceX96: ranges.launchSqrtPriceX96,
+      hookFeePips: 10000, minimumHookFeePips: 1000, feeSensitivityPipsSecondsPerTick: 6000, feeMode: 1,
+      protocolFeeDenominator: envelope.protocolFeeDenominator, treasury: envelope.protocolTreasury, externalLiquidityDisabled: false,
+      oracleConfigId: toHex(9n, { size: 32 }), profileId: preset.profile.id, termsDigest: envelope.termsDigest,
+      developerBeneficiary: envelope.beneficiary, developerFeeBps: 0, hookSalt: zeroHash, raetoLaunchConfig: { shareBps: 500 },
+      positions: ranges.positions.map(({ tickLower, tickUpper, liquidity, maxTokenAmount }) => ({ tickLower, tickUpper, liquidity, maxTokenAmount, salt: zeroHash })) }) }];
+  plan.buys = [{ ...plan.buys[0], quoteAmountIn: unit, minTokenOut: 1n }];
+  plan.funding = [{ asset: quote, amount: unit, kind: 2, inputAsset, inputAmount: unit / 100n, target: address(0xfb), data: "0x1234" }];
+  plan.feeAssets = [TOKEN, quote].sort((left, right) => BigInt(left) < BigInt(right) ? -1 : 1)
+    .map((asset) => ({ asset, ownerBps: 8000, rewardsBps: 2000, burnBps: 0 }));
+  return plan;
+}
+
 test("TAZE three-market24-position holders-earn conversion is staged with deterministic2/1 chunks and zero simulations", async () => {
   const plan = tazeShape(), client = clientFor(plan);
   const planned = await prepareAndPlanLifecycleLaunch({ client, plan, account: ACCOUNT, mode: "atomic", buySlippageBps: 50 });
@@ -189,8 +210,8 @@ test("TAZE three-market24-position holders-earn conversion is staged with determ
   assert.equal(client.captured.filter((call) => call.method === "eth_chainId").length, 1);
 });
 
-test("atomic is restricted to a single non-conversion market with known headroom", async () => {
-  for (const [markets, conversion, requested, expected] of [[1, false, "atomic", "atomic"], [1, true, "atomic", "staged"], [2, false, "atomic", "staged"], [1, false, "staged", "staged"]]) {
+test("atomic requires a single market with known headroom, including conversion work", async () => {
+  for (const [markets, conversion, requested, expected] of [[1, false, "atomic", "atomic"], [1, true, "atomic", "atomic"], [2, false, "atomic", "staged"], [2, true, "atomic", "staged"], [1, false, "staged", "staged"], [1, true, "staged", "staged"]]) {
     const plan = knownAbyssPlan({ markets });
     if (conversion) plan.funding[0] = { ...plan.funding[0], kind: 2, inputAsset: zeroAddress, target: address(0xfb), data: "0x1234" };
     const client = clientFor(plan), planned = await review(client, plan, { mode: requested });
@@ -201,9 +222,113 @@ test("atomic is restricted to a single non-conversion market with known headroom
   }
 });
 
-test("activation over the known ceiling refuses before begin and exposes the public capacity bound", async () => {
+test("six-position Raeto holders-earn native conversion remains atomic with fresh 32M continuation", async () => {
+  const plan = raetoConversionPlan(), client = clientFor(plan);
+  client.fixtureNitroPrices = [0n, 2n, 0n, 2n, 0n, 2n];
+  const planned = await prepareAndPlanLifecycleLaunch({ client, plan, account: ACCOUNT, mode: "atomic", buySlippageBps: 50 });
+  assert.equal(planned.mode, "atomic"); assert.equal(planned.assessment.ready, true, planned.assessment.reason);
+  assert.equal(planned.assessment.gasProfile.version, "robinhood-4663-capacity-v5");
+  const atomic = planned.transactions[0], bound = planned.assessment.gasProfile.bounds.atomicComputeGasUpperBound;
+  assert.deepEqual(planned.transactions.map(({ kind }) => kind), ["atomic"]);
+  assert.ok(bound > 30_000_000n && bound < 32_000_000n, `Conversion capacity must be charged and fit: ${bound}`);
+  assert.ok(atomic.estimate.posterGas > 0n);
+  assert.ok(bound + atomic.estimate.posterGas < 32_000_000n);
+  assert.equal(atomic.gas, 32_000_000n); assert.equal(atomic.value, plan.funding[0].inputAmount);
+  assert.equal(atomic.nonce, undefined);
+  const quote = planned.assessment.gasProfile.initialBuys[0];
+  assert.equal(planned.plan.buys[0].minTokenOut, quote.tokenOut * 9950n / 10000n);
+  assert.deepEqual(planned.plan.funding, plan.funding);
+  client.state.headNumber = 43n; client.state.allowedTags = ["0x2a", "0x2b"];
+  const next = await buildNextTransaction({ client, planned, reviewedTransaction: atomic });
+  assert.equal(next.kind, "atomic"); assert.equal(next.data, atomic.data); assert.equal(next.value, atomic.value);
+  assert.equal(next.gas, 32_000_000n); assert.equal(next.assessment.blockNumber, 43n);
+  assert.deepEqual(next.assessment.gasProfile.bounds, planned.assessment.gasProfile.bounds);
+  await assert.rejects(buildNextTransaction({ client, planned, limits: { headroomBps: 5000 } }), { code: "MODE_REVIEW_REQUIRED" });
+  client.fixtureNitroPrices = [0n, 1_000_000n, 0n, 2n, 0n, 2n];
+  await assert.rejects(buildNextTransaction({ client, planned }), { code: "MODE_REVIEW_REQUIRED" });
+  assert.equal(economicRequests(client).length, 0);
+});
+
+test("explicit staged Raeto conversion keeps begin, preparation and activation with fresh mode parity", async () => {
+  const plan = raetoConversionPlan(), client = clientFor(plan), planned = await review(client, plan, { mode: "staged" });
+  assert.equal(planned.mode, "staged"); assert.equal(planned.assessment.ready, true, planned.assessment.reason);
+  assert.deepEqual(planned.transactions.map(({ kind }) => kind), ["begin", "prepare", "activate"]);
+  const next = await buildNextTransaction({ client, planned, reviewedTransaction: planned.transactions[0] });
+  assert.equal(next.kind, "begin"); assert.equal(next.value, plan.funding[0].inputAmount); assert.equal(next.gas, 32_000_000n);
+});
+
+test("each Swap reserves compute before headroom while staged activation charges only full calldata", () => {
+  for (const headroomBps of [2500, 5000]) {
+    const plan = raetoConversionPlan();
+    plan.funding = [address(0x20), address(0x21), plan.markets[0].quoteAsset]
+      .map((asset) => ({ asset, amount: plan.buys[0].quoteAmountIn, kind: 0, inputAsset: asset, inputAmount: plan.buys[0].quoteAmountIn, target: zeroAddress, data: "0x" }));
+    const base = computeLifecycleLaunchGasBounds({ plan, predictedToken: TOKEN, headroomBps });
+    const bytes = (plan, mode) => BigInt((buildLaunchTransactions({ plan, mode }).at(-1).data.length - 2) / 2);
+    const atomicBytes = bytes(plan, "atomic"), activationBytes = bytes(plan, "staged");
+    for (let count = 1; count <= plan.funding.length; count += 1) {
+      plan.funding[count - 1] = { ...plan.funding[count - 1], kind: 2, inputAsset: zeroAddress, target: address(0xfb), data: "0x1234" };
+      const bounds = computeLifecycleLaunchGasBounds({ plan, predictedToken: TOKEN, headroomBps });
+      const padded = (value) => (value * BigInt(10000 + headroomBps) + 9999n) / 10000n;
+      assert.equal(bounds.atomicComputeGasUpperBound - base.atomicComputeGasUpperBound,
+        padded(2_000_000n * BigInt(count) + 24n * (bytes(plan, "atomic") - atomicBytes)));
+      assert.equal(bounds.activationComputeGasUpperBound - base.activationComputeGasUpperBound,
+        padded(24n * (bytes(plan, "staged") - activationBytes)));
+    }
+  }
+});
+
+test("conversion work stages oversized atomic launches without dropping swaps or increasing gas", async () => {
+  for (const variant of ["positions", "swaps"]) {
+    const plan = raetoConversionPlan({ positionCount: variant === "positions" ? 8 : 6 });
+    if (variant === "swaps") plan.funding.unshift({ ...plan.funding[0], asset: address(0x20) });
+    const client = clientFor(plan), planned = await review(client, plan);
+    assert.equal(planned.mode, "staged"); assert.equal(planned.assessment.ready, true, planned.assessment.reason);
+    assert.ok(planned.assessment.gasProfile.bounds.atomicComputeGasUpperBound > 32_000_000n);
+    assert.deepEqual(planned.transactions.map(({ kind }) => kind), ["begin", "prepare", "activate"]);
+    const next = await buildNextTransaction({ client, planned });
+    assert.equal(next.kind, "begin"); assert.equal(next.gas, 32_000_000n);
+    assert.equal(next.value, plan.funding.reduce((sum, row) => sum + row.inputAmount, 0n));
+    assert.equal(hashLaunchPlan(decodeFunctionData({ abi: launchLifecycleAbi, data: next.data }).args[0]), planned.planHash);
+  }
+});
+
+test("atomic conversion affordability preserves native input plus the entire ceiling fee", async () => {
+  const plan = raetoConversionPlan(), required = plan.funding[0].inputAmount + 32_000_000n * 2n;
+  for (const balance of [required, required - 1n]) {
+    const planned = await review(clientFor(plan, { balance }), plan);
+    assert.equal(planned.mode, "atomic"); assert.equal(planned.assessment.ready, balance === required);
+    if (balance < required) assert.equal(planned.assessment.code, "INSUFFICIENT_NATIVE_BALANCE");
+  }
+  const capped = await review(clientFor(plan), plan, { limits: { rpcGasLimit: 31_000_000n } });
+  assert.equal(capped.assessment.code, "GAS_POLICY_LIMIT");
+});
+
+test("ERC20 conversion approvals remain wallet-owned and fresh allowance reveals the reviewed atomic command", async () => {
+  const plan = raetoConversionPlan({ inputAsset: address(0x30) }), client = clientFor(plan, { allowance: 2n });
+  const planned = await review(client, plan);
+  assert.equal(planned.mode, "atomic"); assert.equal(planned.assessment.ready, true, planned.assessment.reason);
+  assert.deepEqual(planned.transactions.map(({ kind }) => kind), ["approve-reset", "approve", "atomic"]);
+  const reset = await buildNextTransaction({ client, planned, reviewedTransaction: planned.transactions[0] });
+  assert.equal(reset.kind, "approve-reset"); assert.equal(reset.gas, undefined); assert.equal(reset.gasPrice, undefined);
+  client.state.allowance = 0n;
+  await assert.rejects(buildNextTransaction({ client, planned, reviewedTransaction: reset }), { code: "REVIEWED_TRANSACTION_MISMATCH" });
+  const approval = await buildNextTransaction({ client, planned });
+  assert.equal(approval.kind, "approve"); assert.equal(approval.gas, undefined); assert.equal(approval.gasPrice, undefined);
+  assert.equal(decodeFunctionData({ abi: lifecycleErc20Abi, data: approval.data }).args[1], plan.funding[0].inputAmount);
+  client.state.allowance = plan.funding[0].inputAmount;
+  client.state.headNumber = 43n; client.state.allowedTags = ["0x2a", "0x2b"];
+  const next = await buildNextTransaction({ client, planned });
+  assert.equal(next.kind, "atomic"); assert.equal(next.value, 0n); assert.equal(next.gas, 32_000_000n);
+  assert.equal(next.assessment.blockNumber, 43n); assert.equal(next.nonce, undefined);
+  assert.equal(next.data, planned.transactions[2].data);
+  assert.deepEqual(next.assessment.gasProfile.bounds, planned.assessment.gasProfile.bounds);
+});
+
+for (const conversion of [false, true]) test(`activation over the known ceiling refuses before begin, conversion=${conversion}`, async () => {
   const plan = knownAbyssPlan(), budget = 10n ** 24n;
-  plan.token.supply = budget; plan.markets[0].tokenBudget = budget; plan.buys = []; plan.funding = [];
+  plan.token.supply = budget; plan.markets[0].tokenBudget = budget;
+  if (conversion) plan.funding[0] = { ...plan.funding[0], kind: 2, inputAsset: zeroAddress, target: address(0xfb), data: "0x1234" };
+  else { plan.buys = []; plan.funding = []; }
   const positions = Array.from({ length: 32 }, (_, index) => ({ tickLower: index * 60, tickUpper: index === 31 ? 887220 : (index + 1) * 60, liquidity: 100n, tokenAmountMaximum: budget / 32n }));
   plan.markets[0].config = encodeAbyssLifecycleMarketConfig({ ...decodeAbyssLifecycleMarketConfig(plan.markets[0].config), positions });
   const bound = computeLifecycleLaunchGasBounds({ plan, predictedToken: TOKEN });
@@ -284,9 +409,13 @@ test("one explicitly pinned aggregate per invocation shares prices and attests M
   assert.equal(client.captured.length, 2);
 });
 
-test("unknown unbounded profiles never acquire invented readiness or a VM fallback", async () => {
-  const plan = makePlan(), client = clientFor(plan), planned = await review(client, plan);
+for (const conversion of [false, true]) test(`unknown profiles never acquire readiness or a VM fallback, conversion=${conversion}`, async () => {
+  const plan = makePlan();
+  if (conversion) plan.funding[0] = { ...plan.funding[0], kind: 2, inputAsset: zeroAddress, target: address(0xfb), data: "0x1234" };
+  const client = clientFor(plan), planned = await review(client, plan);
   assert.equal(planned.assessment.ready, false); assert.equal(planned.assessment.code, "UNKNOWN_GAS_PROFILE");
+  assert.equal(computeLifecycleLaunchGasBounds({ plan, predictedToken: TOKEN }), undefined);
+  await assert.rejects(buildNextTransaction({ client, planned }), { code: "UNKNOWN_GAS_PROFILE" });
   await assert.rejects(prepareAndPlanLifecycleLaunch({ client, plan, account: ACCOUNT, mode: "staged", buySlippageBps: 50 }), { code: "OPENING_BUY_NOT_PROFILED" });
 });
 

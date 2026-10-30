@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.1
+
+- Allow atomic conversion funding for one known-profile market when its conservative capacity budget plus Nitro poster allocation fits the unchanged 32M native total gas envelope. Planning and fresh build-next use the same rule; explicit staged and multi-market launches remain staged.
+- Bump the model to `robinhood-4663-capacity-v5`. Add an empirical 2,000,000 compute reserve for each `Swap` funding entry in atomic launches, before the existing at-least-25% padding and HMM forwarding-reserve comparison. Preserve full encoded-calldata costs; staged activation does not pay the conversion reserve because funding executes during begin. This is not a universal bound on arbitrary router code or execution proof.
+- Retain unknown-profile refusal, activation/preparation limits, wallet-owned approvals/nonces, native funding value, ordered-buy slippage, full-ceiling affordability and fresh recovery checks. No runtime launch simulation, nonce read, target/token special case or fallback is introduced.
+
 ## 0.16.0
 
 - Add supported Robinhood Raeto fixed/dynamic pool-bound templates, generated from preserved go-live records and pinned registry readback. Reuse the byte-identical ordinary fixed and zero-royalty dynamic hook creation code, with the distinct Raeto adapter/collector/locker graph.
@@ -12,7 +18,7 @@
 ## 0.15.1
 
 - Remove every launch planning/build-next simulation, including aggregator-funded launches, exact proofs, buy-output diagnostics and controlled-fork execution. No `eth_simulateV1` or launch-calldata execution occurs before or between wallet transactions. Routers enforce their committed conversion output floors/deadlines on-chain.
-- Multi-market or conversion-funded launches are always staged. Atomic is available only for a single non-conversion market whose known capacity budget fits with headroom. This fixes the TAZE three-market/24-position holders-earn launch being incorrectly selected for one32M atomic transaction.
+- Stage multi-market launches conservatively, fixing the TAZE three-market/24-position holders-earn launch being incorrectly selected for one32M atomic transaction. Conversion funding mode selection is revised in0.16.1 to use a nonzero capacity reserve.
 - Pack contiguous preparation batches deterministically from template/per-position costs plus headroom and poster allocation. Refuse an activation above its known budget with `ACTIVATION_GAS_LIMIT` and the actionable reduce-positions/pools reason before begin; unknown unbounded templates refuse `UNKNOWN_GAS_PROFILE`, never a simulation fallback. Exported capacity bounds remain available for builder UI limits.
 - Preserve32M total native gas per launch command on4663, pinned fee floors, full-ceiling affordability, receipt/confirmation recovery and wallet-owned nonces. Approvals still leave gas to the wallet. Opening-buy protection uses only exact local ordered integer math and `buySlippageBps`.
 - **Caller migration:** replace `planned.simulation` with `planned.assessment`, transaction `.admission` with `.assessment`, and `LifecyclePlanningError.simulation` with `.assessment`. Check `LifecyclePlanningAssessment.ready`; `code` and SDK-authored user-safe `reason` describe input/budget refusals, not execution proof. Consume optional `assessment.estimate` and `assessment.gasProfile.initialBuys`. `LifecycleLaunchGasBounds.atomicComputeGasUpperBound` is optional when atomic is ineligible.

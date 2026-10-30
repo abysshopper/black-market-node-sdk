@@ -39,7 +39,7 @@ function observedFields<T extends object>(value: T): () => boolean {
 
 async function selectLaunchMode(requested: "atomic" | "staged", plan: LaunchPlanV1, capacity: ProfiledLaunchCapacity | undefined,
   limits: ResolvedLifecycleLimits, client: LifecycleRpcClient, block: LifecycleBlock): Promise<"atomic" | "staged"> {
-  if (requested !== "atomic" || plan.markets.length !== 1 || plan.funding.some((funding) => funding.kind === LifecycleFundingKind.Swap) ||
+  if (requested !== "atomic" || plan.markets.length !== 1 ||
     capacity?.atomic === undefined || capacity.bounds.atomicComputeGasUpperBound === undefined) return "staged";
   const poster = limits.protocol === "nitro" ? nitroPosterGasBound(capacity.atomic, await readNitroPrices(client, block)).posterGas : 0n;
   return capacity.bounds.atomicComputeGasUpperBound + poster <= limits.executionGasCeiling ? "atomic" : "staged";
