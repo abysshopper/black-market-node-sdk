@@ -106,6 +106,8 @@ test("pure initial-buy estimate rejects a price limit on the wrong side", () => 
     const wrong = deriveLaunchBuySqrtPriceLimitX96({ launchSqrtPriceX96: recipe.launchSqrtPriceX96, launchedTokenIsQuote: !launchedTokenIsQuote });
     assert.throws(() => estimateLaunchInitialBuy({ ...options, sqrtPriceLimitX96: wrong }), /wrong side/);
     assert.throws(() => estimateLaunchInitialBuy({ ...options, sqrtPriceLimitX96: 1n << 160n }), /Solidity type/);
+    const outOfBounds = launchedTokenIsQuote ? (1n << 160n) - 1n : 0n;
+    assert.throws(() => estimateLaunchInitialBuy({ ...options, sqrtPriceLimitX96: outOfBounds }), /MIN_SQRT_RATIO/);
   }
 });
 
