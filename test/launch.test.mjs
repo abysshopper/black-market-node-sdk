@@ -96,6 +96,21 @@ test("pure initial-buy estimate updates monotonically with input", () => {
   assert(large.sqrtPriceAfterX96 < small.sqrtPriceAfterX96);
 });
 
+test("pure initial-buy estimate rejects a price limit on the wrong side", () => {
+  for (const launchedTokenIsQuote of [true, false]) {
+    const recipe = deriveLaunchPoolRecipe({ pairedTokenDecimals: 18, pairedTokenUsdPriceX18, targetMarketCapUsdX18, launchedTokenIsQuote, fee: 10_000 });
+    const options = { launchSqrtPriceX96: recipe.launchSqrtPriceX96, liquidity: recipe.liquidity, pairedTokenAmountIn: 10n ** 16n, launchedTokenIsQuote, fee: 10_000 };
+    const guard = deriveLaunchBuySqrtPriceLimitX96({ launchSqrtPriceX96: recipe.launchSqrtPriceX96, launchedTokenIsQuote });
+    assert(estimateLaunchInitialBuy({ ...options, sqrtPriceLimitX96: guard }).launchedTokenAmountOut > 0n);
+    assert.equal(estimateLaunchInitialBuy({ ...options, sqrtPriceLimitX96: recipe.launchSqrtPriceX96 }).launchedTokenAmountOut, 0n);
+    const wrong = deriveLaunchBuySqrtPriceLimitX96({ launchSqrtPriceX96: recipe.launchSqrtPriceX96, launchedTokenIsQuote: !launchedTokenIsQuote });
+    assert.throws(() => estimateLaunchInitialBuy({ ...options, sqrtPriceLimitX96: wrong }), /wrong side/);
+    assert.throws(() => estimateLaunchInitialBuy({ ...options, sqrtPriceLimitX96: 1n << 160n }), /Solidity type/);
+    const outOfBounds = launchedTokenIsQuote ? (1n << 160n) - 1n : 0n;
+    assert.throws(() => estimateLaunchInitialBuy({ ...options, sqrtPriceLimitX96: outOfBounds }), /MIN_SQRT_RATIO/);
+  }
+});
+
 test("paired-token buy limits move in the safe direction with exact bounds", () => {
   const above = recipeFor(false).launchSqrtPriceX96;
   const below = recipeFor(true).launchSqrtPriceX96;

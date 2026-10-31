@@ -550,6 +550,9 @@ export type LaunchInitialBuyEstimate = {
  * launch position. No wallet balance, allowance, pool deployment, or RPC state.
  * Uses conservative input-fee rounding; execution simulation remains the final
  * authority before submission.
+ *
+ * A sqrtPriceLimitX96 equal to launchSqrtPriceX96 estimates zero output here,
+ * while a v4 swap with that limit reverts (PriceLimitAlreadyExceeded).
  */
 export function estimateLaunchInitialBuy(
   input: LaunchInitialBuyEstimateInput,
@@ -558,6 +561,15 @@ export function estimateLaunchInitialBuy(
   assertPositiveUint(input.liquidity, MAX_UINT128, "liquidity");
   assertUint(input.pairedTokenAmountIn, MAX_UINT256, "pairedTokenAmountIn");
   if (!Number.isInteger(input.fee) || input.fee < 0 || input.fee >= 1000000) throw new Error("fee must be pips below 1000000");
+  if (input.sqrtPriceLimitX96 !== undefined) {
+    assertUint(input.sqrtPriceLimitX96, MAX_UINT160, "sqrtPriceLimitX96");
+    if (input.sqrtPriceLimitX96 <= MIN_SQRT_RATIO || input.sqrtPriceLimitX96 >= MAX_SQRT_RATIO) {
+      throw new Error("sqrtPriceLimitX96 must be strictly between MIN_SQRT_RATIO and MAX_SQRT_RATIO");
+    }
+    if (input.launchedTokenIsQuote ? input.sqrtPriceLimitX96 < input.launchSqrtPriceX96 : input.sqrtPriceLimitX96 > input.launchSqrtPriceX96) {
+      throw new Error("sqrtPriceLimitX96 is on the wrong side of the launch price for this buy");
+    }
+  }
   const fee = BigInt(input.fee);
   const amountAfterFee =
     (input.pairedTokenAmountIn * (1_000_000n - fee)) / 1_000_000n;
