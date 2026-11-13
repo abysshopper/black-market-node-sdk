@@ -1,6 +1,6 @@
 # Lifecycle gas, capacity, execution evidence and RPC budgets
 
-Version **0.16.1**, model **`robinhood-4663-capacity-v5`**, separates the native transaction ceiling, conservative capacity bounds, exact opening-curve quotes and actual transaction receipts. A ready assessment is not execution proof.
+Version **0.17.0**, model **`robinhood-4663-capacity-v6`**, separates the native transaction ceiling, conservative capacity bounds, exact opening-curve quotes and actual transaction receipts. A ready assessment is not execution proof.
 
 ## One native ceiling, not component-sized gas
 
@@ -12,7 +12,7 @@ A reviewed launch gas differing from the ceiling is stale and refuses with `STAL
 
 ## Capacity selects the mode, not the gas limit
 
-`computeLifecycleLaunchGasBounds({ plan, predictedToken, ufg?, headroomBps? })` returns conservative `atomicComputeGasUpperBound` and `activationComputeGasUpperBound`, excluding poster gas, or undefined for unknown coverage. The v5 model retains v4 coverage for Raeto fixed/dynamic and current auto-compounding static/dynamic in addition to the existing Abyss, V4, HMM and UFG templates. It accounts for token/reward creation, actual UFG proxy/treasury route, measured market/position work, ordered buys, NFT minting and HMM forwarding overhead, and adds atomic conversion work. UFG route overhead is independent of market profile names.
+`computeLifecycleLaunchGasBounds({ plan, predictedToken, ufg?, headroomBps? })` returns conservative `atomicComputeGasUpperBound` and `activationComputeGasUpperBound`, excluding poster gas, or undefined for unknown coverage. The v6 model adds measured RWA rewards fixed/dynamic coverage and retains the v4 Raeto fixed/dynamic and current auto-compounding static/dynamic coverage in addition to the existing Abyss, V4, HMM and UFG templates. It accounts for token/reward creation, actual UFG proxy/treasury route, measured market/position work, ordered buys, NFT minting and HMM forwarding overhead, and adds atomic conversion work. UFG route overhead is independent of market profile names.
 
 An atomic request is a preference. Multiple markets always select staged; one known-profile market can remain atomic, including conversion funding, only when its padded compute bound plus poster allocation fits. Explicit staged remains staged. Review and persist returned `planned.mode`, not the requested mode. No positions, markets or buys are dropped, and the gas envelope is never resized.
 
@@ -73,7 +73,7 @@ it is never selected as a planning backend.
 
 ## Retained empirical evidence
 
-The v5 model retains the v4 [Raeto and auto-compounding measurements](#raeto-and-auto-compounding-v4-evidence) and adds the conversion reserve described above. Recorded v4 smoke evidence keeps its original version and is not rewritten as new execution evidence. These are empirical capacity bounds, not gas-limit sizing, a promise about arbitrary upgrades/future ArbOS rules, or native execution proof. Currency admission is separate: only Raeto imposes its deployed WETH/USDG quote allowlist.
+The v6 model adds the [RWA rewards measurements](#rwa-rewards-v6-evidence), retains the v4 [Raeto and auto-compounding measurements](#raeto-and-auto-compounding-v4-evidence) and the v5 conversion reserve described above. Recorded v4 smoke evidence keeps its original version and is not rewritten as new execution evidence. These are empirical capacity bounds, not gas-limit sizing, a promise about arbitrary upgrades/future ArbOS rules, or native execution proof. Currency admission is separate: only Raeto (WETH/USDG) and RWA rewards (USDG) impose deployed quote allowlists.
 
 Research retained176 lifecycle receipts, including75 successful current-template atomic/activation observations with opening buys. Isolated forks extend depth, buys and combinations; failed CREATE2 cases were not counted as successful coverage. One Abyss and one fixed-V4 historical native/fork calibration matched compute exactly (19,272,603 and18,130,251 gas), while minimum successful envelopes were higher (20,527,230 and19,356,279). These two calibrations do not establish general Anvil/Nitro equivalence. Compute and poster components remain separate. Profiles are empirical capacity bounds, never transaction gas sizing or proof about arbitrary upgrades/future ArbOS rules.
 
@@ -193,6 +193,63 @@ TEMPLATE_FORK_RPC_URL=http://127.0.0.1:8571 \
 # Read-only assessment of retained executed plans; no launch replay:
 TEMPLATE_FORK_RPC_URL=http://127.0.0.1:8571 \
   node test/integration/template-gas.fork.mjs --smoke
+```
+
+## RWA rewards v6 evidence
+
+The same owned-fork harness runs with `--rwa` against a separate pin after both
+RWA admissions and records `test/fixtures/template-gas-rwa-matrix.json` and the
+read-only `test/fixtures/template-gas-rwa-smoke.json`. Every case is a
+Dividends launch with one USDG market whose fee assets are the launch token,
+USDG and the basket; each basket is the registry's lowest listed stock
+addresses at the pin (one or six). The harness checks each collector's on-chain
+basket, share, premium, age, token, quote and registry against the planned terms,
+plus exact opening-buy outputs.
+
+The committed run contains **44 real launches / 88 successful launch
+transactions** at Robinhood block **113,693,643**
+(`0xea409fea2955aa229e8b1bff0e63d4ffb88c8eba0f85bd8553d9e6479e545461`), Anvil
+1.6.0: for both templates, the full six-stock grid of 1/8/32 positions × 0/1/4
+buys × atomic/staged, plus one-stock cases at 1 position/0 buys and 32
+positions/4 buys.
+
+Observed peak EVM `gasUsed`, in millions:
+
+| Template | Cases | Atomic max | Atomic max that fit 32M | Prepare max | Activation max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RWA fixed | 22 | 45.872 | 27.334 | 12.293 | 24.426 |
+| RWA dynamic | 22 | 45.931 | 27.389 | 12.293 | 24.509 |
+
+The 32-position atomic cases exceed 32M and select staged; every activation fits,
+including six stocks, 32 positions and four buys. At one position, a six-stock
+basket adds about 0.4M preparation, 0.5M activation and 1.6M atomic gas over one stock. Fixed and dynamic
+differ by under 0.1M. The same fit, forwarding-estimate, 5% margin and
+below-32M-when-observed-to-fit checks apply as for the v4 matrix.
+
+| RWA component (compute basis, before padding) | Value |
+| --- | --- |
+| One-market atomic base | 17,000,000 |
+| Atomic extra position | 550,000 |
+| Activation call base / per market / per position | 1,500,000 / 250,000 / 540,000 |
+| Preparation per market / extra position / per basket stock | 9,900,000 / 70,000 / 80,000 |
+| Each opening buy | 500,000 + 150,000 + 20,000 × that market's positions |
+
+RWA buys use about 0.66M gas each at one position and 1.25M at 32 positions;
+Anvil's forwarding estimate reaches about 1.7M per buy at 32 positions.
+Position revalidation per buy is cheaper than Raeto's. The lower
+atomic base and per-position activation keep the observed eight-position,
+four-buy atomic and 32-position, four-buy activation fits plannable under 32M;
+poster allocation can still stage or refuse those exact boundaries in planning.
+
+```sh
+source ~/.config/robinhood-archive-rpc.env
+export ROBINHOOD_ARCHIVE_RPC_URL
+anvil --fork-url "$ROBINHOOD_ARCHIVE_RPC_URL" \
+  --fork-block-number 113693643 --chain-id 4663 --port 8571 --host 127.0.0.1 \
+  --hardfork cancun --gas-limit 120000000 --quiet
+# Second terminal, after pnpm build:
+TEMPLATE_FORK_RPC_URL=http://127.0.0.1:8571 node test/integration/template-gas.fork.mjs --rwa
+TEMPLATE_FORK_RPC_URL=http://127.0.0.1:8571 node test/integration/template-gas.fork.mjs --rwa --smoke
 ```
 
 ## Exact ordered opening-buy math

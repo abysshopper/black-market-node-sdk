@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.0
+
+- Add supported Robinhood RWA rewards fixed/dynamic pool-bound templates (`V4RwaFixedPool`, `V4RwaDynamicPool`), generated from the 2026-11-13 go-live records and pinned registry readback. They reuse the byte-identical ordinary fixed and zero-royalty dynamic hook creation code with the distinct RWA adapter/collector/locker graph.
+- Export RWA profile/adapter identities, `RWA_ASSET_REGISTRY_ADDRESS`, `RWA_QUOTE_ASSET` (USDG), basket/premium/age bounds, `RwaLaunchConfigV1` validators/codecs, `validateRwaLaunchPlan`, and the verified `rwaRewardCollectorV1Abi` / `rwaAssetRegistryV1Abi` from `@black-market/sdk/lifecycle`.
+- Add typed config6 `rwaLaunchConfig` tails, exactly `abi.encode(RwaLaunchConfigV1)`. The SDK codec reproduces every term set the deployed factories accept and refuses every static rejection, proved against pinned `decodeAndValidate` calls. Registry listing stays a live on-chain check at begin.
+- Planning, combined preparation and continuation refuse, before any RPC, RWA launches that would only fail at market preparation after begin: non-Dividends tokens, basket stocks missing a `0/10000/0` fee policy, non-USDG quotes, wrong adapters and non-QuoteOnly or nonzero LP/developer-fee markets (`INVALID_RWA_CONFIG`).
+- Bump the capacity model to `robinhood-4663-capacity-v6` with measured RWA preparation (including a per-basket-stock term), activation and atomic costs. Other templates' budgets, the 32M native ceiling, poster allowance and every refusal path are unchanged.
+
 ## 0.16.2
 
 - Extend `raetoFeeCollectorV1Abi` with the deployed `poolId` and `payoutRegistry` getters, and export `raetoPayoutRegistryV1Abi` from `@black-market/sdk/lifecycle` for its `payout` read. Consumers can bind a collector's reserved inference credit to the canonical registry before calling `claimRaeto`; a zero payout address is not claim-ready.
