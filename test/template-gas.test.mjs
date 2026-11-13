@@ -87,3 +87,65 @@ test('read-only fork smoke profiles every template/quote without replaying retai
     assert.ok(retained.transactions.every(({ gasUsed }) => BigInt(gasUsed) > 0n));
   }
 });
+
+const rwaMatrix = JSON.parse(await readFile(new URL('./fixtures/template-gas-rwa-matrix.json', import.meta.url), 'utf8'));
+const rwaKeys = [sdk.KnownLifecycleProfile.V4RwaFixedPool, sdk.KnownLifecycleProfile.V4RwaDynamicPool];
+
+test('committed RWA fork evidence covers both templates, the full six-stock grid and one-stock extremes', () => {
+  assert.equal(rwaMatrix.chainId, 4663);
+  assert.ok(rwaMatrix.forkBlock > 113_531_941, 'Pinned after both RWA admissions');
+  assert.match(rwaMatrix.caveat, /NOT native ArbOS/);
+  const signatures = rwaMatrix.cases.map(({ scenario: s }) => [s.key, s.positions, s.buyCount, s.mode, s.basket].join(':'));
+  assert.equal(new Set(signatures).size, rwaMatrix.cases.length, 'A recorded case must never execute twice');
+  for (const key of rwaKeys) {
+    for (const positions of [1, 8, 32]) for (const buyCount of [0, 1, 4]) for (const mode of ['atomic', 'staged']) {
+      assert.ok(signatures.includes([key, positions, buyCount, mode, sdk.RWA_MAX_BASKET].join(':')), `${key}: missing six-stock ${positions}/${buyCount}/${mode}`);
+    }
+    for (const [positions, buyCount] of [[1, 0], [32, 4]]) for (const mode of ['atomic', 'staged']) {
+      assert.ok(signatures.includes([key, positions, buyCount, mode, 1].join(':')), `${key}: missing one-stock ${positions}/${buyCount}/${mode}`);
+    }
+  }
+});
+
+for (const [index, row] of rwaMatrix.cases.entries()) test(`measured RWA gas fits current capacity bounds with margin: ${index + 1} ${row.scenario.key}/${row.scenario.mode}/${row.scenario.positions}/${row.scenario.buyCount}/basket${row.scenario.basket}`, () => {
+  const plan = sdk.parseLaunchPlan(JSON.stringify(row.plan));
+  sdk.validateRwaLaunchPlan(plan);
+  const bounds = sdk.computeLifecycleLaunchGasBounds({ plan, predictedToken: row.predictedToken });
+  assert.ok(bounds, 'Every measured RWA plan must have known capacity');
+  const commands = sdk.buildLaunchTransactions({ plan, mode: row.scenario.mode,
+    ...(row.scenario.mode === 'staged' ? { preparationBatches: [1] } : {}) });
+  assert.equal(commands.length, row.transactions.length);
+  for (const [i, tx] of row.transactions.entries()) {
+    const command = commands[i];
+    assert.equal(command.kind, tx.kind);
+    assert.equal((command.data.length - 2) / 2, tx.calldataBytes);
+    const bound = tx.kind === 'atomic' ? bounds.atomicComputeGasUpperBound : tx.kind === 'activate' ? bounds.activationComputeGasUpperBound
+      : tx.kind === 'prepare' ? padded(sdk.preparationGasEstimate(plan, tx.marketStart, tx.marketCount) + 24n * BigInt(tx.calldataBytes))
+      : ceiling;
+    const used = BigInt(tx.gasUsed);
+    assert.ok(bound !== undefined && used <= bound, `${tx.kind}: used ${used} > bound ${bound}`);
+    if (used <= ceiling && BigInt(tx.minimumGasEstimate) <= ceiling) assert.equal(tx.nativeCeilingCallSucceeded, true, 'An infrastructure failure must not be recorded as a capacity refusal');
+    assert.ok(BigInt(tx.minimumGasEstimate) <= bound, `${tx.kind}: forwarding estimate ${tx.minimumGasEstimate} > bound ${bound}`);
+    assert.ok(bound * 100n >= used * 105n, `${tx.kind}: less than 5% observed-gas margin`);
+    if (tx.nativeCeilingCallSucceeded) assert.ok(bound <= ceiling, `${tx.kind}: observed 32M fit must remain plannable, bound ${bound}`);
+  }
+  assert.equal(row.observed.phase, 'Active');
+  assert.equal(row.observed.positionCount, row.scenario.positions);
+  assert.equal(row.observed.opening.exactBuyOutputsMatched, plan.buys.length);
+  assert.deepEqual(row.observed.collectors.map(({ basketSize }) => basketSize), [row.scenario.basket]);
+});
+
+test('read-only RWA fork smoke plans both templates in both modes without replaying retained launches', async () => {
+  const smoke = JSON.parse(await readFile(new URL('./fixtures/template-gas-rwa-smoke.json', import.meta.url), 'utf8'));
+  for (const key of rwaKeys) for (const mode of ['atomic', 'staged']) {
+    const row = smoke.cases.find(({ scenario: s }) => s.key === key && s.mode === mode);
+    assert.ok(row, `${key}: missing ${mode} profiled smoke`);
+    assert.equal(row.assessment.ready, true);
+    assert.equal(row.assessment.version, 'robinhood-4663-capacity-v6');
+    assert.equal(row.readOnly, true);
+    assert.equal(BigInt(row.next.gasLimit), ceiling);
+    const retained = rwaMatrix.cases[row.retainedExecution.matrixCase];
+    assert.equal(row.retainedExecution.launchId, retained.observed.launchId);
+    assert.equal(retained.scenario.key, key);
+  }
+});

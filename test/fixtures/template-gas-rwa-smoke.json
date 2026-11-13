@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "chainId": 4663,
+  "forkBlock": 113693643,
+  "forkBlockHash": "0xea409fea2955aa229e8b1bff0e63d4ffb88c8eba0f85bd8553d9e6479e545461",
+  "forkTimestamp": "1794608110",
+  "clientVersion": "anvil/v1.6.0",
+  "archiveProvider": "alchemy",
+  "caveat": "Anvil Cancun EVM compute gas, NOT native ArbOS/poster-gas proof. 100M characterization envelopes; 32M eth_call fit recorded separately. Budget prices use pinned native ArbGasInfo; read-only Lens smokes map ArbSys L2 number/hash views to actual Anvil NUMBER/BLOCKHASH via eth_call-only override. Launch contracts and execution state are not mocked.",
+  "nativePrices": {
+    "blockNumber": 113693643,
+    "to": "0x000000000000000000000000000000000000006c",
+    "data": "0x41b247a8",
+    "result": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006072a0c8000000000000000000000000000000000000000000000000000000000001312d0000000000000000000000000000000000000000000000000000000000000add4000000000000000000000000000000000000000000000000000000000013c0a40"
+  },
+  "economics": "Synthetic deterministic fixtures: supply 1M, FDV $5000, WETH $3000 / USDG $1; not current market valuations. Adjacent staircase bands with a permanent tail.",
+  "setup": {
+    "funder": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    "available": "20598082290114",
+    "amount": "100000000",
+    "transferHash": "0xa537224cbe459106219ea68fbd6b6d30864d54047efa1f1baad04249f97c4262",
+    "approvalHash": "0x624dd243f3797cbb60b6f1d06a05e32b2ab3c326777139a5d213ee4958d3455f"
+  },
+  "cases": [
+    {
+      "scenario": {
+        "key": "v4-rwa-fixed-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 1,
+        "mode": "atomic",
+        "basket": 1
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v6",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22395180",
+          "activationComputeGasUpperBound": "3320180"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 0,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-rwa-fixed-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 1,
+        "mode": "staged",
+        "basket": 1
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v6",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22395180",
+          "activationComputeGasUpperBound": "3320180"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 0,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-rwa-dynamic-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 1,
+        "mode": "atomic",
+        "basket": 1
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v6",
+        "mode": "atomic",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22395180",
+          "activationComputeGasUpperBound": "3320180"
+        }
+      },
+      "next": {
+        "kind": "atomic",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 22,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    },
+    {
+      "scenario": {
+        "key": "v4-rwa-dynamic-pool",
+        "marketCount": 1,
+        "positions": 1,
+        "buyCount": 0,
+        "quoteIndex": 1,
+        "mode": "staged",
+        "basket": 1
+      },
+      "readOnly": true,
+      "assessment": {
+        "ready": true,
+        "version": "robinhood-4663-capacity-v6",
+        "mode": "staged",
+        "bounds": {
+          "atomicComputeGasUpperBound": "22395180",
+          "activationComputeGasUpperBound": "3320180"
+        }
+      },
+      "next": {
+        "kind": "begin",
+        "gasLimit": "32000000"
+      },
+      "retainedExecution": {
+        "matrixCase": 22,
+        "launchId": "0x8ad4a803924ab0fef82dc72243d5bd7b8f81498e8fe186782167bca7ededc710",
+        "phase": "Active"
+      }
+    }
+  ]
+}

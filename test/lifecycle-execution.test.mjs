@@ -227,7 +227,7 @@ test("six-position Raeto holders-earn native conversion remains atomic with fres
   client.fixtureNitroPrices = [0n, 2n, 0n, 2n, 0n, 2n];
   const planned = await prepareAndPlanLifecycleLaunch({ client, plan, account: ACCOUNT, mode: "atomic", buySlippageBps: 50 });
   assert.equal(planned.mode, "atomic"); assert.equal(planned.assessment.ready, true, planned.assessment.reason);
-  assert.equal(planned.assessment.gasProfile.version, "robinhood-4663-capacity-v5");
+  assert.equal(planned.assessment.gasProfile.version, "robinhood-4663-capacity-v6");
   const atomic = planned.transactions[0], bound = planned.assessment.gasProfile.bounds.atomicComputeGasUpperBound;
   assert.deepEqual(planned.transactions.map(({ kind }) => kind), ["atomic"]);
   assert.ok(bound > 30_000_000n && bound < 32_000_000n, `Conversion capacity must be charged and fit: ${bound}`);
