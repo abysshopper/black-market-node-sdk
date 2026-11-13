@@ -20,6 +20,7 @@ staking, or dividends. A pool profile selects the admitted venue/hook implementa
 | UFG | Abyss QUOTE/QUOTE_ORACLE or `V4UfgFixedPool`, `V4UfgDynamicPool` | Treasury route; ERC20 without rewards; quote-only fees, executor bounty 0. |
 | Auto-compounding | `V4AutoCompoundStaticPool`, `V4AutoCompoundDynamicPool` | Net hook fees fund permanently locked full-range liquidity; both fee modes; LP and developer fees 0. |
 | Raeto | `V4RaetoFixedPool`, `V4RaetoDynamicPool` | QuoteOnly WETH/USDG; Raeto share 5/10/25/50/75%; LP and developer fees 0. |
+| RWA rewards | `V4RwaFixedPool`, `V4RwaDynamicPool` | QuoteOnly USDG; a share of quote fees buys 1–6 listed stock tokens for Dividends holders; LP and developer fees 0. |
 
 SDK presets are the source of supported profiles and deployment wiring. Profiles
 registered after this release appear with a subsequent SDK update.
@@ -716,6 +717,85 @@ batches, exact local opening-buy quotes and the unchanged native 32M total gas
 ceiling. A ready assessment is a budget/input check, **not execution proof**.
 See [gas evidence](lifecycle-gas-profiles.md#raeto-and-auto-compounding-v4-evidence).
 
+## Configure RWA rewards
+
+RWA rewards divert a share of a USDG pool's quote fees into **listed stock
+tokens that stream to holders**. Select `V4RwaFixedPool` (fixed maximum hook fee)
+or `V4RwaDynamicPool` (minimum/maximum/sensitivity schedule). The hook creation
+bytes are identical to the ordinary zero-royalty fixed/dynamic templates; the RWA
+collector, factory, locker, adapter and frozen terms are different.
+
+```ts
+import {
+  getKnownLifecycleProfile, KnownLifecycleProfile,
+  RWA_QUOTE_ASSET, encodeRwaLaunchTail, validateRwaLaunchPlan,
+  type RwaLaunchConfigV1,
+} from "@black-market/sdk/lifecycle";
+
+const preset = getKnownLifecycleProfile({
+  chainId: 4663, orchestrator: "0x91560876033d568d25CDe98C78c33ff8FC43962c",
+  key: KnownLifecycleProfile.V4RwaFixedPool,
+})!;
+// Basket addresses must be ascending and listed in the RWA asset registry.
+const rwaLaunchConfig: RwaLaunchConfigV1 = {
+  shareBps: 2500, premiumBps: 50, maxPriceAge: 0,
+  basket: ["0x322F0929c4625eD5bAd873c95208D54E1c003b2d", "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"],
+  weightsBps: [5000, 5000],
+};
+console.log(preset.profile.id, RWA_QUOTE_ASSET, encodeRwaLaunchTail(rwaLaunchConfig));
+// Add rwaLaunchConfig to the USDG market's V4PoolBoundLifecycleMarketConfigV6, set
+// token.rewardMode to LifecycleRewardMode.Dividends and give every basket stock a
+// 0/10000/0 fee policy. Once the plan is built: validateRwaLaunchPlan(plan).
+```
+
+An RWA market must use its RWA config6 profile/adapter, the **USDG** quote,
+`feeMode: 1` (QuoteOnly), `lpFeePips: 0` and `developerFeeBps: 0`. One V4
+market per quote means at most one RWA market per launch; other offerings can
+share the plan. The 2,500/50 values above are illustrative, not recommendations.
+
+`rwaLaunchConfig` holds:
+
+| Field | Range | Meaning |
+| --- | --- | --- |
+| `shareBps` | 0–10,000 | Share of post-treasury USDG fees earmarked for stock; 0 turns the diversion off. |
+| `premiumBps` | 0–100 | Bonus over the Chainlink value paid to keepers who sell stock into an earmark. |
+| `maxPriceAge` | uint32 | Stock-feed staleness: 0 uses registry defaults, `RWA_ANY_PRICE_AGE` disables the stock age check, anything else is seconds. The USDG feed always keeps its registry window. |
+| `basket` | 1–6 addresses | Strictly ascending stock tokens; never USDG. Fixed for the launch's lifetime. |
+| `weightsBps` | one per stock | Integer basis points summing to exactly 10,000; zero weights are allowed. |
+
+The encoder appends exactly `abi.encode(RwaLaunchConfigV1)`, including its
+leading tuple offset (8 + 2 × basket size words). Static violations throw
+`INVALID_RWA_CONFIG` locally; whether each stock is **listed** is live registry
+state, checked on-chain when the launch begins.
+
+The collector constructor additionally requires a **Dividends** launch token and
+every basket stock committed as a hub fee asset with a `0/10000/0`
+owner/rewards/burn policy. Those checks would otherwise fail only at market
+preparation, after begin, so `planLaunch`, `prepareAndPlanLifecycleLaunch` and
+`buildNextTransaction` call `validateRwaLaunchPlan(plan)` and refuse before any
+RPC with `INVALID_RWA_CONFIG`. A launch token, USDG and six stocks fill all eight
+fee-asset slots. Term changes change the full plan hash but not the hook's
+zero-salt prefix commitment; always re-review changed plans.
+
+At collection the collector moves `floor(quote fees × shareBps / 10000)` into
+per-stock USDG earmarks by the current weights; dust, the unearmarked remainder
+and all launch-token fees go to the hub. Keepers call
+`fill(stock, amount, minQuoteOut, recipient)` to sell exact stock against that
+stock's earmark at the registry's Chainlink value plus `premiumBps`;
+`maxFill(stock)` reports the largest fill now. Anyone can call `forward()` to
+move bought stock to the hub (paused or blocked stock is skipped and stays
+pending); call it in the same transaction as the hub's `claimAndSplit()`. The
+**current fee owner** can change `shareBps`, `premiumBps`, `maxPriceAge` and
+future weights with the collector's setters; existing earmarks never move.
+Use `rwaRewardCollectorV1Abi` and `rwaAssetRegistryV1Abi` (`isListed`,
+`listedAssets`, `quoteFor`, `assetFor`). [Reference and preserved deployment evidence](reference.md#rwa-reward-profiles)
+identify the registry and profile/adapter IDs.
+
+Both variants have measured capacity in `robinhood-4663-capacity-v6`, with
+deterministic preparation batches, exact local opening-buy quotes and the
+unchanged native 32M total gas ceiling. A ready assessment is a budget/input
+check, **not execution proof**. See [gas evidence](lifecycle-gas-profiles.md#rwa-rewards-v6-evidence).
+
 ## Configure auto-compounding
 
 Select `V4AutoCompoundStaticPool` for a fixed hook fee or
@@ -758,7 +838,7 @@ buys**, so the local ordered opening-buy curve remains exact. Post-opening swaps
 can compound in `afterSwap`; the hook's low-gas guard reverts `CompoundOutOfGas()`.
 Do not cap swap gas below `eth_estimateGas` or treat launch bounds as swap limits.
 Launch transactions now have measured static/dynamic capacity and preparation
-costs retained in `robinhood-4663-capacity-v5`, not ordinary fixed-hook guesses. They retain
+costs retained in `robinhood-4663-capacity-v6`, not ordinary fixed-hook guesses. They retain
 the native 32M total gas ceiling and never execute calldata during planning.
 See [the fork matrix and ArbOS caveat](lifecycle-gas-profiles.md#raeto-and-auto-compounding-v4-evidence).
 

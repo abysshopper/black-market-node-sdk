@@ -2,10 +2,13 @@
 // source ~/.config/robinhood-archive-rpc.env; anvil --fork-url "$ROBINHOOD_ARCHIVE_RPC_URL" --fork-block-number 101180179 --chain-id 4663 --port 8571 --host 127.0.0.1 --hardfork cancun --gas-limit 120000000 --quiet
 // TEMPLATE_FORK_RPC_URL=http://127.0.0.1:8571 node test/integration/template-gas.fork.mjs
 // TEMPLATE_FORK_RPC_URL=http://127.0.0.1:8571 node test/integration/template-gas.fork.mjs --smoke
+// RWA matrix (separate pin after both RWA admissions): fork block 113693643 instead, then
+// TEMPLATE_FORK_RPC_URL=http://127.0.0.1:8571 node test/integration/template-gas.fork.mjs --rwa [--smoke]
 // Measurements always retain recorded scenarios and execute only missing boundaries.
 // Characterization uses100M; --smoke checks planner/build-next at32M without
 // re-executing any retained launch. Never print the credential-bearing archive URL.
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createPublicClient, createWalletClient, decodeFunctionData, decodeFunctionResult, defineChain, encodeAbiParameters, encodeFunctionData, encodeFunctionResult, http, keccak256, multicall3Abi, parseAbi, parseEventLogs, toHex, zeroAddress, zeroHash } from 'viem';
 import { deriveLaunchPoolRecipe, deriveLaunchPositionRanges, getSqrtRatioAtTick } from '../../dist/index.js';
@@ -32,7 +35,8 @@ const [principal] = await wallet.getAddresses();
 assert.equal(principal.toLowerCase(), '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266', 'Only the unlocked Anvil development account is allowed');
 const info = await client.request({ method: 'anvil_nodeInfo' });
 const forkBlock = BigInt(info.forkConfig.forkBlockNumber);
-assert.ok(forkBlock > 100_721_302n, 'Fork must include both Raeto admissions; each run records its exact pin');
+const rwa = process.argv.includes('--rwa');
+assert.ok(forkBlock > (rwa ? 113_531_941n : 100_721_302n), `Fork must include both ${rwa ? 'RWA' : 'Raeto'} admissions; each run records its exact pin`);
 const upstream = createPublicClient({ transport: http(archiveUrl) });
 const source = await upstream.getBlock({ blockNumber: forkBlock });
 const gasInfo = '0x000000000000000000000000000000000000006c';
@@ -72,17 +76,27 @@ const planningClient = { supportsReadBatching: true, request: async (args) => {
 const identity = { chainId: 4663n, orchestrator: '0x91560876033d568d25CDe98C78c33ff8FC43962c' };
 const deployment = sdk.getKnownLifecycleDeployment(identity);
 const quotes = [...sdk.RAETO_QUOTE_ASSETS];
-const keys = [sdk.KnownLifecycleProfile.V4RaetoFixedPool, sdk.KnownLifecycleProfile.V4RaetoDynamicPool, sdk.KnownLifecycleProfile.V4AutoCompoundStaticPool, sdk.KnownLifecycleProfile.V4AutoCompoundDynamicPool];
+const keys = rwa ? [sdk.KnownLifecycleProfile.V4RwaFixedPool, sdk.KnownLifecycleProfile.V4RwaDynamicPool]
+  : [sdk.KnownLifecycleProfile.V4RaetoFixedPool, sdk.KnownLifecycleProfile.V4RaetoDynamicPool, sdk.KnownLifecycleProfile.V4AutoCompoundStaticPool, sdk.KnownLifecycleProfile.V4AutoCompoundDynamicPool];
+assert.equal(quotes[1].toLowerCase(), sdk.RWA_QUOTE_ASSET.toLowerCase());
+// Real registry listing at the pin, ascending; the first six are the maximum basket.
+const listedStocks = rwa ? [...await client.readContract({ address: sdk.RWA_ASSET_REGISTRY_ADDRESS, abi: sdk.rwaAssetRegistryV1Abi, functionName: 'listedAssets' })]
+  .sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1) : [];
+if (rwa) assert.ok(listedStocks.length >= sdk.RWA_MAX_BASKET, 'The pinned registry must list at least six stocks');
+const rwaBasket = (size) => listedStocks.slice(0, size);
 const tokenAbi = parseAbi(['function decimals() view returns (uint8)', 'function balanceOf(address) view returns (uint256)', 'function transfer(address,uint256) returns (bool)', 'function approve(address,uint256) returns (bool)']);
 const decimals = await Promise.all(quotes.map((address) => client.readContract({ address, abi: tokenAbi, functionName: 'decimals' })));
 assert.deepEqual(decimals, [18, 6]);
 const events = parseAbi([
   'event RaetoCollectorCreated(address indexed collector,address indexed launchToken,bytes32 indexed poolId,address hub,address quoteAsset,uint16 shareBps,address registry,address feeOwner)',
+  'event RwaCollectorCreated(address indexed collector,address indexed launchToken,bytes32 indexed poolId,address hub,address assetRegistry,address feeOwner)',
   'event OpeningCompleted(bytes32 indexed poolId,uint256 indexed completedAt)',
   'event CompoundDeferred(uint8 reason)',
   'event CompoundExecuted(uint256 quoteSpent,uint256 tokenBought,uint256 tokenBurned,uint256 quoteDeposited,uint256 tokenDeposited,uint128 liquidityAdded)',
 ]);
 const json = (value) => JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item, 2) + '\n';
+const equalAddress = (actual, expected) => assert.equal(actual.toLowerCase(), expected.toLowerCase());
+const rwaBasketSize = (plan) => sdk.decodePoolBoundV4LifecycleMarketConfig(plan.markets[0].config, 6).rwaLaunchConfig.basket.length;
 const send = async (tx, account = principal, gas = 100_000_000n) => {
   const hash = await wallet.sendTransaction({ account, to: tx.to, data: tx.data, value: tx.value ?? 0n, gas: tx.gas ?? gas, ...(tx.gasPrice === undefined ? {} : { gasPrice: tx.gasPrice }) });
   const receipt = await client.waitForTransactionReceipt({ hash });
@@ -118,11 +132,14 @@ try {
     // Every scenario restores its snapshot. Reusing identity is safe and keeps
     // empty source-chain slots cacheable; it does not reuse deployed launch state.
     let plan = { ...identity, creator: principal, nonce: 202610290000n,
-      token: { kind: 0, rewardMode: 0, name: 'SDK template gas fixture', symbol: 'TGAS', supply, nftUnit: 0n, metadataURI: '', salt: toHex(1n, { size: 32 }), inventoryRecipient: principal, burnOnCancel: true },
+      token: { kind: 0, rewardMode: rwa ? sdk.LifecycleRewardMode.Dividends : 0, name: 'SDK template gas fixture', symbol: 'TGAS', supply, nftUnit: 0n, metadataURI: '', salt: toHex(1n, { size: 32 }), inventoryRecipient: principal, burnOnCancel: true },
       funding: [], feeAssets: [], markets: [], buys: [], deadline: source.timestamp + 86400n, executorFeeBps: 0 };
     const token = await client.readContract({ address: plan.orchestrator, abi: sdk.launchLifecycleAbi, functionName: 'predictToken', args: [plan] });
     const marketQuotes = scenario.marketCount === 1 ? [quotes[scenario.quoteIndex]] : quotes;
-    plan.feeAssets = [token, ...marketQuotes].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1).map((asset) => ({ asset, ownerBps: 10000, rewardsBps: 0, burnBps: 0 }));
+    const basket = rwa ? rwaBasket(scenario.basket) : [];
+    // RWA: launch-token fees to the owner, USDG split owner/holders, every basket stock 100% to holders.
+    plan.feeAssets = [token, ...marketQuotes, ...basket].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1).map((asset) => ({ asset,
+      ...(!rwa || asset === token ? { ownerBps: 10000, rewardsBps: 0 } : basket.includes(asset) ? { ownerBps: 0, rewardsBps: 10000 } : { ownerBps: 5000, rewardsBps: 5000 }), burnBps: 0 }));
     plan.markets = marketQuotes.map((quote, marketIndex) => {
       const tokenBudget = marketIndex === marketQuotes.length - 1 ? supply - supply / BigInt(marketQuotes.length) * BigInt(marketIndex) : supply / BigInt(marketQuotes.length);
       const launchedTokenIsQuote = BigInt(token) < BigInt(quote);
@@ -148,7 +165,9 @@ try {
         oracleConfigId: keccak256(encodeAbiParameters([{ type: 'uint24' }, { type: 'uint16' }], [1, 4096])), hookSalt: zeroHash,
         profileId: preset.profile.id, termsDigest: envelope.termsDigest, developerBeneficiary: envelope.beneficiary, developerFeeBps: 0,
         positions: bands.positions.map((p, i) => ({ tickLower: p.tickLower, tickUpper: p.tickUpper, liquidity: p.liquidity, salt: toHex(BigInt(i), { size: 32 }), maxTokenAmount: p.maxTokenAmount })),
-        ...(sdk.isRaetoProfile(preset.profile.id) ? { raetoLaunchConfig: { shareBps: sdk.RAETO_SHARE_BPS_OPTIONS[index % sdk.RAETO_SHARE_BPS_OPTIONS.length] } } : { autoCompoundConfig: { compoundShareBps: 5000 } }) };
+        ...(sdk.isRwaProfile(preset.profile.id)
+          ? { rwaLaunchConfig: { shareBps: 5000, premiumBps: 50, maxPriceAge: 0, basket, weightsBps: basket.map((_, i) => Math.floor(10000 / basket.length) + (i === 0 ? 10000 % basket.length : 0)) } }
+          : sdk.isRaetoProfile(preset.profile.id) ? { raetoLaunchConfig: { shareBps: sdk.RAETO_SHARE_BPS_OPTIONS[index % sdk.RAETO_SHARE_BPS_OPTIONS.length] } } : { autoCompoundConfig: { compoundShareBps: 5000 } }) };
       return { adapterId: preset.profile.registration.adapterId, profileId: preset.profile.id, quoteAsset: quote, tokenBudget, configVersion: 6, config: sdk.encodePoolBoundV4LifecycleMarketConfig(config) };
     });
     plan.buys = Array.from({ length: scenario.buyCount }, (_, i) => {
@@ -195,6 +214,16 @@ try {
       const [share, launchToken, quote] = await Promise.all(['shareBps', 'launchToken', 'quoteAsset'].map((functionName) => client.readContract({ address: log.args.collector, abi: sdk.raetoFeeCollectorV1Abi, functionName })));
       assert.equal(share, configured); assert.equal(launchToken, token); assert.equal(quote.toLowerCase(), market.quoteAsset.toLowerCase());
     }
+    const rwaCollectors = parseEventLogs({ abi: events, eventName: 'RwaCollectorCreated', logs });
+    for (const log of rwaCollectors) {
+      const configured = sdk.decodePoolBoundV4LifecycleMarketConfig(plan.markets[0].config, 6).rwaLaunchConfig;
+      const read = (functionName) => client.readContract({ address: log.args.collector, abi: sdk.rwaRewardCollectorV1Abi, functionName });
+      const [basket, share, premium, age, launchToken, quote] = await Promise.all(['basket', 'shareBps', 'premiumBps', 'maxPriceAge', 'launchToken', 'quoteAsset'].map(read));
+      assert.deepEqual(basket.map((asset) => asset.toLowerCase()), configured.basket.map((asset) => asset.toLowerCase()));
+      assert.equal(share, configured.shareBps); assert.equal(premium, configured.premiumBps); assert.equal(age, configured.maxPriceAge);
+      assert.equal(launchToken, token); assert.equal(quote.toLowerCase(), sdk.RWA_QUOTE_ASSET.toLowerCase());
+      equalAddress(log.args.assetRegistry, sdk.RWA_ASSET_REGISTRY_ADDRESS);
+    }
     const auto = plan.markets.some((market) => sdk.isAutoCompoundProfile(market.profileId));
     const deferred = parseEventLogs({ abi: events, eventName: 'CompoundDeferred', logs: activation.logs });
     const opened = parseEventLogs({ abi: events, eventName: 'OpeningCompleted', logs: activation.logs });
@@ -204,15 +233,23 @@ try {
       assert.equal(parseEventLogs({ abi: events, eventName: 'CompoundExecuted', logs: activation.logs }).length, 0);
       assert.equal(opened.length, plan.markets.length);
       if (actualBuys.length) assert.ok(opened.every((event) => event.logIndex > actualBuys.at(-1).logIndex), 'Opening completes only after every ordered buy');
-    } else assert.equal(collectors.length, plan.markets.length);
+    } else assert.equal(collectors.length + rwaCollectors.length, plan.markets.length);
     return { launchId, phase: 'Active', positionCount: progress.positionCount,
-      collectors: collectors.map(({ args }) => ({ collector: args.collector, quoteAsset: args.quoteAsset, shareBps: args.shareBps })),
+      collectors: [...collectors.map(({ args }) => ({ collector: args.collector, quoteAsset: args.quoteAsset, shareBps: args.shareBps })),
+        ...rwaCollectors.map(({ args }) => ({ collector: args.collector, quoteAsset: sdk.RWA_QUOTE_ASSET, basketSize: rwaBasketSize(plan) }))],
       opening: { exactBuyOutputsMatched: actualBuys.length, compoundDeferredForOpening: deferred.length, openingCompletedEvents: opened.length } };
   }
 
   const smoke = process.argv.includes('--smoke');
   const scenarios = [];
   for (const key of keys) {
+    if (rwa) {
+      // USDG-only single market; the basket size changes collector construction work.
+      for (const basket of smoke ? [1] : [1, sdk.RWA_MAX_BASKET]) for (const positions of smoke ? [1] : [1, 8, 32]) for (const buyCount of smoke ? [1] : [0, 1, 4]) for (const mode of ['atomic', 'staged']) {
+        scenarios.push({ key, marketCount: 1, positions, buyCount, quoteIndex: 1, mode, basket });
+      }
+      continue;
+    }
     if (smoke) {
       for (const quoteIndex of [0, 1]) for (const mode of ['atomic', 'staged']) scenarios.push({ key, marketCount: 1, positions: 1, buyCount: 1, quoteIndex, mode });
       continue;
@@ -222,8 +259,10 @@ try {
     for (const positions of [8, 32]) for (const buyCount of [0, 1, 4]) scenarios.push({ key, marketCount: 2, positions, buyCount, quoteIndex: 0, mode: 'staged' });
     if (!raeto) for (const mode of ['atomic', 'staged']) scenarios.push({ key, marketCount: 1, positions: 8, buyCount: 4, quoteIndex: 1, feeMode: 0, mode });
   }
-  const signature = ({ key, marketCount, positions, buyCount, quoteIndex, mode, feeMode = 1 }) => [key, marketCount, positions, buyCount, quoteIndex, mode, feeMode].join(':');
+  const signature = ({ key, marketCount, positions, buyCount, quoteIndex, mode, feeMode = 1, basket }) => [key, marketCount, positions, buyCount, quoteIndex, mode, feeMode, ...(basket === undefined ? [] : [basket])].join(':');
   const requiredBoundary = (s) => {
+    // RWA: the full six-stock grid; one-stock only at the smallest and largest shapes.
+    if (rwa) return s.basket === sdk.RWA_MAX_BASKET || (s.positions === 1 && s.buyCount === 0) || (s.positions === 32 && s.buyCount === 4);
     if (s.key === keys[0]) return false; // Complete retained fixed-Raeto matrix.
     if (s.key === keys[1]) return s.marketCount === 1
       ? s.quoteIndex === 0 ? s.positions === 32 && s.buyCount === 4 && s.mode === 'staged'
@@ -233,7 +272,8 @@ try {
     if (s.quoteIndex === 1) return s.feeMode === 0 && s.positions === 8 && s.buyCount === 4;
     return s.positions === 1 && s.buyCount === 0 || s.positions === 8 && s.buyCount === 1 || s.positions === 32 && s.buyCount === 4;
   };
-  const saved = JSON.parse(await readFile(new URL('../fixtures/template-gas-matrix.json', import.meta.url), 'utf8'));
+  const matrixUrl = new URL(`../fixtures/template-gas-${rwa ? 'rwa-' : ''}matrix.json`, import.meta.url);
+  const saved = rwa && !existsSync(matrixUrl) ? { ...evidence, cases: [] } : JSON.parse(await readFile(matrixUrl, 'utf8'));
   assert.equal(saved.forkBlock, evidence.forkBlock);
   assert.equal(saved.forkBlockHash, evidence.forkBlockHash);
   assert.equal(saved.clientVersion, evidence.clientVersion);
@@ -251,12 +291,12 @@ try {
     const snapshot = await client.request({ method: 'evm_snapshot' });
     try {
       if (smoke) {
-        const matrixCase = saved.cases.findIndex(({ scenario: s }) => s.key === scenario.key && s.marketCount === 1 && s.quoteIndex === scenario.quoteIndex);
+        const matrixCase = saved.cases.findIndex(({ scenario: s }) => s.key === scenario.key && s.marketCount === 1 && s.quoteIndex === scenario.quoteIndex && s.basket === scenario.basket);
         assert.ok(matrixCase >= 0, 'A profiled smoke requires an existing real execution observation');
         const retained = saved.cases[matrixCase], plan = sdk.parseLaunchPlan(JSON.stringify(retained.plan));
         const planned = await sdk.planLaunch({ client: planningClient, account: principal, plan, mode: scenario.mode });
         assert.equal(planned.assessment.ready, true, planned.assessment.reason);
-        assert.equal(planned.assessment.gasProfile.version, 'robinhood-4663-capacity-v5');
+        assert.equal(planned.assessment.gasProfile.version, 'robinhood-4663-capacity-v6');
         const next = await sdk.buildNextTransaction({ client: planningClient, planned });
         assert.ok(next);
         assert.equal(next.gas, 32_000_000n);
@@ -265,7 +305,7 @@ try {
           assessment: { ready: true, version: planned.assessment.gasProfile.version, mode: planned.mode, bounds: planned.assessment.gasProfile.bounds },
           next: { kind: next.kind, gasLimit: next.gas },
           retainedExecution: { matrixCase, launchId: retained.observed.launchId, phase: retained.observed.phase } });
-        await writeFile(new URL('../fixtures/template-gas-smoke.json', import.meta.url), json(evidence));
+        await writeFile(new URL(`../fixtures/template-gas-${rwa ? 'rwa-' : ''}smoke.json`, import.meta.url), json(evidence));
         console.log(`Profiled read-only smoke: ${scenario.key} quote=${scenario.quoteIndex} mode=${planned.mode}`);
         continue;
       }
@@ -286,7 +326,7 @@ try {
       }
       const observed = await assertActive(plan, token, receipts, initialBuys);
       evidence.cases.push({ scenario, predictedToken: token, plan: JSON.parse(sdk.serializeLaunchPlan(plan)), transactions, observed });
-      const output = new URL('../fixtures/template-gas-matrix.json', import.meta.url);
+      const output = matrixUrl;
       await writeFile(output, json(evidence));
       console.log(`${index + 1}/${scenarios.length} ${scenario.key} ${scenario.mode} markets=${scenario.marketCount} positions=${scenario.positions} buys=${scenario.buyCount} quote=${scenario.quoteIndex}: ${transactions.map((tx) => `${tx.kind}=${tx.gasUsed}`).join(' ')}`);
     } catch (error) { console.error('Template case failed:', redact(error)); throw error; }

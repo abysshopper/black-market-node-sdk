@@ -5,6 +5,7 @@ import { decodeHmmLaunchTail, encodeHmmLaunchTail, isHmmProfile, type HmmLaunchC
 import { decodeUfgLaunchConfig, encodeUfgLaunchConfig, isUfgProfile, type UfgLaunchConfig } from "./ufg-config.js";
 import { decodeAutoCompoundTail, encodeAutoCompoundTail, isAutoCompoundProfile, validateAutoCompoundConfig, type AutoCompoundConfigV1 } from "./auto-compound.js";
 import { decodeRaetoLaunchTail, encodeRaetoLaunchTail, isRaetoProfile, RAETO_QUOTE_ASSETS, validateRaetoLaunchConfig, type RaetoLaunchConfigV1 } from "./raeto.js";
+import { decodeRwaLaunchTail, encodeRwaLaunchTail, isRwaProfile, RWA_QUOTE_ASSET, validateRwaLaunchConfig, type RwaLaunchConfigV1 } from "./rwa.js";
 
 export type V4LifecyclePositionConfig = {
   tickLower: number; tickUpper: number; liquidity: bigint; salt: Hex; maxTokenAmount: bigint;
@@ -50,6 +51,7 @@ export type V4PoolBoundLifecycleMarketConfigV6 = Omit<V4LifecycleMarketConfig, "
   ufgLaunchConfig?: UfgLaunchConfig;
   autoCompoundConfig?: AutoCompoundConfigV1;
   raetoLaunchConfig?: RaetoLaunchConfigV1;
+  rwaLaunchConfig?: RwaLaunchConfigV1;
 };
 export type V4PoolBoundLifecycleMarketConfig = V4PoolBoundLifecycleMarketConfigV5 | V4PoolBoundLifecycleMarketConfigV6;
 export const V4_LIFECYCLE_CONFIG_SCHEMA = keccak256(stringToHex("(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"));
@@ -98,7 +100,7 @@ function assertV1HookFeeShape(config: object): void {
 
 function validateAutoCompoundMarket(config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig): asserts config is V4PoolBoundLifecycleMarketConfigV6 & { autoCompoundConfig: AutoCompoundConfigV1 } {
   if (config.version !== 6 || config.autoCompoundConfig === undefined) throw new LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compounding profiles require config6 and an explicit autoCompoundConfig");
-  if (config.hmmLaunchConfig !== undefined || config.ufgLaunchConfig !== undefined || config.raetoLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compounding profiles cannot carry HMM, UFG or Raeto tails");
+  if (config.hmmLaunchConfig !== undefined || config.ufgLaunchConfig !== undefined || config.raetoLaunchConfig !== undefined || config.rwaLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compounding profiles cannot carry HMM, UFG, Raeto or RWA tails");
   if (config.lpFeePips !== 0) throw new LifecyclePlanningError("INVALID_HOOK_FEES", "Auto-compounding profiles require zero LP fee");
   if (config.developerFeeBps !== 0) throw new LifecyclePlanningError("DEVELOPER_FEE_CEILING", "Auto-compounding profiles require zero developer fee");
   validateAutoCompoundConfig(config.autoCompoundConfig);
@@ -106,9 +108,16 @@ function validateAutoCompoundMarket(config: V4LifecycleMarketConfig | V4PoolBoun
 
 function validateRaetoMarket(config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig): asserts config is V4PoolBoundLifecycleMarketConfigV6 & { raetoLaunchConfig: RaetoLaunchConfigV1 } {
   if (config.version !== 6 || config.raetoLaunchConfig === undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles require config6 and an explicit raetoLaunchConfig");
-  if (config.hmmLaunchConfig !== undefined || config.ufgLaunchConfig !== undefined || config.autoCompoundConfig !== undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles cannot carry HMM, UFG or auto-compounding tails");
+  if (config.hmmLaunchConfig !== undefined || config.ufgLaunchConfig !== undefined || config.autoCompoundConfig !== undefined || config.rwaLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles cannot carry HMM, UFG, auto-compounding or RWA tails");
   if (config.feeMode !== 1 || config.lpFeePips !== 0 || config.developerFeeBps !== 0) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto requires QuoteOnly feeMode 1, zero LP fee and zero developer fee");
   validateRaetoLaunchConfig(config.raetoLaunchConfig);
+}
+
+function validateRwaMarket(config: V4LifecycleMarketConfig | V4PoolBoundLifecycleMarketConfig): asserts config is V4PoolBoundLifecycleMarketConfigV6 & { rwaLaunchConfig: RwaLaunchConfigV1 } {
+  if (config.version !== 6 || config.rwaLaunchConfig === undefined) throw new LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA profiles require config6 and an explicit rwaLaunchConfig");
+  if (config.hmmLaunchConfig !== undefined || config.ufgLaunchConfig !== undefined || config.autoCompoundConfig !== undefined || config.raetoLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA profiles cannot carry HMM, UFG, auto-compounding or Raeto tails");
+  if (config.feeMode !== 1 || config.lpFeePips !== 0 || config.developerFeeBps !== 0) throw new LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA requires QuoteOnly feeMode 1, zero LP fee and zero developer fee");
+  validateRwaLaunchConfig(config.rwaLaunchConfig);
 }
 
 /** Auxiliary launch profiles require their typed tail and append it automatically. */
@@ -119,6 +128,11 @@ export function encodePoolBoundV4LifecycleMarketConfig(config: V4PoolBoundLifecy
     return concatHex([prefix, encodeRaetoLaunchTail(config.raetoLaunchConfig)]);
   }
   if (config.version === 6 && config.raetoLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "A Raeto tail requires a Raeto profile");
+  if (isRwaProfile(config.profileId)) {
+    validateRwaMarket(config);
+    return concatHex([prefix, encodeRwaLaunchTail(config.rwaLaunchConfig)]);
+  }
+  if (config.version === 6 && config.rwaLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_RWA_CONFIG", "An RWA tail requires an RWA profile");
   if (isAutoCompoundProfile(config.profileId)) {
     validateAutoCompoundMarket(config);
     return concatHex([prefix, encodeAutoCompoundTail(config.autoCompoundConfig)]);
@@ -163,6 +177,10 @@ export function decodePoolBoundV4LifecycleMarketConfig(encoded: Hex, expectedVer
     if (config.version !== 6) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles require config6");
     config.raetoLaunchConfig = decodeRaetoLaunchTail(`0x${encoded.slice(encodePoolBoundV4Prefix(config).length)}`);
   }
+  if (isRwaProfile(config.profileId)) {
+    if (config.version !== 6) throw new LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA profiles require config6");
+    config.rwaLaunchConfig = decodeRwaLaunchTail(`0x${encoded.slice(encodePoolBoundV4Prefix(config).length)}`);
+  }
   if (isAutoCompoundProfile(config.profileId)) {
     if (config.version !== 6) throw new LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compounding profiles require config6");
     config.autoCompoundConfig = decodeAutoCompoundTail(`0x${encoded.slice(encodePoolBoundV4Prefix(config).length)}`);
@@ -202,6 +220,10 @@ export function validateV4LifecycleMarket(options: {
     validateRaetoMarket(config);
     if (!RAETO_QUOTE_ASSETS.some((quote) => quote.toLowerCase() === market.quoteAsset.toLowerCase())) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto quote asset must be WETH or USDG");
   } else if (config.version === 6 && config.raetoLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_RAETO_CONFIG", "A Raeto tail requires a Raeto profile");
+  if (isRwaProfile(config.profileId)) {
+    validateRwaMarket(config);
+    if (market.quoteAsset.toLowerCase() !== RWA_QUOTE_ASSET.toLowerCase()) throw new LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA quote asset must be USDG");
+  } else if (config.version === 6 && config.rwaLaunchConfig !== undefined) throw new LifecyclePlanningError("INVALID_RWA_CONFIG", "An RWA tail requires an RWA profile");
   const { envelope, developerTerms: terms, protocolMaximumDeveloperFeeBps: protocolCeiling } = profile;
   if (envelope === undefined || terms === undefined || protocolCeiling === undefined || !terms.enabled ||
     profile.topology.hookTopology !== (config.version === 4 ? 1 : 2) || market.configVersion !== config.version ||

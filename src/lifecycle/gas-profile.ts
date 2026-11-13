@@ -10,18 +10,19 @@ import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile, ufgPlanPrincipal, type UfgLaunc
 import { LifecyclePlanningError, type LifecycleBlock, type LifecycleLaunchGasBounds, type LifecycleLimitSource, type LifecycleOpeningBuyQuote, type LifecyclePlanningAssessment, type LifecycleRpcClient, type LifecycleTransaction, type PlannedLaunch } from "./types.js";
 import { isHmmProfile } from "./hmm.js";
 import { isRaetoProfile } from "./raeto.js";
+import { isRwaProfile } from "./rwa.js";
 
-export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v5";
+export const LIFECYCLE_GAS_PROFILE_VERSION = "robinhood-4663-capacity-v6";
 export type NextTransactionEnvelope = Readonly<{ gas: bigint; gasPrice: bigint }>;
 const ceil = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor;
 const approval = (transaction: LifecycleTransaction) => transaction.kind === "approve" || transaction.kind === "approve-reset";
-type MarketGas = { abyss: boolean; hmm: boolean; ufgHook: boolean; raeto: boolean; autoCompound: boolean; positions: number };
+type MarketGas = { abyss: boolean; hmm: boolean; ufgHook: boolean; raeto: boolean; rwa: boolean; autoCompound: boolean; positions: number };
 
 function marketGas(plan: LaunchPlanV1): MarketGas[] {
   return plan.markets.map((market) => {
     const abyss = market.configVersion === 1;
     const config = abyss ? decodeAbyssLifecycleMarketConfig(market.config) : decodePoolBoundV4LifecycleMarketConfig(market.config, 6);
-    return { abyss, hmm: isHmmProfile(market.profileId), ufgHook: isUfgProfile(market.profileId), raeto: isRaetoProfile(market.profileId), autoCompound: isAutoCompoundProfile(market.profileId), positions: config.positions.length };
+    return { abyss, hmm: isHmmProfile(market.profileId), ufgHook: isUfgProfile(market.profileId), raeto: isRaetoProfile(market.profileId), rwa: isRwaProfile(market.profileId), autoCompound: isAutoCompoundProfile(market.profileId), positions: config.positions.length };
   });
 }
 
@@ -53,6 +54,9 @@ const activationCosts = {
   abyss: { market: 500_000n, position: 1_250_000n },
   v4: { market: 250_000n, position: 500_000n },
   raeto: { market: 500_000n, position: 500_000n },
+  // template-gas-rwa-matrix.json: six-stock RWA activation marginal is ~0.54M/position; the
+  // 32-position four-buy activation (24.43M) still fits 32M, so its bound must stay below it.
+  rwa: { market: 250_000n, position: 540_000n },
   autoCompound: { market: 750_000n, position: 500_000n },
   hmm: 1_000_000n,
   ufg: 250_000n,
@@ -68,25 +72,31 @@ function capacityBasis(plan: LaunchPlanV1, transaction: LifecycleTransaction, ma
   // template-gas-matrix.json: Raeto/auto-compound atomic1 <=19.60M,
   // atomic8 <=23.99M; atomic32 exceeds32M. The18M calibration base plus
   // position/buy work and25% padding bounds compute and forwarding envelopes.
-  let gas = atomic ? (markets[0]!.raeto || markets[0]!.autoCompound ? 18_000_000n : 22_000_000n) + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n)
+  // template-gas-rwa-matrix.json: RWA atomic1 <=22.79M, atomic8 four buys <=27.39M
+  // (still within 32M), so its tighter 17M base keeps that observed fit plannable.
+  const first = markets[0]!;
+  let gas = atomic ? (first.rwa ? 17_000_000n : first.raeto || first.autoCompound ? 18_000_000n : 22_000_000n) + tokenCreationGas(plan.token) + (ufgRoute ? 6_500_000n : 0n)
     : activationCosts.call + (ufgRoute ? activationCosts.ufg : 0n);
   // Escrow executes each Swap during begin, including within atomic. This
   // empirical2M reserve is padded below, not a proof for arbitrary router code.
   if (atomic) for (const funding of plan.funding) if (funding.kind === LifecycleFundingKind.Swap) gas += 2_000_000n;
   for (const market of markets) {
     if (atomic) gas += (market.hmm ? 7_000_000n : market.ufgHook ? 1_000_000n : market.abyss ? 500_000n : 0n) +
-      (market.abyss ? 1_500_000n : 600_000n) * BigInt(market.positions - 1);
+      (market.abyss ? 1_500_000n : market.rwa ? 550_000n : 600_000n) * BigInt(market.positions - 1);
     else {
-      const cost = market.abyss ? activationCosts.abyss : market.raeto ? activationCosts.raeto : market.autoCompound ? activationCosts.autoCompound : activationCosts.v4;
+      const cost = market.abyss ? activationCosts.abyss : market.raeto ? activationCosts.raeto : market.rwa ? activationCosts.rwa : market.autoCompound ? activationCosts.autoCompound : activationCosts.v4;
       gas += cost.market + cost.position * BigInt(market.positions) + (market.hmm ? activationCosts.hmm : market.ufgHook ? activationCosts.ufg : 0n);
     }
   }
   gas += activationCosts.buy * BigInt(quotes.length);
   // These collectors revalidate the prepared position set for each buy. At32
   // positions the measured marginal exceeds1M/buy; flat0.5M is insufficient.
+  // RWA buys use ~0.66M at one position and ~1.25M at 32 (forwarding estimate
+  // ~1.7M/buy), so a flat part covers small shapes and a smaller position term large ones.
   for (const quote of quotes) {
     const market = markets[quote.marketIndex]!;
-    if (market.raeto || market.autoCompound) gas += 25_000n * BigInt(market.positions);
+    if (market.rwa) gas += 150_000n + 20_000n * BigInt(market.positions);
+    else if (market.raeto || market.autoCompound) gas += 25_000n * BigInt(market.positions);
   }
   if (plan.token.kind === LifecycleTokenKind.ERC404) for (const quote of quotes) gas += activationCosts.nft * ceil(quote.tokenOut, plan.token.nftUnit);
   return gas + 24n * BigInt((transaction.data.length - 2) / 2) + 100_000n * BigInt(plan.feeAssets.length);

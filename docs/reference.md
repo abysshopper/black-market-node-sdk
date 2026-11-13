@@ -21,6 +21,7 @@ start historical log queries there, in chunks of at most **10M blocks**.
 | `UFG_UPSTREAM_FACTORY_ADDRESS` | `0xA170b5A58C111334A7237F2Ea2c428ec5022f68E` |
 | Known deployment `launchLens` | `0xcb4bb3caca71fe52eace8170cf83e901418646f8` |
 | `RAETO_PAYOUT_REGISTRY_ADDRESS` | `0xBEC2C0e91612090F82df6743F31CDF18B4386b50` |
+| `RWA_ASSET_REGISTRY_ADDRESS` | `0x40356d61871C7Af760903FDD6ceb9344D7c3F328` |
 
 `getKnownLifecycleDeployment`, `getKnownLifecycleProfile`, and
 `listKnownLifecycleProfiles` are pure selectors keyed by chain/core. Unknown
@@ -223,6 +224,66 @@ node --experimental-transform-types scripts/generate-raeto-presets.mjs \
   --readback /path/to/black-market
 pnpm build
 node --test test/integration/raeto.live.test.mjs
+```
+
+## RWA reward profiles
+
+All of the following are exported from `@black-market/sdk/lifecycle` (and the
+root). These presets are supported on the known Robinhood 4663 deployment.
+
+| Profile key / identity constant | Profile ID |
+| --- | --- |
+| `V4RwaFixedPool` / `RWA_FIXED_PROFILE_ID` | `0x3b170b03f1ff1c808970f43827df234cde866d73608b6e3e3937601ae7c8676b` |
+| `V4RwaDynamicPool` / `RWA_DYNAMIC_PROFILE_ID` | `0xab6c24038ff6ec16a300aa268dc4116f1649ae07c272dfc7e814c6f198515043` |
+
+`RWA_FIXED_ADAPTER_ID` is
+`0x0f13f4a8553a4dece69888deb425b04ff169d41132f3e2097034aff00f584dd6`;
+`RWA_DYNAMIC_ADAPTER_ID` is
+`0x46a5f7c611f6584cc99cffcdeb55183d6c3dcafe5fc6fcce85995be82639bbe1`.
+`isRwaProfile(profileId)` compares IDs case-insensitively.
+`RWA_ASSET_REGISTRY_ADDRESS` is the owner-upgradeable stock registry (ERC1967 proxy,
+implementation `0x6e95829569EDbbd1C018e0E6B635f0210BE57aF4`) that both collector
+factories read. `RWA_QUOTE_ASSET` is USDG,
+`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`. `RWA_MAX_BASKET` is 6,
+`RWA_MAX_PREMIUM_BPS` is 100 and `RWA_ANY_PRICE_AGE` is `0xffffffff`.
+
+`RwaLaunchConfigV1 = { shareBps, premiumBps, maxPriceAge, basket, weightsBps }`.
+`validateRwaLaunchConfig`, `encodeRwaLaunchTail` and `decodeRwaLaunchTail`
+enforce share 0–10,000, premium 0–100, uint32 age, a 1–6 strictly ascending
+non-USDG basket and integer weights summing to exactly 10,000, and exactly
+`abi.encode(RwaLaunchConfigV1)` with its leading tuple offset. Truncated, extended
+or noncanonical tails throw `INVALID_RWA_CONFIG`. V6 `rwaLaunchConfig` is
+mutually exclusive with all other tails; RWA requires QuoteOnly, zero
+LP/developer fees, its own adapter and the USDG quote.
+`validateRwaLaunchPlan(plan)` additionally requires a Dividends token and a
+`0/10000/0` fee policy for every basket stock; it ignores non-RWA markets and is
+applied by planning and continuation before any RPC.
+
+`rwaRewardCollectorV1Abi` is generated from verified standard-output and includes
+the term/earmark/pending getters (`basket`, `weightBps`, `earmarked`,
+`totalEarmarked`, `pendingStock`, `shareBps`, `premiumBps`, `maxPriceAge`,
+`launchToken`, `quoteAsset`, `poolId`, `hub`, `registry`), `maxFill`, `fill`,
+`forward`, the four fee-owner setters, all `Rwa*` events and the collector's
+revert errors. `rwaAssetRegistryV1Abi` covers `isListed`, `listedAssets`,
+`assetFeed`, `quoteFor`, `assetFor`, the quote-feed getters, `owner`, listing
+events and oracle errors. See [collection and keeper semantics](launch-lifecycle.md#configure-rwa-rewards).
+
+`test/fixtures/rwa-registry-readback.json` preserves admission bytes/receipts,
+runtime hashes, factory metadata, the registry's proxy/implementation hashes and
+listing, verified ABI provenance and real factory `decodeAndValidate` results for
+ten accepted and rejected term sets at **113,693,643**
+(`0xea409fea2955aa229e8b1bff0e63d4ffb88c8eba0f85bd8553d9e6479e545461`).
+Every RWA source is identical at upstream `fde23bb` and the deployed `f3076e7`
+(go-live record `9af36c6`). The generator proves hook creation bytes equal the
+SDK's existing fixed and zero-royalty dynamic bytecode, and that the SDK codec
+reproduces every accepted tail and refuses every static rejection.
+
+```sh
+# Offline, deterministic regeneration from saved evidence (Node 24+):
+node --experimental-transform-types scripts/generate-rwa-presets.mjs
+# Explicit read-only refresh, checking the preserved go-live records:
+node --experimental-transform-types scripts/generate-rwa-presets.mjs \
+  --readback /path/to/black-market
 ```
 
 ## Choose a fee tier

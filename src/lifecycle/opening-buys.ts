@@ -52,7 +52,7 @@ function openingState(plan: LaunchPlanV1, marketIndex: number): OpeningState {
     const config = decodePoolBoundV4LifecycleMarketConfig(market.config, 6);
     if (config.profileId.toLowerCase() !== market.profileId.toLowerCase()) throw new LifecyclePlanningError("INVALID_MARKET", "V4 opening config differs from the selected profile");
     price = config.sqrtPriceX96; spacing = config.tickSpacing; lpFee = BigInt(config.lpFeePips); positions = config.positions;
-    const dynamic = preset.key === KnownLifecycleProfile.V4DynamicFeePool || preset.key === KnownLifecycleProfile.V4HmmDynamicPool || preset.key === KnownLifecycleProfile.V4UfgDynamicPool || preset.key === KnownLifecycleProfile.V4AutoCompoundDynamicPool || preset.key === KnownLifecycleProfile.V4RaetoDynamicPool;
+    const dynamic = preset.key === KnownLifecycleProfile.V4DynamicFeePool || preset.key === KnownLifecycleProfile.V4HmmDynamicPool || preset.key === KnownLifecycleProfile.V4UfgDynamicPool || preset.key === KnownLifecycleProfile.V4AutoCompoundDynamicPool || preset.key === KnownLifecycleProfile.V4RaetoDynamicPool || preset.key === KnownLifecycleProfile.V4RwaDynamicPool;
     hookFee = BigInt(dynamic ? config.minimumHookFeePips! : config.hookFeePips);
   }
   const tick = getTickAtSqrtRatio(price), liquidityNet = new Map<number, bigint>();

@@ -17,6 +17,9 @@ import { AUTO_COMPOUND_STATIC_V1_PROFILE_ID, AUTO_COMPOUND_DYNAMIC_V1_PROFILE_ID
 import { raetoFixedEnvelope, raetoFixedAdapter, raetoFixedRegistration } from "./deployments/raeto-fixed-pool-v1-20261029.js";
 import { raetoDynamicEnvelope, raetoDynamicAdapter, raetoDynamicRegistration } from "./deployments/raeto-dynamic-pool-v1-20261029.js";
 import { RAETO_FIXED_PROFILE_ID, RAETO_DYNAMIC_PROFILE_ID } from "./raeto.js";
+import { rwaFixedEnvelope, rwaFixedAdapter, rwaFixedRegistration } from "./deployments/rwa-fixed-pool-v1-20261113.js";
+import { rwaDynamicEnvelope, rwaDynamicAdapter, rwaDynamicRegistration } from "./deployments/rwa-dynamic-pool-v1-20261113.js";
+import { RWA_FIXED_PROFILE_ID, RWA_DYNAMIC_PROFILE_ID } from "./rwa.js";
 
 export enum KnownLifecycleProfile {
   Abyss0 = "abyss-0",
@@ -33,6 +36,8 @@ export enum KnownLifecycleProfile {
   V4AutoCompoundDynamicPool = "v4-auto-compound-dynamic-pool",
   V4RaetoFixedPool = "v4-raeto-fixed-pool",
   V4RaetoDynamicPool = "v4-raeto-dynamic-pool",
+  V4RwaFixedPool = "v4-rwa-fixed-pool",
+  V4RwaDynamicPool = "v4-rwa-dynamic-pool",
 }
 
 export enum KnownLifecycleHook {
@@ -367,6 +372,8 @@ const knownDeployment: LifecycleDeploymentPreset = Object.freeze({
     poolBoundPreset(KnownLifecycleProfile.V4AutoCompoundDynamicPool, AUTO_COMPOUND_DYNAMIC_V1_PROFILE_ID, autoCompoundDynamicEnvelope, autoCompoundDynamicAdapter, autoCompoundDynamicRegistration, autoCompoundDynamicCreationCode),
     poolBoundPreset(KnownLifecycleProfile.V4RaetoFixedPool, RAETO_FIXED_PROFILE_ID, raetoFixedEnvelope, raetoFixedAdapter, raetoFixedRegistration, fixedFeePoolHookV1CreationCode),
     poolBoundPreset(KnownLifecycleProfile.V4RaetoDynamicPool, RAETO_DYNAMIC_PROFILE_ID, raetoDynamicEnvelope, raetoDynamicAdapter, raetoDynamicRegistration, dynamicFeePoolHookV1CreationCode),
+    poolBoundPreset(KnownLifecycleProfile.V4RwaFixedPool, RWA_FIXED_PROFILE_ID, rwaFixedEnvelope, rwaFixedAdapter, rwaFixedRegistration, fixedFeePoolHookV1CreationCode),
+    poolBoundPreset(KnownLifecycleProfile.V4RwaDynamicPool, RWA_DYNAMIC_PROFILE_ID, rwaDynamicEnvelope, rwaDynamicAdapter, rwaDynamicRegistration, dynamicFeePoolHookV1CreationCode),
   ]),
   provenance: Object.freeze({ sourceCommit: "e174ce695c7010f50ca9211b07b9f178c990beac", deploymentBlock: 82880546n }),
 });
@@ -396,7 +403,7 @@ export function getKnownLifecycleProfile(options: KnownLifecycleDeploymentIdenti
   return undefined;
 }
 
-/** Stable, frozen order: Abyss, fixed/dynamic V4, HMM, UFG, auto-compounding, then Raeto. */
+/** Stable, frozen order: Abyss, fixed/dynamic V4, HMM, UFG, auto-compounding, Raeto, then RWA. */
 export function listKnownLifecycleProfiles(options: KnownLifecycleDeploymentIdentity): readonly LifecycleProfilePreset[] {
   return getKnownLifecycleDeployment(options)?.profiles ?? noProfiles;
 }

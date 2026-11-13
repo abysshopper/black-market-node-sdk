@@ -19,6 +19,7 @@ import { computeLifecycleOpeningBuys, hasProfiledOpeningMath } from "./opening-b
 import { assessLifecycleTransactions, deriveLifecycleLaunchCapacity, type NextTransactionEnvelope, type ProfiledLaunchCapacity } from "./gas-profile.js";
 import type { LifecycleOpeningBuyQuote } from "./types.js";
 import { isRaetoProfile, RAETO_QUOTE_ASSETS } from "./raeto.js";
+import { validateRwaLaunchPlan } from "./rwa.js";
 
 type ValidatedPlanShape = {
   commitment: Hex;
@@ -81,6 +82,7 @@ function validatePlanShape(plan: LaunchPlanV1): ValidatedPlanShape {
     previous = BigInt(policy.asset);
   }
   if (plan.feeAssets.some((policy) => policy.rewardsBps !== 0) !== (plan.token.rewardMode !== LifecycleRewardMode.None)) throw new LifecyclePlanningError("INVALID_FEE_POLICY", "Reward-enabled tokens require a rewards share; reward-free tokens cannot commit rewards shares");
+  validateRwaLaunchPlan(plan);
   previous = 0n;
   for (const funding of plan.funding) {
     if (BigInt(funding.asset) <= previous || funding.amount <= 0n || funding.inputAmount <= 0n) throw new LifecyclePlanningError("INVALID_FUNDING", "Funding output assets must be positive, unique and ascending");
@@ -471,7 +473,10 @@ function finalizeNextTransaction(options: BuildNextTransactionOptions, next: Lif
 /** Recovery observes actual canonical receipts, then constructs and budgets only
  * the next command. No launch transaction is executed during planning. */
 export async function buildNextTransaction(options: BuildNextTransactionOptions): Promise<LifecycleTransaction | undefined> {
-  if (options.action !== "cancel") for (const market of options.planned.plan.markets) validateRaetoMarketContext(market);
+  if (options.action !== "cancel") {
+    for (const market of options.planned.plan.markets) validateRaetoMarketContext(market);
+    validateRwaLaunchPlan(options.planned.plan);
+  }
   const original = options.planned, matches = observedFields(original);
   const assertInput = () => {
     if (options.planned !== original || !matches()) throw new LifecyclePlanningError("PLAN_MUTATED", "Stored launch context changed while constructing its next transaction");

@@ -8,6 +8,7 @@ import { UFG_LAUNCH_PROXY_ADDRESS, isUfgProfile } from "./ufg-config.js";
 import { decodeAbyssLifecycleMarketConfig, decodePoolBoundV4LifecycleMarketConfig, decodeV4LifecycleMarketConfig, isPoolBoundV4ConfigVersion } from "./markets.js";
 import { isHmmProfile } from "./hmm.js";
 import { isRaetoProfile } from "./raeto.js";
+import { isRwaProfile } from "./rwa.js";
 import { isAutoCompoundProfile } from "./auto-compound.js";
 import type { UfgLaunchConfig } from "./ufg-config.js";
 
@@ -22,7 +23,11 @@ const preparationCosts = {
   raeto: { market: 9_300_000n, position: 70_000n },
   // Same matrix: auto-compound1 <=8.71M,32 <=10.76M.
   autoCompound: { market: 8_900_000n, position: 70_000n },
+  // template-gas-rwa-matrix.json: RWA one-stock1 9.85M, six-stock1 10.24M, six-stock32 12.29M;
+  // the collector checks each basket stock against the hub policy and registry.
+  rwa: { market: 9_900_000n, position: 70_000n },
 } as const;
+const RWA_PREPARATION_GAS_PER_STOCK = 80_000n;
 export const LIFECYCLE_CAPACITY_PADDING_BPS = 2500;
 /** Full single-market observations include call overhead. Add conservative full
  * calldata/hash processing (16 intrinsic gas per nonzero byte plus8 for copying). */
@@ -32,13 +37,15 @@ export function preparationGasEstimate(plan: LaunchPlanV1, first: number, count:
   let gas = 0n;
   for (let index = first; index < first + count; index += 1) {
     const market = plan.markets[index]!;
+    const bound = isPoolBoundV4ConfigVersion(market.configVersion) ? decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion) : undefined;
     const positions = market.configVersion === 1 ? decodeAbyssLifecycleMarketConfig(market.config).positions.length
-      : isPoolBoundV4ConfigVersion(market.configVersion) ? decodePoolBoundV4LifecycleMarketConfig(market.config, market.configVersion).positions.length
-      : decodeV4LifecycleMarketConfig(market.config).positions.length;
+      : bound !== undefined ? bound.positions.length : decodeV4LifecycleMarketConfig(market.config).positions.length;
     const cost = market.configVersion === 1 ? preparationCosts.abyss : isHmmProfile(market.profileId) ? preparationCosts.hmm
       : isUfgProfile(market.profileId) ? preparationCosts.ufg : isRaetoProfile(market.profileId) ? preparationCosts.raeto
+      : isRwaProfile(market.profileId) ? preparationCosts.rwa
       : isAutoCompoundProfile(market.profileId) ? preparationCosts.autoCompound : preparationCosts.v4;
     gas += cost.market + cost.position * BigInt(positions - 1);
+    if (bound?.version === 6 && bound.rwaLaunchConfig !== undefined) gas += RWA_PREPARATION_GAS_PER_STOCK * BigInt(bound.rwaLaunchConfig.basket.length);
   }
   return gas;
 }

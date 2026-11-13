@@ -3,13 +3,13 @@
 # Abyss TypeScript SDK
 
 Use `@black-market/sdk` with [viem](https://viem.sh) to launch tokens, swap, and read lending markets.
-This guide targets SDK **0.16.2** on Robinhood Chain mainnet (**4663**).
+This guide targets SDK **0.17.0** on Robinhood Chain mainnet (**4663**).
 The package supports Node 20+; running the checkout's TypeScript examples requires **Node 24+**.
 
 ## Install
 
 ```sh
-pnpm add @black-market/sdk@0.16.2 viem
+pnpm add @black-market/sdk@0.17.0 viem
 ```
 
 To run the examples, use a checkout:
@@ -108,10 +108,11 @@ Planning batches pinned current state, checks native-ceiling capacity budgets an
 | UFG | Quote-fee treasury and holder redemption; reward-free ERC20 only | [Launch a UFG treasury](docs/launch-lifecycle.md#launch-a-ufg-treasury) |
 | Auto-compounding | Static/dynamic hook fees fund permanently locked full-range liquidity; LP and developer fees 0 | [Configure auto-compounding](docs/launch-lifecycle.md#configure-auto-compounding) |
 | Raeto | Fixed/dynamic quote-fee sharing with Raeto; WETH/USDG only, 5/10/25/50/75% share, LP and developer fees 0 | [Configure Raeto](docs/launch-lifecycle.md#configure-raeto) |
+| RWA rewards | Fixed/dynamic USDG pools whose quote-fee share buys 1–6 listed stock tokens for Dividends holders; LP and developer fees 0 | [Configure RWA rewards](docs/launch-lifecycle.md#configure-rwa-rewards) |
 
-The eleven launch wrappers do not launch HMM, UFG, auto-compounding, or Raeto. Start HMM/UFG integrations with
+The eleven launch wrappers do not launch HMM, UFG, auto-compounding, Raeto or RWA rewards. Start HMM/UFG integrations with
 [`hmm-launch-config.ts`](examples/hmm-launch-config.ts) or [`ufg-launch-config.ts`](examples/ufg-launch-config.ts);
-for auto-compounding/Raeto, use the typed config6 examples in the linked guides. Both now have measured launch capacity profiles. These are configuration paths, not deployment commands.
+for auto-compounding/Raeto/RWA rewards, use the typed config6 examples in the linked guides. All three have measured launch capacity profiles. These are configuration paths, not deployment commands.
 
 ## Recover and integrate
 
